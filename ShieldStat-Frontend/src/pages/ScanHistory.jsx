@@ -33,13 +33,13 @@ function ScanHistory() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-7xl p-6 md:p-12">
-      <div className="mb-10 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+    <div className="mx-auto max-w-7xl p-4 sm:p-6 md:p-12">
+      <div className="mb-8 flex flex-col gap-4 md:mb-10 md:flex-row md:items-end md:justify-between">
         <div>
           <p className="mb-2 text-xs font-bold uppercase tracking-[0.28em] text-indigo-600">
             Scan Archive
           </p>
-          <h1 className="font-headline text-4xl font-extrabold tracking-tight text-slate-900">
+          <h1 className="font-headline text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">
             Domain Scan History
           </h1>
           <p className="mt-2 max-w-2xl text-slate-600">
@@ -47,7 +47,7 @@ function ScanHistory() {
           </p>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-600 shadow-sm">
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm sm:px-5 sm:py-4">
           <span className="font-bold text-slate-900">{history.length}</span>{" "}
           audits recorded
         </div>
@@ -72,7 +72,7 @@ function ScanHistory() {
         </div>
       ) : (
         <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-          <div className="grid grid-cols-[2fr_1.2fr_1.3fr_0.9fr] gap-4 border-b border-slate-200 bg-slate-50 px-8 py-5 text-xs font-bold uppercase tracking-[0.22em] text-slate-500">
+          <div className="hidden border-b border-slate-200 bg-slate-50 px-8 py-5 text-xs font-bold uppercase tracking-[0.22em] text-slate-500 lg:grid lg:grid-cols-[2fr_1.2fr_1.3fr_0.9fr] lg:gap-4">
             <span>Target Domain</span>
             <span>Security Score</span>
             <span>Scan Date</span>
@@ -100,12 +100,14 @@ function ScanHistory() {
             return (
               <div
                 key={`${scan.domain}-${idx}`}
-                className="grid grid-cols-[2fr_1.2fr_1.3fr_0.9fr] gap-4 border-b border-slate-100 px-8 py-6 items-center hover:bg-slate-50 transition last:border-b-0"
+                className="border-b border-slate-100 px-4 py-5 hover:bg-slate-50 transition last:border-b-0 lg:grid lg:grid-cols-[2fr_1.2fr_1.3fr_0.9fr] lg:gap-4 lg:px-8 lg:py-6 lg:items-center"
               >
-                <div>
-                  <p className="font-bold text-lg text-slate-900">{scan.domain}</p>
+                <div className="mb-3 md:mb-0">
+                  <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500 lg:hidden">Target Domain</p>
+                  <p className="font-bold text-base text-slate-900 lg:text-lg">{scan.domain}</p>
                 </div>
-                <div>
+                <div className="mb-3 md:mb-0">
+                  <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500 lg:hidden">Security Score</p>
                   {score !== null ? (
                      <span className={`inline-flex rounded-full border px-4 py-1.5 text-sm font-bold shadow-sm ${scoreColor}`}>
                        {score} / 100
@@ -114,8 +116,11 @@ function ScanHistory() {
                      <span className="text-slate-500 font-semibold text-sm">N/A</span>
                   )}
                 </div>
-                <p className="text-sm font-medium text-slate-600">{scannedAt}</p>
-                <div className="flex justify-end">
+                <div className="mb-4 md:mb-0">
+                  <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500 lg:hidden">Scan Date</p>
+                  <p className="text-sm font-medium text-slate-600">{scannedAt}</p>
+                </div>
+                <div className="flex lg:justify-end">
                   <button
                     type="button"
                     onClick={() => {

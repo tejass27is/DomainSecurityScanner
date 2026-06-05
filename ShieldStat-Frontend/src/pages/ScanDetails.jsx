@@ -291,7 +291,7 @@
 };
     return (
       <div
-        className={`flex flex-wrap items-center gap-x-6 gap-y-1 px-5 py-3 rounded-lg border ${hostCfg.detailBorder} ${hostCfg.detailBg} text-sm`}
+        className={`flex flex-col md:flex-row md:items-center gap-3 md:gap-6 px-4 py-3 rounded-lg border ${hostCfg.detailBorder} ${hostCfg.detailBg} text-sm w-full`}
       >
         <div className="flex items-center gap-2 min-w-[180px]">
           <span className={`material-symbols-outlined text-base ${hostCfg.subColor}`}>language</span>
@@ -309,7 +309,7 @@
             <span className={`font-mono text-xs ${hostCfg.titleColor}`}>{host.port}</span>
           </div>
         )}
-        <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
+        <div className="md:ml-auto flex items-center gap-2 flex-wrap justify-start md:justify-end w-full md:w-auto">
           {canFix && (
             <button
               type="button"
@@ -680,8 +680,8 @@
 
     if (loading) {
       return (
-        <div className="min-h-screen bg-surface flex items-center justify-center">
-          <div className="flex flex-col items-center gap-4">
+        <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+          <div className="flex flex-col items-center gap-4 text-center">
             <span className="material-symbols-outlined text-5xl text-indigo-500 animate-spin" style={{ animationDuration: "2s" }}>
               progress_activity
             </span>
@@ -694,7 +694,7 @@
     if (error || !data) {
       return (
         <div className="min-h-screen bg-surface">
-          <main className="flex-1 overflow-y-auto pt-8 pb-16 px-12 max-w-[1600px] mx-auto w-full">
+          <main className="flex-1 overflow-y-auto pt-6 sm:pt-8 pb-16 px-4 sm:px-6 lg:px-12 max-w-[1600px] mx-auto w-full">
             {knownDomains.length > 0 && (
               <section className="mb-8">
                 <div className="mb-3 flex flex-wrap items-center gap-3">
@@ -964,7 +964,7 @@
             </div>
           </div>
         )}
-        <main className="flex-1 overflow-y-auto pt-8 pb-16 px-12 max-w-[1600px] mx-auto w-full">
+        <main className="flex-1 overflow-y-auto pt-6 sm:pt-8 pb-16 px-4 sm:px-6 lg:px-12 max-w-[1600px] mx-auto w-full">
 
           {/* ── Domain nav ── */}
           {knownDomains.length > 0 && (
@@ -986,13 +986,13 @@
           )}
 
           {/* ── Top section ── */}
-          <section className="grid grid-cols-1 md:grid-cols-12 gap-8 items-start mb-10 relative">
+          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start mb-10 relative">
             
-            <div className="absolute top-0 right-0 z-10 hidden md:block">
+            <div className="absolute top-3 right-3 z-10 lg:fixed lg:top-6 lg:right-6 lg:z-[110]">
               <button
                 onClick={handleDownloadReport}
                 title="Download Report"
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm shadow-sm hover:bg-indigo-700 transition"
+                className="flex items-center gap-2 px-3 py-2 lg:px-4 lg:py-2 bg-indigo-600 text-white rounded-lg font-bold text-xs sm:text-sm shadow-lg hover:bg-indigo-700 transition whitespace-nowrap"
               >
                 <span className="material-symbols-outlined text-sm">download</span>
                 Download Report
@@ -1000,14 +1000,14 @@
             </div>
 
             {/* Score card */}
-            <div className="md:col-span-5 lg:col-span-4 bg-surface-container-lowest p-8 rounded-xl shadow-sm relative overflow-hidden group border border-slate-200">
+            <div className="lg:col-span-4 bg-surface-container-lowest p-5 sm:p-6 lg:p-8 rounded-xl shadow-sm relative overflow-hidden group border border-slate-200">
               <div className="security-pulse absolute -right-10 -top-10 w-40 h-40 rounded-full group-hover:scale-110 transition-transform duration-700" />
               <div className="flex justify-between items-start mb-4">
                 <span className="label-md uppercase tracking-widest text-on-surface-variant text-[11px] font-bold">Security Grade</span>
                 <span className="material-symbols-outlined text-primary" style={{ fontVariationSettings: `"FILL" 1` }}>verified_user</span>
               </div>
               <div className="flex items-baseline gap-2">
-                <h1 className={`text-7xl font-extrabold font-headline tracking-tighter ${grade.color}`}>{score}</h1>
+                <h1 className={`text-5xl sm:text-6xl lg:text-7xl font-extrabold font-headline tracking-tighter ${grade.color}`}>{score}</h1>
                 <span className="text-2xl text-on-surface-variant font-medium">/100</span>
               </div>
               <div className="mt-6 flex items-center justify-between">
@@ -1019,17 +1019,17 @@
             </div>
 
             {/* Domain info */}
-            <div className="md:col-span-7 lg:col-span-8 p-4">
+            <div className="lg:col-span-8 p-0 sm:p-2 lg:p-4">
               <div className="inline-flex items-center gap-2 px-3 py-1 bg-primary-container/50 text-on-primary-container rounded-full text-[11px] font-bold uppercase tracking-widest mb-4">
                 <span className="w-1.5 h-1.5 bg-primary rounded-full" /> Active Scan Result
               </div>
               <div className="mb-8">
-                <h2 className="text-6xl md:text-7xl font-extrabold font-headline tracking-tighter text-on-surface inline-block relative">
+                <h2 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-extrabold font-headline tracking-tighter text-on-surface inline-block relative break-words">
                   <span className="relative z-10">{data.host?.domain || domain}</span>
                   <span className="absolute -bottom-2 left-0 w-full h-4 bg-primary/10 -z-10 rounded-full" />
                 </h2>
               </div>
-              <div className="flex flex-wrap gap-8">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6 lg:gap-8">
                 <div className="flex flex-col">
                   <span className="text-[11px] uppercase tracking-widest text-on-surface-variant font-bold">IP Address</span>
                   <span className="text-lg font-semibold text-on-surface font-mono">{primaryIp}</span>
@@ -1064,7 +1064,7 @@
           {/* ── Findings panel ── */}
           {activeCat && (
             <section className="bg-surface-container-lowest rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 px-8 py-6 border-b border-slate-200">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 px-4 sm:px-6 lg:px-8 py-5 sm:py-6 border-b border-slate-200">
                 <div className="flex items-center gap-4">
                   <div className={`w-10 h-10 ${activeCfg.headerBg} text-white rounded-xl flex items-center justify-center shrink-0 shadow-sm`}>
                     <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: `"FILL" 1` }}>
@@ -1085,7 +1085,7 @@
                   </div>
                 </div>
               </div>
-              <div className="p-8 space-y-4">
+              <div className="p-4 sm:p-6 lg:p-8 space-y-4">
                 {/* IP Reputation panel */}
                 {activeCat.isIpRep && (
                   <>
