@@ -8,6 +8,7 @@ import {
   getScore,
   redeemPromo,
 } from "../services/api";
+import { clearAuthSession } from "../utils/auth";
 
 function normalizeDomain(domain) {
   return (domain || "").trim();
@@ -76,7 +77,7 @@ function Profile() {
   // ─── Fetch profile on mount ────────────────────────────────────────────────
   useEffect(() => {
     if (!token) {
-      navigate("/auth");
+      window.location.replace("/auth");
       return;
     }
 
@@ -98,10 +99,9 @@ function Profile() {
         }
       } catch {
         // Token expired or invalid
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
+        clearAuthSession();
         clearDomainCaches();
-        navigate("/auth");
+        window.location.replace("/auth");
       } finally {
         setProfileLoading(false);
       }

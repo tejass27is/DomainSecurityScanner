@@ -52,7 +52,14 @@ function SpiderChart({ metrics, size = 320 }) {
   );
 
   return (
-    <svg viewBox="0 0 500 500" width={size} height={size} className="block">
+    <svg
+      viewBox="0 0 500 500"
+      width="100%"
+      height="auto"
+      className="block w-full max-w-[420px] sm:max-w-[500px]"
+      style={{ maxWidth: `${size}px` }}
+      preserveAspectRatio="xMidYMid meet"
+    >
       {/* Grid rings */}
       {[0.25, 0.5, 0.75, 1].map((scale) => (
         <polygon
@@ -250,7 +257,7 @@ function OverviewPage({ checks }) {
 
   return (
     <div className="min-h-screen bg-slate-100 dark:bg-slate-950">
-      <div className="max-w-[1400px] mx-auto px-6 pt-8 pb-20">
+      <div className="mx-auto max-w-[1400px] px-4 pt-6 pb-20 sm:px-6 md:pt-8">
         {/* Page Header */}
         <header className="mb-8">
           <div className="flex items-center gap-3 mb-2">
@@ -272,15 +279,15 @@ function OverviewPage({ checks }) {
         </header>
 
         {/* Top Row: Spider Chart (Left) + Category Breakdown (Right) */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8 items-stretch">
+        <div className="mb-8 grid grid-cols-1 gap-8 items-stretch lg:grid-cols-2">
           {/* Spider Chart + Score */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-6 shadow-sm flex flex-col items-center">
             <div className="w-full flex items-center gap-2 mb-6 pb-4 border-b border-slate-100 dark:border-slate-800/60">
               <span className="material-symbols-outlined text-indigo-600 dark:text-indigo-400 text-lg">radar</span>
               <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">Security Profile Radar</h3>
             </div>
-            <div className="dark:brightness-110">
-              <SpiderChart metrics={metrics} size={550} />
+            <div className="w-full overflow-hidden dark:brightness-110">
+              <SpiderChart metrics={metrics} size={520} />
             </div>
           </div>
 
@@ -350,7 +357,7 @@ function OverviewPage({ checks }) {
           <span className="material-symbols-outlined text-indigo-600 dark:text-indigo-400 text-[20px]">grid_view</span>
           <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">Security Checklists</h2>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {CHECKLIST_SECTIONS.map((section) => {
             const progress = computeSectionProgress(section.id, checks);
             const done = section.items.filter((i) => checks[i.id] === true).length;
@@ -383,9 +390,9 @@ function ChecklistItem({ item, checked, ignored, onToggle, onIgnore, color }) {
         ignored ? "bg-slate-50/50 dark:bg-slate-900/30" : "hover:bg-slate-50 dark:hover:bg-slate-800/30"
       }`}
     >
-      <div className="grid grid-cols-[100px_180px_120px_1fr] items-start py-6 px-4 gap-6">
+      <div className="grid grid-cols-1 gap-4 px-4 py-5 md:grid-cols-[96px_180px_120px_1fr] md:items-start md:gap-6 md:py-6">
         {/* Column 1: Done / Ignore */}
-        <div className="flex flex-col items-center gap-4">
+        <div className="flex items-center justify-between gap-4 md:flex-col md:items-center md:justify-start">
           <button
             type="button"
             onClick={() => !ignored && onToggle(item.id)}
@@ -494,7 +501,7 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
-      <div className="max-w-[1400px] mx-auto px-6 py-8">
+      <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 md:py-8">
         {/* Navigation Breadcrumb */}
         <div className="flex items-center gap-2 mb-8">
           <Link to="/assessment" className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-slate-200 text-xs font-bold transition-all">
@@ -506,7 +513,7 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
         </div>
 
         {/* Section Header */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-8 mb-8 items-end">
+        <div className="mb-8 grid grid-cols-1 gap-8 items-end lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_420px]">
           <div>
             <div className="flex items-center gap-4 mb-4">
               <div className="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: section.color + "15", color: section.color }}>
@@ -533,7 +540,7 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
         {/* Checklist Table Wrapper */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/60 rounded-2xl overflow-hidden shadow-sm">
           {/* Table Header */}
-          <div className="grid grid-cols-[100px_180px_120px_1fr] bg-slate-50/80 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800/60 py-4 px-4 gap-6">
+          <div className="hidden bg-slate-50/80 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800/60 py-4 px-4 gap-6 md:grid md:grid-cols-[96px_180px_120px_1fr]">
             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 text-center flex items-center justify-center gap-1">
               Done? <span className="material-symbols-outlined text-[14px]">unfold_more</span>
             </span>
@@ -557,7 +564,7 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
         </div>
 
         {/* Footer Navigation */}
-        <div className="flex items-center justify-between mt-12 pt-8 border-t border-slate-200 dark:border-slate-800/60">
+        <div className="mt-12 flex flex-col gap-4 border-t border-slate-200 pt-8 dark:border-slate-800/60 sm:flex-row sm:items-center sm:justify-between">
           {prevSection ? (
             <Link to={`/assessment/${prevSection.id}`} className="group flex items-center gap-3 text-left">
               <div className="w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800/60 flex items-center justify-center group-hover:bg-slate-50 dark:group-hover:bg-slate-800 transition-colors">

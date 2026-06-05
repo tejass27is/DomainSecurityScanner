@@ -2,8 +2,9 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import logo from "../assets/logo.svg";
 import ResetPasswordModal from "./ResetPasswordModal";
+import { logoutAndRedirect } from "../utils/auth";
 
-function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
+function Sidebar({ isOpen, onToggle, onClose, isDarkMode, onToggleDarkMode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const settingsRef = useRef(null);
@@ -77,18 +78,19 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
 
   const isActive = (path) => location.pathname === path;
 
+  const handleSettingsClick = () => {
+  if (!isOpen) onToggle();
+  setIsSettingsOpen(true);
+  };
+
   const handleLogout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    localStorage.removeItem("scannedDomains");
-    localStorage.removeItem("lastScannedDomain");
-    localStorage.removeItem("malware_last_scan");
     setIsSettingsOpen(false);
-    navigate("/auth");
+    logoutAndRedirect();
   };
 
   const baseClass =
     "relative flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-200 overflow-hidden";
+  const compactClass = "lg:justify-center lg:px-2 lg:gap-0";
 
   const activeClass = "text-indigo-700 font-semibold bg-indigo-50 shadow-sm";
 
@@ -97,15 +99,17 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
 
   return (
     <aside
-      className={`relative flex h-full shrink-0 flex-col overflow-hidden border-r border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 transition-all duration-300 ${isOpen ? "w-72 px-6 py-8" : "w-0 border-r-0 px-0 py-0"
-        }`}
+      className={`fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col border-r border-slate-200 bg-slate-50 shadow-2xl transition-all duration-300 dark:border-slate-800 dark:bg-slate-900 lg:static lg:translate-x-0 lg:shadow-none ${
+        isOpen
+          ? "translate-x-0 w-72 overflow-visible px-6 py-8 pr-8"
+          : "-translate-x-full w-72 overflow-hidden px-6 py-8 pr-8 lg:w-16 lg:translate-x-0 lg:overflow-hidden lg:px-3 lg:py-6"
+      }`}
       aria-hidden={!isOpen}
     >
       <button
         type="button"
         onClick={onToggle}
-        className={`absolute top-8 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 shadow-sm transition hover:border-indigo-200 dark:hover:border-indigo-700 hover:bg-indigo-50 dark:hover:bg-indigo-900/40 hover:text-indigo-700 dark:hover:text-indigo-400 ${isOpen ? "right-[-22px]" : "right-[-56px]"
-          }`}
+        className={`absolute z-30 flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-400 ${isOpen ? "top-6 right-[-18px]" : "top-5 right-3 lg:top-5 lg:right-3"}`}
         aria-label={isOpen ? "Close sidebar" : "Open sidebar"}
       >
         <span className="material-symbols-outlined">
@@ -116,8 +120,11 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
       </button>
 
       <div
-        className={`flex h-full min-h-0 flex-col overflow-y-auto ${isOpen ? "opacity-100" : "pointer-events-none opacity-0"
-          }`}
+        className={`flex h-full min-h-0 flex-col overflow-y-auto ${
+          isOpen
+            ? "opacity-100"
+            : "pointer-events-none opacity-0 lg:pointer-events-auto lg:opacity-100"
+        }`}
       >
         {/* Logo */}
         <div className="mb-10">
@@ -133,7 +140,8 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
           {/* Scan Dashboard (moved to top per request) */}
           <Link
             to="/scan-dashboard"
-            className={`${baseClass} ${isActive("/scan-dashboard") ? activeClass : inactiveClass}`}
+            onClick={onClose}
+            className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive("/scan-dashboard") ? activeClass : inactiveClass}`}
           >
             <span
               className={
@@ -143,12 +151,13 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
               }
             />
             <span className="material-symbols-outlined">dashboard</span>
-            <span>Dashboard</span>
+            <span className={isOpen ? "block" : "hidden"}>Dashboard</span>
           </Link>
 
           <Link
             to="/assessment"
-            className={`${baseClass} ${isActive("/assessment") ? activeClass : inactiveClass}`}
+            onClick={onClose}
+            className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive("/assessment") ? activeClass : inactiveClass}`}
           >
             <span
               className={
@@ -158,13 +167,14 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
               }
             />
             <span className="material-symbols-outlined">security</span>
-            <span>Assessment</span>
+            <span className={isOpen ? "block" : "hidden"}>Assessment</span>
           </Link>
 
           {/* New Scan always present */}
           <Link
             to="/scan"
-            className={`${baseClass} ${isActive("/scan") ? activeClass : inactiveClass}`}
+            onClick={onClose}
+            className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive("/scan") ? activeClass : inactiveClass}`}
           >
             <span
               className={
@@ -175,7 +185,7 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
             />
             <span className="material-symbols-outlined">radar</span>
             <div className="flex flex-1 items-center justify-between">
-              <span>Audit Domain</span>
+              <span className={isOpen ? "block" : "hidden"}>Audit Domain</span>
               {availableSlots > 0 && (
                 <div className="flex h-5 items-center justify-center rounded-full bg-rose-100 px-2 text-[10px] font-black text-rose-700 shadow-sm animate-pulse">
                   +{availableSlots}
@@ -191,7 +201,8 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
           {/* Malware Scan link */}
           <Link
             to="/malware"
-            className={`${baseClass} ${isActive("/malware") ? activeClass : inactiveClass}`}
+            onClick={onClose}
+            className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive("/malware") ? activeClass : inactiveClass}`}
           >
             <span
               className={
@@ -202,7 +213,7 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
             />
             <span className="material-symbols-outlined">bug_report</span>
             <div className="flex flex-1 items-center justify-between">
-              <span>Malware Scan</span>
+              <span className={isOpen ? "block" : "hidden"}>Malware Scan</span>
               {availableSlots > 0 && (
                 <div className="flex h-5 items-center justify-center rounded-full bg-rose-100 px-2 text-[10px] font-black text-rose-700 shadow-sm animate-pulse">
                   +{availableSlots}
@@ -220,7 +231,8 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
         <div className="space-y-2 border-t border-slate-200 dark:border-slate-700 pt-8">
           <Link
             to="/profile"
-            className={`${baseClass} ${isActive("/profile") ? activeClass : inactiveClass}`}
+            onClick={onClose}
+            className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive("/profile") ? activeClass : inactiveClass}`}
           >
             <span
               className={
@@ -230,7 +242,7 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
               }
             />
             <span className="material-symbols-outlined">account_circle</span>
-            <span>Profile</span>
+            <span className={isOpen ? "block" : "hidden"}>Profile</span>
           </Link>
 
           <div ref={settingsRef} className="relative">
@@ -287,13 +299,13 @@ function Sidebar({ isOpen, onToggle, isDarkMode, onToggleDarkMode }) {
 
             <button
               type="button"
-              onClick={() => setIsSettingsOpen((current) => !current)}
-              className={`w-full text-left ${baseClass} ${inactiveClass}`}
+              onClick={handleSettingsClick}
+              className={`w-full text-left ${baseClass} ${!isOpen ? compactClass : ""} ${inactiveClass}`}
               aria-expanded={isSettingsOpen}
               aria-haspopup="menu"
             >
               <span className="material-symbols-outlined">settings</span>
-              <span>Settings</span>
+              <span className={isOpen ? "block" : "hidden"}>Settings</span>
             </button>
           </div>
         </div>

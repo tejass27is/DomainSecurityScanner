@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
 import logo from "../assets/logo.svg";
 import ResetPasswordModal from "../components/ResetPasswordModal";
+import { logoutAndRedirect } from "../utils/auth";
 
 function SidebarLink({ to, icon, children }) {
   const location = useLocation();
@@ -41,9 +42,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
 
   const handleLogout = (e) => {
     e.preventDefault();
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    navigate("/auth");
+    logoutAndRedirect();
   };
 
   // Close settings popup when clicking outside
