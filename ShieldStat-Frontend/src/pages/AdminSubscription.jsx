@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { generatePromoCode, getPromoCodes } from "../services/api";
 
 function AdminSubscription() {
+<<<<<<< Updated upstream
   const [promoCodes, setPromoCodes] = useState([]);
   const [promoLoading, setPromoLoading] = useState(false);
   const [generatingPromo, setGeneratingPromo] = useState(false);
@@ -26,6 +27,7 @@ function AdminSubscription() {
     setTimeout(() => setNotification({ text: "", type: "" }), 3000);
   };
 
+<<<<<<< Updated upstream
   useEffect(() => {
     fetchPromoCodes();
   }, []);
@@ -127,6 +129,7 @@ function AdminSubscription() {
           </div>
         </div>
 
+<<<<<<< Updated upstream
         {/* Pricing Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <div className="bg-surface-container-lowest p-6 rounded-3xl shadow-sm border border-primary/10 relative overflow-hidden group">
@@ -485,8 +488,272 @@ function AdminSubscription() {
                     <div className="h-full bg-primary rounded-full w-[62%]"></div>
                   </div>
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
                 </div>
               </div>
+=======
+               </div>
+            )}
+
+            {/* Edit Plan Modal */}
+            {editingPlanId && editingData && (
+               <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto sm:p-6">
+                  <div className="bg-surface rounded-3xl shadow-2xl w-full max-w-full sm:max-w-2xl my-8">
+                     <div className="px-6 py-5 sm:px-8 sm:py-6 border-b border-surface-container">
+                        <h2 className="text-2xl font-black text-on-surface">Edit {editingData.name} Plan</h2>
+                     </div>
+
+                     <div className="px-6 py-6 sm:px-8 space-y-6 max-h-[calc(100vh-300px)] overflow-y-auto">
+                        {/* Plan Name */}
+                        <div>
+                           <label className="block text-sm font-bold text-on-surface-variant mb-2">
+                              Plan Name
+                           </label>
+                           <input
+                              type="text"
+                              value={editingData.name}
+                              onChange={(e) => handleNameChange(e.target.value)}
+                              className="w-full px-4 py-3 rounded-xl border border-surface-container bg-surface-container-low text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+                              placeholder="Enter plan name"
+                           />
+                        </div>
+
+                        {/* Price */}
+                        <div>
+                           <label className="block text-sm font-bold text-on-surface-variant mb-2">
+                              Monthly Price ($)
+                           </label>
+                           <input
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              value={editingData.price}
+                              onChange={(e) => handlePriceChange(e.target.value)}
+                              className="w-full px-4 py-3 rounded-xl border border-surface-container bg-surface-container-low text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+                              placeholder="Enter price"
+                           />
+                        </div>
+
+                        {/* Features */}
+                        <div>
+                           <div className="flex justify-between items-center mb-4">
+                              <label className="block text-sm font-bold text-on-surface-variant">
+                                 Features
+                              </label>
+                              <button
+                                 onClick={handleAddFeature}
+                                 className="px-3 py-1 text-xs font-semibold text-primary hover:bg-primary/10 rounded-lg transition-all flex items-center gap-1"
+                              >
+                                 <span className="material-symbols-outlined text-sm">add</span>
+                                 Add Feature
+                              </button>
+                           </div>
+
+                           <div className="space-y-3">
+                              {editingData.features.map((feature, index) => (
+                                 <div key={index} className="flex gap-3">
+                                    <input
+                                       type="text"
+                                       value={feature}
+                                       onChange={(e) => handleFeatureChange(index, e.target.value)}
+                                       className="flex-1 px-4 py-3 rounded-xl border border-surface-container bg-surface-container-low text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+                                       placeholder="Enter feature"
+                                    />
+                                    <button
+                                       onClick={() => handleRemoveFeature(index)}
+                                       className="px-3 py-3 text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                                    >
+                                       <span className="material-symbols-outlined">close</span>
+                                    </button>
+                                 </div>
+                              ))}
+                           </div>
+                        </div>
+
+                        {/* Tags */}
+                        <div>
+                           <div className="flex justify-between items-center mb-4">
+                              <label className="block text-sm font-bold text-on-surface-variant">
+                                 Tags
+                              </label>
+                              <button
+                                 onClick={handleAddTag}
+                                 className="px-3 py-1 text-xs font-semibold text-primary hover:bg-primary/10 rounded-lg transition-all flex items-center gap-1"
+                              >
+                                 <span className="material-symbols-outlined text-sm">add</span>
+                                 Add Tag
+                              </button>
+                           </div>
+
+                           <div className="space-y-3">
+                              {(editingData.tags || []).map((tag, index) => (
+                                 <div key={index} className="flex gap-3 items-center">
+                                    <input
+                                       type="text"
+                                       value={tag}
+                                       onChange={(e) => handleTagChange(index, e.target.value)}
+                                       className="flex-1 px-4 py-3 rounded-xl border border-surface-container bg-surface-container-low text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+                                       placeholder="Enter tag label"
+                                    />
+                                    <button
+                                       onClick={() => handleRemoveTag(index)}
+                                       className="px-3 py-3 text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                                    >
+                                       <span className="material-symbols-outlined">close</span>
+                                    </button>
+                                 </div>
+                              ))}
+                              {(editingData.tags || []).length === 0 && (
+                                 <p className="text-sm text-on-surface-variant">No tags added yet.</p>
+                              )}
+                           </div>
+                        </div>
+                     </div>
+
+                     {/* Modal Footer */}
+                     <div className="px-6 py-5 sm:px-8 sm:py-6 border-t border-surface-container flex gap-3 flex-col sm:flex-row justify-end">
+                        <button
+                           onClick={handleCancelEdit}
+                           className="px-6 py-2 rounded-xl bg-surface-container text-on-surface hover:bg-surface-container/80 transition-all font-semibold text-sm"
+                        >
+                           Cancel
+                        </button>
+                        <button
+                           onClick={handleSavePlan}
+                           disabled={savingPlan}
+                           className="px-6 py-2 rounded-xl bg-gradient-to-br from-primary to-primary-dim text-white font-semibold text-sm shadow-lg shadow-primary/20 hover:opacity-90 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                        >
+                           {savingPlan ? (
+                              <>
+                                 <span className="material-symbols-outlined text-sm animate-spin">refresh</span>
+                                 Saving...
+                              </>
+                           ) : (
+                              <>
+                                 <span className="material-symbols-outlined text-sm">check</span>
+                                 Save Changes
+                              </>
+                           )}
+                        </button>
+                     </div>
+                  </div>
+               </div>
+            )}
+
+            {/* Promo Codes & Editor Config */}
+            <div className="grid grid-cols-1 gap-8">
+               <div className="col-span-1 space-y-8">
+                  <div className="bg-surface rounded-[32px] overflow-hidden shadow-xl border border-surface-container/70">
+                     <div className="flex flex-col gap-4 border-b border-surface-container px-4 py-5 sm:px-6 sm:py-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between w-full">
+                           <div>
+                              <h3 className="text-xl font-bold">Generated Promo Codes</h3>
+                              <p className="text-xs text-on-surface-variant mt-1">Single-use tokens to grant Enterprise access.</p>
+                           </div>
+                           <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full sm:w-auto">
+                              <input
+                                 type="datetime-local"
+                                 value={promoExpiry}
+                                 onChange={(e) => setPromoExpiry(e.target.value)}
+                                 className="px-3 py-2 rounded-lg border bg-white text-sm w-full sm:w-auto"
+                                 aria-label="Promo expiry"
+                                 required
+                              />
+                              {promoExpiryError && (
+                                 <div className="text-xs text-red-600 mt-1">{promoExpiryError}</div>
+                              )}
+                              <button
+                                 onClick={handleGeneratePromo}
+                                 disabled={generatingPromo || !promoExpiry || Boolean(promoExpiryError)}
+                                 className="w-full sm:w-auto px-6 py-2 bg-gradient-to-br from-primary to-primary-dim text-white rounded-xl font-semibold text-sm shadow-lg shadow-primary/20 hover:opacity-90 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                              >
+                                 {generatingPromo ? (
+                                    <span className="material-symbols-outlined text-sm animate-spin">refresh</span>
+                                 ) : (
+                                    <span className="material-symbols-outlined text-sm">add</span>
+                                 )}
+                                 Generate New Code
+                              </button>
+                           </div>
+                        </div>
+                     </div>
+
+                     {promoLoading ? (
+                        <div className="p-12 text-center text-slate-500">Loading codes...</div>
+                     ) : promoCodes.length === 0 ? (
+                        <div className="p-12 text-center text-slate-500">No promo codes generated yet.</div>
+                     ) : (
+                        <div className="overflow-x-auto max-h-[300px]">
+                           <table className="w-full text-left border-collapse">
+                              <thead className="bg-surface-container-low border-b border-surface-container sticky top-0">
+                                 <tr>
+                                    <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Code</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Status</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Expires At</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Used At</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Used By</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Action</th>
+                                 </tr>
+                              </thead>
+                              <tbody className="divide-y divide-surface-container">
+                                 {promoCodes.map((code) => (
+                                    <tr key={code.code} className="hover:bg-slate-50 transition-colors">
+                                       <td className="px-8 py-4 font-mono font-bold text-primary">{code.code}</td>
+                                       <td className="px-6 py-4 flex items-center gap-2 whitespace-nowrap">
+                                          {code.is_used && (
+                                             <span className="px-3 py-1 bg-red-100 text-red-700 text-[10px] font-bold rounded-full uppercase">Used</span>
+                                          )}
+                                          {isPromoExpired(code.expires_at) && (
+                                             <span className="px-3 py-1 bg-orange-100 text-orange-700 text-[10px] font-bold rounded-full uppercase">Expired</span>
+                                          )}
+                                          {!code.is_used && !isPromoExpired(code.expires_at) && (
+                                             <span className="px-3 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full uppercase">Active</span>
+                                          )}
+                                       </td>
+                                       <td className="px-6 py-4 text-sm text-on-surface-variant">{code.expires_at ? formatDateTime(code.expires_at) : "—"}</td>
+                                       <td className="px-6 py-4 text-sm text-on-surface-variant">{code.used_at ? formatDateTime(code.used_at) : "—"}</td>
+                                       <td className="px-6 py-4 text-sm font-semibold text-on-surface">{code.used_by || "—"}</td>
+                                       <td className="px-6 py-4">
+                                          <button
+                                             onClick={() => confirmDeletePromoCode(code.code)}
+                                             className="px-3 py-1.5 rounded-lg bg-red-100 text-red-600 hover:bg-red-200 transition-all flex items-center gap-1 text-xs font-semibold whitespace-nowrap"
+                                          >
+                                             <span className="material-symbols-outlined text-sm">delete</span>
+                                             <span className="hidden sm:inline">Delete</span>
+                                          </button>
+                                       </td>
+                                    </tr>
+                                 ))}
+                              </tbody>
+                           </table>
+                        </div>
+                     )}
+                  </div>
+
+
+               </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-8">
+               <div className="col-span-1 space-y-8">
+                  <div className="bg-surface p-6 sm:p-8 rounded-[32px] shadow-xl border border-surface-container/70">
+                     <h3 className="text-xl font-bold mb-6">Plan Revenue Share</h3>
+                     <div className="space-y-6">
+                        <div>
+                           <div className="flex flex-col gap-2 justify-between text-xs font-bold uppercase tracking-wider mb-2 sm:flex-row sm:items-center">
+                              <span className="text-on-surface-variant">
+                                 Enterprise Plus
+                              </span>
+                              <span className="text-primary">$2,046,898 (62%)</span>
+                           </div>
+                           <div className="h-2 bg-surface-container rounded-full overflow-hidden">
+                              <div className="h-full bg-primary rounded-full w-[62%]"></div>
+                           </div>
+                        </div>
+                     </div>
+                  </div>
+               </div>
+>>>>>>> Stashed changes
 =======
                </div>
             )}
