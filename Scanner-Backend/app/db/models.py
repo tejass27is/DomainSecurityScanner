@@ -224,5 +224,43 @@ class FixStatus(str, enum.Enum):
     pending = "pending"
     running = "running"
     completed = "completed"
-    failed = "failed"   
-    
+    failed = "failed"
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    log_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    admin_id = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    action = Column(String(255), nullable=False)
+    target_type = Column(String(255), nullable=True)
+    target_id = Column(String(255), nullable=True)
+    details = Column(JSONB, nullable=True)
+    ip_address = Column(String(100), nullable=True)
+    public_ip = Column(String(100), nullable=True)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+
+
+class SecurityAlert(Base):
+    __tablename__ = "security_alerts"
+
+    alert_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    severity = Column(String(50), nullable=False)
+    message = Column(Text, nullable=False)
+    details = Column(JSONB, nullable=True)
+    acknowledged = Column(Boolean, nullable=False, server_default="false")
+    created_at = Column(TIMESTAMP, server_default=func.now())
+
+
+class SubscriptionPlan(Base):
+    __tablename__ = "subscription_plans"
+
+    plan_id = Column(String(36), primary_key=True)
+    name = Column(String(255), nullable=False)
+    price = Column(Integer, nullable=False, server_default="0")
+    icon = Column(String(255), nullable=True)
+    color = Column(String(50), nullable=True)
+    container_color = Column(String(50), nullable=True)
+    popular = Column(Boolean, nullable=False, server_default="false")
+    features = Column(JSONB, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=func.now())

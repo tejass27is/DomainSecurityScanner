@@ -1,13 +1,7 @@
-import React, { useEffect, useState } from "react";
-import { generatePromoCode, getPromoCodes, deletePromoCode } from "../services/api";
+import React, { useState, useEffect } from "react";
+import { deletePromoCode, generatePromoCode, getPromoCodes, getSubscriptionPlans, createSubscriptionPlan, updateSubscriptionPlan, deleteSubscriptionPlan } from "../services/api";
 
 function AdminSubscription() {
-<<<<<<< Updated upstream
-  const [promoCodes, setPromoCodes] = useState([]);
-  const [promoLoading, setPromoLoading] = useState(false);
-  const [generatingPromo, setGeneratingPromo] = useState(false);
-  const [notification, setNotification] = useState({ text: "", type: "" });
-=======
    const [promoCodes, setPromoCodes] = useState([]);
    const [promoLoading, setPromoLoading] = useState(false);
    const [generatingPromo, setGeneratingPromo] = useState(false);
@@ -22,40 +16,12 @@ function AdminSubscription() {
    const [deletingPromoLoading, setDeletingPromoLoading] = useState(false);
    const [promoExpiry, setPromoExpiry] = useState("");
    const [promoExpiryError, setPromoExpiryError] = useState("");
->>>>>>> Stashed changes
 
-  const showNotification = (text, type = "success") => {
-    setNotification({ text, type });
-    setTimeout(() => setNotification({ text: "", type: "" }), 3000);
-  };
+   const showNotification = (text, type = "success") => {
+      setNotification({ text, type });
+      setTimeout(() => setNotification({ text: "", type: "" }), 3000);
+   };
 
-<<<<<<< Updated upstream
-  useEffect(() => {
-    fetchPromoCodes();
-  }, []);
-
-  const fetchPromoCodes = async () => {
-    setPromoLoading(true);
-    try {
-      const data = await getPromoCodes(localStorage.getItem("token"));
-      const sortedCodes = (data || []).sort((a, b) => {
-        if (a.is_used === b.is_used) return 0;
-        return a.is_used ? 1 : -1;
-      });
-      setPromoCodes(sortedCodes);
-    } catch (err) {
-      showNotification(err.message, "error");
-    } finally {
-      setPromoLoading(false);
-    }
-  };
-
-  const handleGeneratePromo = async () => {
-    setGeneratingPromo(true);
-    try {
-      await generatePromoCode(localStorage.getItem("token"));
-      showNotification("Promo code generated successfully");
-=======
    const parseBrowserDate = (value) => {
       if (!value) return null;
       if (value instanceof Date) return value;
@@ -101,46 +67,39 @@ function AdminSubscription() {
    };
 
    useEffect(() => {
->>>>>>> Stashed changes
       fetchPromoCodes();
-    } catch (err) {
-      showNotification(err.message, "error");
-    } finally {
-      setGeneratingPromo(false);
-    }
-  };
+      fetchPlans();
+   }, []);
 
-   return (
-      <div className="min-h-screen p-8 bg-surface">
-         {notice.text && (
-            <div className={`fixed top-4 right-4 z-50 px-4 py-2 rounded ${notice.type === 'error' ? 'bg-red-500 text-white' : 'bg-emerald-500 text-white'}`}>
-               {notice.text}
-            </div>
-         )}
+   const fetchPlans = async () => {
+      try {
+         const token = localStorage.getItem("token");
+         const data = await getSubscriptionPlans(token);
+         const sourcePlans = Array.isArray(data)
+            ? data
+            : Array.isArray(data?.plans)
+               ? data.plans
+               : Array.isArray(data?.subscription_plans)
+                  ? data.subscription_plans
+                  : [];
 
-      <div className="p-10 space-y-10">
-        {/* Header */}
-        <div className="flex items-end justify-between">
-          <div>
-            <h2 className="text-4xl font-black text-on-surface tracking-tight mb-2">
-              Subscription Management
-            </h2>
-            <p className="text-on-surface-variant max-w-md">
-              Define service tiers, adjust pricing models, manage enterprise
-              features, and generate promotional codes.
-            </p>
-          </div>
-        </div>
+         const backendPlans = sourcePlans.map((p) => ({
+            id: p.plan_id || p.id || `plan-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            plan_id: p.plan_id || p.id,
+            name: p.name || "Untitled Plan",
+            price: Number(p.price) || 0,
+            icon: p.icon || "work",
+            color: p.color || "outline-variant",
+            containerColor: p.container_color || p.containerColor || "outline-variant",
+            popular: Boolean(p.popular),
+            features: Array.isArray(p.features) ? p.features : [],
+            tags: Array.isArray(p.tags)
+               ? p.tags
+               : Array.isArray(p.plan_tags)
+                  ? p.plan_tags
+                  : [],
+         }));
 
-<<<<<<< Updated upstream
-        {/* Pricing Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div className="bg-surface-container-lowest p-6 rounded-3xl shadow-sm border border-primary/10 relative overflow-hidden group">
-            <div className="absolute top-0 right-0 p-4">
-              <span className="px-2 py-1 bg-primary/10 text-primary text-[10px] font-bold rounded-lg uppercase">
-                Popular
-              </span>
-=======
          setPlans(backendPlans);
       } catch (err) {
          console.warn("Failed to fetch subscription plans from backend:", err.message);
@@ -348,98 +307,215 @@ function AdminSubscription() {
             <div className={`fixed top-4 right-4 z-50 px-6 py-3 rounded-lg shadow-lg ${notification.type === 'error' ? 'bg-red-500 text-white' : 'bg-emerald-500 text-white'
                }`}>
                {notification.text}
->>>>>>> Stashed changes
             </div>
-            <div className="w-12 h-12 rounded-2xl bg-primary-container/30 flex items-center justify-center text-primary mb-6">
-              <span className="material-symbols-outlined">rocket_launch</span>
-            </div>
-            <h3 className="text-xl font-black text-on-surface mb-1">
-              Enterprise Plus
-            </h3>
-            <p className="text-3xl font-black text-primary mb-4">
-              $499
-              <span className="text-sm font-medium text-on-surface-variant">
-                /mo
-              </span>
-            </p>
-            <div className="space-y-3 mb-8">
-              <div className="flex items-center gap-2 text-xs font-medium text-on-surface-variant">
-                <span className="material-symbols-outlined text-emerald-500 text-sm">
-                  check_circle
-                </span>{" "}
-                Unlimited Scans
-              </div>
-            </div>
-          </div>
+         )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-               <div className="lg:col-span-2 bg-white/5 p-6 rounded-lg">
-                  <div className="flex items-center justify-between mb-4">
-                     <div>
-                        <h3 className="font-semibold">Generated Promo Codes</h3>
-                        <p className="text-xs text-on-surface-variant">Single-use tokens for Enterprise access.</p>
-                     </div>
-                     <div className="flex items-center gap-3">
-                        <input type="datetime-local" value={expiryInput} onChange={e => setExpiryInput(e.target.value)} className="px-3 py-2 rounded border" />
-                        <button onClick={handleGenerate} disabled={generating} className="px-3 py-2 bg-primary text-white rounded">{generating ? '...' : 'Generate'}</button>
-                     </div>
-                  </div>
-
-                  {loading ? (
-                     <div className="p-6 text-center">Loading...</div>
-                  ) : promoCodes.length === 0 ? (
-                     <div className="p-6 text-center text-slate-500">No promo codes</div>
-                  ) : (
-                     <div className="overflow-auto">
-                        <table className="w-full text-left">
-                           <thead className="text-xs text-on-surface-variant border-b">
-                              <tr>
-                                 <th className="px-3 py-2">Code</th>
-                                 <th className="px-3 py-2">Status</th>
-                                 <th className="px-3 py-2">Expires At</th>
-                                 <th className="px-3 py-2">Used At</th>
-                                 <th className="px-3 py-2">Action</th>
-                              </tr>
-                           </thead>
-                           <tbody>
-                              {promoCodes.map(p => (
-                                 <tr key={p.code} className="odd:bg-white/5">
-                                    <td className="px-3 py-2 font-mono">{p.code}</td>
-                                    <td className="px-3 py-2">
-                                       {p.is_used ? <span className="text-red-600">Used</span> : expired(p.expires_at) ? <span className="text-orange-600">Expired</span> : <span className="text-emerald-600">Active</span>}
-                                    </td>
-                                    <td className="px-3 py-2">{p.expires_at ? formatLocal(p.expires_at) : '—'}</td>
-                                    <td className="px-3 py-2">{p.used_at ? formatLocal(p.used_at) : '—'}</td>
-                                    <td className="px-3 py-2"><button disabled={deleting} onClick={() => handleDelete(p.code)} className="text-red-600">Delete</button></td>
-                                 </tr>
-                              ))}
-                           </tbody>
-                        </table>
-                     </div>
-                  )}
+         <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
+            {/* Header */}
+            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+               <div>
+                  <h2 className="mb-2 text-2xl font-black tracking-tight text-on-surface sm:text-3xl lg:text-4xl">
+                     Subscription Management
+                  </h2>
+                  <p className="max-w-2xl text-sm text-on-surface-variant sm:text-base">
+                     Define service tiers, adjust pricing models, manage enterprise
+                     features, and generate promotional codes.
+                  </p>
                </div>
+               <div className="flex items-center gap-3">
+                  <button
+                     onClick={() => {
+                        const newPlanId = `local-plan-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                        const newPlan = {
+                           id: newPlanId,
+                           name: "New Plan",
+                           price: "",
+                           icon: "work",
+                           color: "outline-variant",
+                           containerColor: "outline-variant",
+                           popular: false,
+                           features: [""],
+                           tags: [],
+                        };
+                        setPlans(prev => [...prev, newPlan]);
+                        setEditingPlanId(newPlanId);
+                        setEditingData({ ...newPlan });
+                     }}
+                     className="px-4 py-2 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-all text-sm font-semibold"
+                  >
+                     Add New Plan
+                  </button>
+               </div>
+            </div>
 
+            {/* Pricing Cards */}
+            {plans.length === 0 ? (
+               <div className="rounded-3xl bg-surface p-12 text-center text-on-surface-variant">
+                  No subscription plans found. Plans are loaded from the database.
+               </div>
+            ) : (
+               <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {plans.map((plan) => (
+                     <div key={plan.id} className="bg-surface border border-surface-container/70 p-6 rounded-[32px] shadow-xl relative overflow-hidden group flex flex-col h-full">
+                        {plan.popular && (
+                           <div className="absolute top-0 right-0 p-4">
+                              <span className="px-2 py-1 bg-primary/10 text-primary text-[10px] font-bold rounded-lg uppercase">
+                                 Popular
+                              </span>
+                           </div>
+                        )}
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-6 ${plan.color === 'primary' ? 'bg-primary-container/30 text-primary' :
+                           plan.color === 'tertiary' ? 'bg-tertiary-container/30 text-tertiary' :
+                              plan.color === 'secondary' ? 'bg-secondary-container/30 text-secondary' :
+                                 'bg-outline-variant/10 text-outline-variant'
+                           }`}>
+                           <span className="material-symbols-outlined">{plan.icon}</span>
+                        </div>
+                        <h3 className="text-xl font-black text-on-surface mb-1">
+                           {plan.name}
+                        </h3>
+                        <div
+                           className={`inline-flex items-end gap-2 mb-4 rounded-3xl px-4 py-3 shadow-sm ${plan.color === 'primary' ? 'bg-primary/10 text-primary' :
+                              plan.color === 'tertiary' ? 'bg-tertiary/10 text-tertiary' :
+                                 plan.color === 'secondary' ? 'bg-secondary/10 text-secondary' :
+                                    'bg-surface-variant/10 text-on-surface'
+                              }`}>
+                           <span className="text-4xl font-black">
+                              ${plan.price}
+                           </span>
+                           <span className="text-sm font-medium text-on-surface-variant pb-1">
+                              /mo
+                           </span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 mb-4">
+                           {plan.tags && plan.tags.length > 0 ? (
+                              plan.tags.map((tag, idx) => (
+                                 <span key={idx} className="px-3 py-1 rounded-full border text-[11px] font-semibold uppercase tracking-[0.08em] bg-surface-container text-on-surface-variant border-surface-container">
+                                    {tag}
+                                 </span>
+                              ))
+                           ) : (
+                              <span className="px-3 py-1 rounded-full bg-surface-container text-on-surface-variant text-[11px] font-semibold uppercase tracking-[0.08em] border border-surface-container">
+                                 No tags
+                              </span>
+                           )}
+                        </div>
+                        <div className="space-y-3 mb-8 flex-1">
+                           {plan.features.map((feature, idx) => (
+                              <div key={idx} className="flex items-center gap-2 text-xs font-medium text-on-surface-variant">
+                                 <span className="material-symbols-outlined text-emerald-500 text-sm">
+                                    check_circle
+                                 </span>
+                                 {feature}
+                              </div>
+                           ))}
+                        </div>
 
-          </div>
+                        {/* Actions - Bottom Right */}
+                        <div className="mt-auto flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                           <button
+                              onClick={() => handleEditPlan(plan.id)}
+                              className="w-full sm:w-auto px-3 py-2 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-all flex items-center justify-center gap-1 text-sm font-semibold"
+                           >
+                              <span className="material-symbols-outlined text-sm">edit</span>
+                              <span className="hidden sm:inline">Edit</span>
+                           </button>
+                           <button
+                              onClick={() => confirmDeletePlan(plan)}
+                              className="w-full sm:w-auto px-3 py-2 rounded-lg bg-red-100 text-red-600 hover:bg-red-200 transition-all flex items-center justify-center gap-1 text-sm font-semibold"
+                           >
+                              <span className="material-symbols-outlined text-sm">delete</span>
+                              <span className="hidden sm:inline">Delete</span>
+                           </button>
+                        </div>
+                     </div>
+                  ))}
+               </div>
+            )}
 
-          <div className="col-span-12 xl:col-span-5 space-y-8">
-            <div className="bg-surface-container-lowest p-8 rounded-3xl shadow-sm">
-              <h3 className="text-xl font-bold mb-6">Plan Revenue Share</h3>
-              <div className="space-y-6">
-                <div>
-                  <div className="flex justify-between text-xs font-bold uppercase tracking-wider mb-2">
-                    <span className="text-on-surface-variant">
-                      Enterprise Plus
-                    </span>
-                    <span className="text-primary">$2,046,898 (62%)</span>
+            {/* Delete Subscription Plan Confirmation Modal */}
+            {deletingPlan && (
+               <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                  <div className="bg-surface rounded-3xl shadow-2xl w-full max-w-sm">
+                     <div className="px-6 py-5 sm:px-8 sm:py-6 border-b border-surface-container">
+                        <h2 className="text-xl font-black text-on-surface">Delete Subscription Plan?</h2>
+                     </div>
+
+                     <div className="px-6 py-6 sm:px-8">
+                        <p className="text-on-surface-variant text-sm mb-4">
+                           Are you sure you want to delete the <span className="font-bold text-on-surface">{deletingPlan.name}</span> plan? This action cannot be undone.
+                        </p>
+                     </div>
+
+                     <div className="px-6 py-5 sm:px-8 sm:py-6 border-t border-surface-container flex gap-3 flex-col sm:flex-row justify-end">
+                        <button
+                           onClick={cancelDeletePlan}
+                           className="px-6 py-2 rounded-xl bg-surface-container text-on-surface hover:bg-surface-container/80 transition-all font-semibold text-sm"
+                        >
+                           Cancel
+                        </button>
+                        <button
+                           onClick={handleDeletePlan}
+                           disabled={deletingPlanLoading}
+                           className="px-6 py-2 rounded-xl bg-red-500 text-white font-semibold text-sm shadow-lg shadow-red-500/20 hover:opacity-90 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                        >
+                           {deletingPlanLoading ? (
+                              <>
+                                 <span className="material-symbols-outlined text-sm animate-spin">refresh</span>
+                                 Deleting...
+                              </>
+                           ) : (
+                              <>
+                                 <span className="material-symbols-outlined text-sm">delete</span>
+                                 Delete
+                              </>
+                           )}
+                        </button>
+                     </div>
                   </div>
-                  <div className="h-2 bg-surface-container rounded-full overflow-hidden">
-                    <div className="h-full bg-primary rounded-full w-[62%]"></div>
+               </div>
+            )}
+
+            {/* Delete Promo Code Confirmation Modal */}
+            {deletingPromoCode && (
+               <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                  <div className="bg-surface rounded-3xl shadow-2xl w-full max-w-sm">
+                     <div className="px-6 py-5 sm:px-8 sm:py-6 border-b border-surface-container">
+                        <h2 className="text-xl font-black text-on-surface">Delete Promo Code?</h2>
+                     </div>
+
+                     <div className="px-6 py-6 sm:px-8">
+                        <p className="text-on-surface-variant text-sm mb-4">
+                           Are you sure you want to delete the promo code <span className="font-bold text-on-surface">{deletingPromoCode}</span>? This action cannot be undone.
+                        </p>
+                     </div>
+
+                     <div className="px-6 py-5 sm:px-8 sm:py-6 border-t border-surface-container flex gap-3 flex-col sm:flex-row justify-end">
+                        <button
+                           onClick={cancelDeletePromoCode}
+                           className="px-6 py-2 rounded-xl bg-surface-container text-on-surface hover:bg-surface-container/80 transition-all font-semibold text-sm"
+                        >
+                           Cancel
+                        </button>
+                        <button
+                           onClick={() => handleDeletePromoCode(deletingPromoCode)}
+                           disabled={deletingPromoLoading}
+                           className="px-6 py-2 rounded-xl bg-red-500 text-white font-semibold text-sm shadow-lg shadow-red-500/20 hover:opacity-90 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                        >
+                           {deletingPromoLoading ? (
+                              <>
+                                 <span className="material-symbols-outlined text-sm animate-spin">refresh</span>
+                                 Deleting...
+                              </>
+                           ) : (
+                              <>
+                                 <span className="material-symbols-outlined text-sm">delete</span>
+                                 Delete
+                              </>
+                           )}
+                        </button>
+                     </div>
                   </div>
-<<<<<<< Updated upstream
-                </div>
-              </div>
-=======
                </div>
             )}
 
@@ -647,7 +723,7 @@ function AdminSubscription() {
                                  {promoCodes.map((code) => (
                                     <tr key={code.code} className="hover:bg-slate-50 transition-colors">
                                        <td className="px-8 py-4 font-mono font-bold text-primary">{code.code}</td>
-                                       <td className="px-6 py-4 flex items-center gap-2 whitespace-nowrap">
+                                       <td className="px-6 py-4 flex flex-wrap gap-2 items-center">
                                           {code.is_used && (
                                              <span className="px-3 py-1 bg-red-100 text-red-700 text-[10px] font-bold rounded-full uppercase">Used</span>
                                           )}
@@ -701,11 +777,10 @@ function AdminSubscription() {
                      </div>
                   </div>
                </div>
->>>>>>> Stashed changes
             </div>
-          </div>
-        </div>
+         </div>
       </div>
-    </div>
-  );
+   );
 }
+
+export default AdminSubscription;

@@ -1,16 +1,16 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from app.api.admin.schemas import BlacklistEmailRequest, CreateAdminRequest, PromoCreate
+from app.api.admin.schemas import BlacklistEmailRequest, CreateAdminRequest, PromoCreate, PersonalEmailApprovalRequest
 from app.api.admin.service import (
     block_email,
     create_personal_email_invitation,
-    create_subscription_plan,
     delete_promo_code,
-    delete_subscription_plan,
     generate_promo_code,
     get_blacklisted_emails,
     get_promo_codes,
+    get_request_ip,
+    get_public_ip,
     list_personal_email_invitations,
     get_scan_summaries,
     get_total_scans,
@@ -28,19 +28,12 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.post("/generate-promo")
 def generate_promo(
-<<<<<<< Updated upstream
-=======
     req: PromoCreate,
     request: Request,
->>>>>>> Stashed changes
     db: Session = Depends(get_db),
-    _current_admin: User = Depends(require_admin),
+    current_admin: User = Depends(require_admin),
 ):
-<<<<<<< Updated upstream
-    return generate_promo_code(db)
-=======
     return generate_promo_code(db, current_admin=current_admin, expires_at=req.expires_at, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
->>>>>>> Stashed changes
 
 
 @router.get("/promo-codes")

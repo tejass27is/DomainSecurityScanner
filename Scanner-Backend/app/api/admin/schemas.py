@@ -8,12 +8,15 @@ class BlacklistEmailRequest(BaseModel):
 
 class CreateAdminRequest(BaseModel):
     email: EmailStr
-<<<<<<< Updated upstream
-=======
 
 
 class PromoCreate(BaseModel):
     expires_at: datetime
+
+
+class PersonalEmailApprovalRequest(BaseModel):
+    email: EmailStr
+    notes: str | None = None
 
 
 class SubscriptionPlanCreate(BaseModel):
@@ -48,5 +51,4 @@ class SubscriptionPlanOut(BaseModel):
     features: list[str] = []
 
     class Config:
-        orm_mode = True
->>>>>>> Stashed changes
+        from_attributes = True

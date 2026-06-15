@@ -3,8 +3,9 @@ import random
 import secrets
 import string
 import uuid
+from datetime import datetime, timezone, timedelta
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api.auth.service import hashPassword
@@ -51,9 +52,6 @@ def _serialize_user(user: User, blocked_emails: set[str]) -> dict:
     }
 
 
-<<<<<<< Updated upstream
-def generate_promo_code(db: Session) -> dict:
-=======
 def _record_audit_log(
     db: Session,
     admin: User,
@@ -100,8 +98,163 @@ def _detect_mass_blocking(db: Session, admin: User) -> None:
         )
 
 
+def seed_default_subscription_plans(db: Session) -> None:
+    existing_plan_count = db.query(SubscriptionPlan).count()
+    if existing_plan_count > 0:
+        return
+
+    default_plans = [
+        {
+            "plan_id": str(uuid.uuid4()),
+            "name": "Starter",
+            "price": 10,
+            "icon": "rocket",
+            "color": "#1D4ED8",
+            "container_color": "#DBEAFE",
+            "popular": False,
+            "features": [
+                "1 organization domain",
+                "Basic security scan",
+                "Email alerts",
+            ],
+        },
+        {
+            "plan_id": str(uuid.uuid4()),
+            "name": "Business",
+            "price": 25,
+            "icon": "shield-check",
+            "color": "#047857",
+            "container_color": "#D1FAE5",
+            "popular": True,
+            "features": [
+                "Up to 5 organization domains",
+                "Advanced scan reports",
+                "Priority support",
+            ],
+        },
+        {
+            "plan_id": str(uuid.uuid4()),
+            "name": "Enterprise",
+            "price": 50,
+            "icon": "sparkles",
+            "color": "#BE185D",
+            "container_color": "#FCE7F3",
+            "popular": False,
+            "features": [
+                "Unlimited organization domains",
+                "Custom risk rules",
+                "Dedicated support",
+            ],
+        },
+    ]
+
+    for plan_data in default_plans:
+        db.add(SubscriptionPlan(**plan_data))
+
+    db.commit()
+
+
+def get_request_ip(request: Request) -> str | None:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    if request.client is not None:
+        return request.client.host
+
+    return None
+
+
+def get_public_ip(request: Request) -> str | None:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[-1].strip()
+
+    if request.client is not None:
+        return request.client.host
+
+    return None
+
+
+def create_personal_email_invitation(email: str, current_admin: User, db: Session, notes: str | None = None) -> dict:
+    normalized_email = _normalize_email(email)
+    existing_invitation = (
+        db.query(PersonalEmailInvitation)
+        .filter(PersonalEmailInvitation.email == normalized_email)
+        .first()
+    )
+    if existing_invitation:
+        raise HTTPException(status_code=409, detail="Personal email invitation already exists")
+
+    token = secrets.token_urlsafe(32)
+    invitation = PersonalEmailInvitation(
+        invitation_id=str(uuid.uuid4()),
+        email=normalized_email,
+        token=token,
+        status="approved",
+        approved_by=current_admin.user_id,
+        approved_at=datetime.now(timezone.utc),
+        notes=notes,
+    )
+
+    db.add(invitation)
+    db.commit()
+    db.refresh(invitation)
+
+    frontend_url = os.getenv("FRONTEND_URL")
+    if not frontend_url:
+        raise HTTPException(status_code=500, detail="FRONTEND_URL is not configured")
+
+    invite_link = f"{frontend_url.rstrip('/')}/auth/register?invite_token={token}"
+
+    try:
+        send_personal_email_invitation_email(
+            to_email=normalized_email,
+            invite_link=invite_link,
+            invited_by_email=current_admin.email,
+        )
+    except Exception as email_err:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to send invitation email: {str(email_err)}")
+
+    return {
+        "message": "Personal email invitation approved and sent",
+        "email": normalized_email,
+        "invite_token": token,
+    }
+
+
+def list_personal_email_invitations(db: Session) -> list[dict]:
+    invitations = db.query(PersonalEmailInvitation).order_by(PersonalEmailInvitation.created_at.desc()).all()
+    return [
+        {
+            "email": invitation.email,
+            "status": invitation.status,
+            "approved_by": invitation.approved_by,
+            "approved_at": invitation.approved_at.isoformat() if invitation.approved_at else None,
+            "notes": invitation.notes,
+        }
+        for invitation in invitations
+    ]
+
+
+def revoke_personal_email_invitation(email: str, db: Session) -> dict:
+    normalized_email = _normalize_email(email)
+    deleted = (
+        db.query(PersonalEmailInvitation)
+        .filter(PersonalEmailInvitation.email == normalized_email)
+        .delete(synchronize_session=False)
+    )
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Personal email invitation not found")
+    db.commit()
+    return {
+        "message": "Personal email invitation revoked successfully",
+        "email": normalized_email,
+    }
+
+
 def generate_promo_code(db: Session, current_admin: User | None = None, expires_at: datetime | None = None, ip_address: str | None = None, public_ip: str | None = None) -> dict:
->>>>>>> Stashed changes
     code_str = _generate_promo_string()
 
     while db.query(PromoCode).filter(PromoCode.code == code_str).first():
@@ -241,8 +394,6 @@ def get_promo_codes(db: Session) -> list[dict]:
     ]
 
 
-<<<<<<< Updated upstream
-=======
 def delete_promo_code(code_str: str, db: Session, current_admin: User | None = None, ip_address: str | None = None, public_ip: str | None = None) -> dict:
     """Delete a promo code by its code string (both used and unused codes can be deleted)."""
     promo = db.query(PromoCode).filter(PromoCode.code == code_str).first()
@@ -281,7 +432,6 @@ def delete_promo_code(code_str: str, db: Session, current_admin: User | None = N
     }
 
 
->>>>>>> Stashed changes
 def get_users_by_org(db: Session) -> dict:
     organizations = db.query(Organization).order_by(Organization.domain.asc()).all()
     users = (
