@@ -2,12 +2,10 @@ import React, { useState, useEffect } from "react";
 import { generatePromoCode, getPromoCodes } from "../services/api";
 
 function AdminSubscription() {
-<<<<<<< Updated upstream
   const [promoCodes, setPromoCodes] = useState([]);
   const [promoLoading, setPromoLoading] = useState(false);
   const [generatingPromo, setGeneratingPromo] = useState(false);
   const [notification, setNotification] = useState({ text: "", type: "" });
-=======
    const [promoCodes, setPromoCodes] = useState([]);
    const [promoLoading, setPromoLoading] = useState(false);
    const [generatingPromo, setGeneratingPromo] = useState(false);
@@ -22,14 +20,12 @@ function AdminSubscription() {
    const [deletingPromoLoading, setDeletingPromoLoading] = useState(false);
    const [promoExpiry, setPromoExpiry] = useState("");
    const [promoExpiryError, setPromoExpiryError] = useState("");
->>>>>>> Stashed changes
 
   const showNotification = (text, type = "success") => {
     setNotification({ text, type });
     setTimeout(() => setNotification({ text: "", type: "" }), 3000);
   };
 
-<<<<<<< Updated upstream
   useEffect(() => {
     fetchPromoCodes();
   }, []);
@@ -55,7 +51,6 @@ function AdminSubscription() {
     try {
       await generatePromoCode(localStorage.getItem("token"));
       showNotification("Promo code generated successfully");
-=======
    const parseBrowserDate = (value) => {
       if (!value) return null;
       if (value instanceof Date) return value;
@@ -101,7 +96,6 @@ function AdminSubscription() {
    };
 
    useEffect(() => {
->>>>>>> Stashed changes
       fetchPromoCodes();
     } catch (err) {
       showNotification(err.message, "error");
@@ -133,7 +127,6 @@ function AdminSubscription() {
           </div>
         </div>
 
-<<<<<<< Updated upstream
         {/* Pricing Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <div className="bg-surface-container-lowest p-6 rounded-3xl shadow-sm border border-primary/10 relative overflow-hidden group">
@@ -141,7 +134,6 @@ function AdminSubscription() {
               <span className="px-2 py-1 bg-primary/10 text-primary text-[10px] font-bold rounded-lg uppercase">
                 Popular
               </span>
-=======
          setPlans(backendPlans);
       } catch (err) {
          console.warn("Failed to fetch subscription plans from backend:", err.message);

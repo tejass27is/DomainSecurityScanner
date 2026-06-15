@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
 from app.api.auth.schemas import (
-    RegisterRequest, LoginRequest, InviteRequest,
+    RegisterRequest, LoginRequest, LoginOtpVerifyRequest, InviteRequest,
     RedeemPromoRequest, ForgotPasswordOtpRequest,
     ForgotPasswordResetRequest, ResetPasswordRequest,
     AddDomainRequest, VerifyEmailRequest,
@@ -8,8 +8,8 @@ from app.api.auth.schemas import (
 from sqlalchemy.orm import Session
 from app.db.base import get_db
 from app.api.auth.service import (
-    login_user, register, verify_registration, invite_member,
-    get_members, redeem_promo_code, add_domain,
+    login_user, send_login_otp, verify_login_otp, register, verify_registration, invite_member,
+    get_members, delete_member, redeem_promo_code, add_domain,
     send_forgot_password_otp, verify_otp_and_reset_password,
     reset_password_with_old_password,
 )
@@ -32,7 +32,7 @@ async def register_route(req: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Please fill all the fields")
 
     try:
-        return register(email, password, domain, db)
+        return register(email, password, domain, db, invite_token=req.invite_token)
     except HTTPException:
         raise
     except Exception as e:
@@ -67,7 +67,37 @@ async def login(req: LoginRequest, db: Session = Depends(get_db)):
         return login_user(email, password, db)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@router.post('/login/resend-otp')
+async def login_resend_otp(req: LoginRequest, db: Session = Depends(get_db)):
+    await verify_captcha(req.captcha_token)
+
+    if not req.email or not req.password:
+        raise HTTPException(status_code=400, detail="Please fill all the fields")
+
+    try:
+        return send_login_otp(req.email, req.password, db)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@router.post('/login/verify-otp')
+async def login_verify_otp(req: LoginOtpVerifyRequest, db: Session = Depends(get_db)):
+    await verify_captcha(req.captcha_token)
+
+    if not req.email or not req.password or not req.otp:
+        raise HTTPException(status_code=400, detail="Please fill all the fields")
+
+    try:
+        return verify_login_otp(req.email, req.password, req.otp, db)
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.post('/forgot-password')
@@ -134,6 +164,20 @@ def list_members(
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@router.delete('/members/{user_id}')
+def delete_member_route(
+    user_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_owner)
+):
+    try:
+        return delete_member(current_user, user_id, db)
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @router.get('/profile')

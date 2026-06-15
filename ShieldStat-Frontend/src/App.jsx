@@ -1,24 +1,25 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Routes, Route } from "react-router-dom";
 
 import PublicLayout from "./layouts/PublicLayout";
 import DashboardLayout from "./layouts/DashboardLayout";
 import AdminLayout from "./layouts/AdminLayout";
 
-import Landing from "./pages/LandingPage";
-import Auth from "./pages/AuthPage";
-import VerifyEmail from "./pages/VerifyEmailPage";
-import Scan from "./pages/AuditDomain";
-import MalwareScan from "./pages/MalwareScan";
-import ScanDashboard from "./pages/ScanDashboard";
-import ScanDetails from "./pages/ScanDetails";
-import ScanHistory from "./pages/ScanHistory";
-import AdminUsers from "./pages/AdminUsers";
-import AdminSubscription from "./pages/AdminSubscription";
-import Assessment from "./pages/Assessment";
-import MalwareScanHistory from "./pages/MalwareScanHistory";
-import MalwareDashboard from "./pages/MalwareDashboard";
-import Profile from "./pages/Profile";
+const Landing = lazy(() => import("./pages/LandingPage"));
+const Auth = lazy(() => import("./pages/AuthPage"));
+const VerifyEmail = lazy(() => import("./pages/VerifyEmailPage"));
+const Scan = lazy(() => import("./pages/AuditDomain"));
+const MalwareScan = lazy(() => import("./pages/MalwareScan"));
+const ScanDashboard = lazy(() => import("./pages/ScanDashboard"));
+const ScanDetails = lazy(() => import("./pages/ScanDetails"));
+const ScanHistory = lazy(() => import("./pages/ScanHistory"));
+const AdminUsers = lazy(() => import("./pages/AdminUsers"));
+const PersonalInvitations = lazy(() => import("./pages/PersonalInvitations"));
+const AdminSubscription = lazy(() => import("./pages/AdminSubscription"));
+const Assessment = lazy(() => import("./pages/Assessment"));
+const MalwareScanHistory = lazy(() => import("./pages/MalwareScanHistory"));
+const MalwareDashboard = lazy(() => import("./pages/MalwareDashboard"));
+const Profile = lazy(() => import("./pages/Profile"));
 
 function App() {
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -42,7 +43,14 @@ function App() {
   }, [isDarkMode]);
 
   return (
-    <Routes>
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-600 dark:bg-slate-950 dark:text-slate-300">
+          Loading…
+        </div>
+      }
+    >
+      <Routes>
       <Route
         path="/"
         element={
@@ -89,10 +97,12 @@ function App() {
         }
       >
         <Route index element={<AdminUsers />} />
+        <Route path="personal-invitations" element={<PersonalInvitations />} />
         <Route path="subscription" element={<AdminSubscription />} />
         <Route path="profile" element={<Profile />} />
       </Route>
-    </Routes>
+      </Routes>
+    </Suspense>
   );
 }
 

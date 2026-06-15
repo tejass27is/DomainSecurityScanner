@@ -95,6 +95,66 @@ def send_invite_email(to_email: str, plain_password: str, sender_email: str):
     return True
 
 
+def send_personal_email_invitation_email(to_email: str, invite_link: str, invited_by_email: str):
+    if not FRONTEND_URL:
+        raise ValueError("FRONTEND_URL must be set to send personal email invitation emails.")
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #f4f6f9; padding: 40px 0; }}
+            .container {{ max-width: 560px; margin: 0 auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); overflow: hidden; }}
+            .header {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 32px; text-align: center; }}
+            .header h1 {{ color: #fff; margin: 0; font-size: 22px; }}
+            .body {{ padding: 32px; color: #333; line-height: 1.6; }}
+            .btn {{ display: inline-block; background: linear-gradient(135deg, #0f3460, #533483); color: #fff !important; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-weight: 600; margin: 20px 0; }}
+            .footer {{ padding: 20px 32px; background: #f8f9fa; color: #888; font-size: 12px; text-align: center; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header"><h1>Domain Scanner — Personal Email Access</h1></div>
+            <div class="body">
+                <p>Hello,</p>
+                <p><strong>{invited_by_email}</strong> has approved personal-email access for you on Domain Scanner.</p>
+                <p>Use the button below to continue your signup with the approved invitation token.</p>
+                <p style="text-align: center;"><a href="{invite_link}" class="btn">Continue signup</a></p>
+                <p style="font-size: 13px; color: #888;">If the button does not work, copy and paste this link into your browser:<br/><a href="{invite_link}" style="color: #0f3460; word-break: break-all;">{invite_link}</a></p>
+            </div>
+            <div class="footer">&copy; Domain Scanner</div>
+        </div>
+    </body>
+    </html>
+    """
+
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Your approved Domain Scanner signup invitation"
+    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
+    msg["To"] = to_email
+
+    part1 = MIMEText(f"Your personal-email signup invitation is ready. Continue here: {invite_link}", "plain")
+    part2 = MIMEText(html_content, "html")
+    msg.attach(part1)
+    msg.attach(part2)
+
+    server = None
+    try:
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(SMTP_USER, to_email, msg.as_string())
+    finally:
+        if server:
+            server.quit()
+
+    return True
+
+
 def send_new_admin_credentials_email(to_email: str, plain_password: str, invited_by_email: str):
     if not FRONTEND_URL:
         raise ValueError("FRONTEND_URL must be set to send admin welcome emails.")
@@ -241,6 +301,44 @@ def send_registration_verification_email(to_email: str, verify_url: str):
 
     plain = f"Verify your Domain Scanner account by opening this link: {verify_url}"
     msg.attach(MIMEText(plain, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+
+    server = None
+    try:
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(SMTP_USER, to_email, msg.as_string())
+    finally:
+        if server:
+            server.quit()
+
+    return True
+
+
+def send_login_otp_email(to_email: str, otp: str):
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Your Domain Scanner login OTP"
+    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
+    msg["To"] = to_email
+
+    plain_text = f"Your Domain Scanner login OTP is {otp}. It expires in 10 minutes."
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="font-family: Arial, sans-serif; color: #222;">
+        <p>Your one-time login password for Domain Scanner is:</p>
+        <p style="font-size: 28px; font-weight: 700; letter-spacing: 2px;">{otp}</p>
+        <p>This OTP expires in 10 minutes.</p>
+        <p>If you did not try to sign in, you can ignore this email.</p>
+    </body>
+    </html>
+    """
+
+    msg.attach(MIMEText(plain_text, "plain"))
     msg.attach(MIMEText(html_content, "html"))
 
     server = None

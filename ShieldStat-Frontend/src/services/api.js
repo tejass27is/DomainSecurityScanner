@@ -34,14 +34,15 @@ export function loginUser(email, password, captcha_token) {
   });
 }
 
-export function registerUser(email, password, domain, captcha_token) {
+export function registerUser(email, password, domain, captcha_token, invite_token) {
   return request("/auth/register", {
     method: "POST",
     body: {
       email,
       password,
       domain,
-      ...(captcha_token ? { captcha_token } : {})
+      ...(invite_token ? { invite_token } : {}),
+      ...(captcha_token ? { captcha_token } : {}),
     },
   });
 }
@@ -91,6 +92,32 @@ export function inviteMember(email, token) {
     body: { email },
     token,
   });
+}
+
+export function deleteMember(userId, token) {
+   return request(`/auth/members/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+      token,
+   });
+}
+
+export function approvePersonalEmail(email, notes, token) {
+   return request("/admin/personal-email/approve", {
+      method: "POST",
+      body: { email, notes },
+      token,
+   });
+}
+
+export function listPersonalEmailInvites(token) {
+   return request("/admin/personal-email", { token });
+}
+
+export function revokePersonalEmail(email, token) {
+   return request(`/admin/personal-email/${encodeURIComponent(email)}`, {
+      method: "DELETE",
+      token,
+   });
 }
 
 export function redeemPromo(code, token) {
@@ -154,6 +181,7 @@ export function generatePromoCode(token) {
   return request("/admin/generate-promo", {
     method: "POST",
     token,
+    publicIp,
   });
 =======
 export async function generatePromoCode(token, expires_at = null) {

@@ -5,6 +5,7 @@ import {
   getProfile,
   getMembers,
   inviteMember,
+  deleteMember,
   getScore,
   redeemPromo,
 } from "../services/api";
@@ -60,6 +61,7 @@ function Profile() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteLoading, setInviteLoading] = useState(false);
   const [showInviteForm, setShowInviteForm] = useState(false);
+  const [deletingMemberId, setDeletingMemberId] = useState(null);
 
   // ─── Promo / domain state ──────────────────────────────────────────────────
   const [showPromoForm, setShowPromoForm] = useState(false);
@@ -183,6 +185,12 @@ function Profile() {
   }, [profile, token]);
 
   // ─── Invite handler ────────────────────────────────────────────────────────
+  const refreshMembers = async () => {
+    if (!token) return;
+    const membersList = await getMembers(token);
+    setMembers(membersList);
+  };
+
   const handleInvite = async (e) => {
     e.preventDefault();
 
@@ -201,8 +209,7 @@ function Profile() {
       setInviteEmail("");
       setShowInviteForm(false);
 
-      const membersList = await getMembers(token);
-      setMembers(membersList);
+      await refreshMembers();
     } catch (err) {
       setToast({ text: err.message, type: "error" });
     } finally {
@@ -210,6 +217,24 @@ function Profile() {
     }
   };
 
+
+  const handleDeleteMember = async (member) => {
+    if (!member?.user_id) return;
+
+    const confirmed = window.confirm(`Delete ${member.email}? This will remove the invited member completely so you can invite them again later.`);
+    if (!confirmed) return;
+
+    setDeletingMemberId(member.user_id);
+    try {
+      const data = await deleteMember(member.user_id, token);
+      setToast({ text: data.message || "Member deleted successfully", type: "success" });
+      await refreshMembers();
+    } catch (err) {
+      setToast({ text: err.message || "Failed to delete member", type: "error" });
+    } finally {
+      setDeletingMemberId(null);
+    }
+  };
 
   const refreshProfile = async () => {
     const data = await getProfile(token);
@@ -538,15 +563,27 @@ function Profile() {
                         </span>
                       </div>
                     </div>
-                    {member.is_blacklisted ? (
-                      <span className="rounded bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700">
-                        Blocked
-                      </span>
-                    ) : (
-                      <span className="rounded bg-indigo-100 px-2 py-0.5 text-[10px] font-bold uppercase text-indigo-700">
-                        Active
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {isOwner && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMember(member)}
+                          disabled={deletingMemberId === member.user_id}
+                          className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {deletingMemberId === member.user_id ? "Deleting..." : "Delete"}
+                        </button>
+                      )}
+                      {member.is_blacklisted ? (
+                        <span className="rounded bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700">
+                          Blocked
+                        </span>
+                      ) : (
+                        <span className="rounded bg-indigo-100 px-2 py-0.5 text-[10px] font-bold uppercase text-indigo-700">
+                          Active
+                        </span>
+                      )}
+                    </div>
                   </div>
                 ))
               )}

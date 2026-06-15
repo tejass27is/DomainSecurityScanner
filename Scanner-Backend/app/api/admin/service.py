@@ -1,3 +1,4 @@
+import os
 import random
 import secrets
 import string
@@ -7,8 +8,19 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.auth.service import hashPassword
-from app.db.models import Blacklist, Organization, PromoCode, ScanScoreHistory, ScanSummary, User
-from app.utils.email import send_new_admin_credentials_email
+from app.db.models import (
+    AuditLog,
+    Blacklist,
+    Organization,
+    PersonalEmailInvitation,
+    PromoCode,
+    ScanScoreHistory,
+    ScanSummary,
+    SecurityAlert,
+    SubscriptionPlan,
+    User,
+)
+from app.utils.email import send_new_admin_credentials_email, send_personal_email_invitation_email
 
 
 def _generate_promo_string(length: int = 10) -> str:
