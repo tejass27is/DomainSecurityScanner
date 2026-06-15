@@ -14,15 +14,13 @@ from app.api.fix.routes import router as fix_router
 from app.api.admin.routes import router as admin_router
 from app.api.malware.routes import router as malware_router
 from app.db.base import SessionLocal
-<<<<<<< Updated upstream
-from app.api.fix.routes import router as fix_router 
-=======
+from app.api.fix.routes import router as fix_router
+
 from app.api.admin.service import seed_default_subscription_plans
 from app.api.admin.service import revoke_expired_promos
 import threading
 import time
 import logging
->>>>>>> Stashed changes
 
 app = FastAPI()
 
