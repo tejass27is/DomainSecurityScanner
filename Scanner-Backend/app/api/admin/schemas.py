@@ -8,8 +8,6 @@ class BlacklistEmailRequest(BaseModel):
 
 class CreateAdminRequest(BaseModel):
     email: EmailStr
-<<<<<<< Updated upstream
-=======
 
 
 class PromoCreate(BaseModel):
@@ -49,4 +47,3 @@ class SubscriptionPlanOut(BaseModel):
 
     class Config:
         orm_mode = True
->>>>>>> Stashed changes
