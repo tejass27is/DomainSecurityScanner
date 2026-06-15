@@ -20,6 +20,14 @@ def _normalize_email(email: str) -> str:
     return email.lower().strip()
 
 
+def _format_datetime(value: datetime | None) -> str | None:
+    if not value:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
 def _serialize_user(user: User, blocked_emails: set[str]) -> dict:
     return {
         "user_id": user.user_id,
@@ -31,16 +39,76 @@ def _serialize_user(user: User, blocked_emails: set[str]) -> dict:
     }
 
 
+<<<<<<< Updated upstream
 def generate_promo_code(db: Session) -> dict:
+=======
+def _record_audit_log(
+    db: Session,
+    admin: User,
+    action: str,
+    target_type: str,
+    target_id: str,
+    details: dict | None = None,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> None:
+    db.add(
+        AuditLog(
+            admin_id=admin.user_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            details=details or {},
+            ip_address=ip_address or public_ip,
+            public_ip=public_ip or ip_address,
+        )
+    )
+    db.commit()
+
+
+def _maybe_create_alert(db: Session, severity: str, message: str, details: dict | None = None) -> None:
+    db.add(SecurityAlert(severity=severity, message=message, details=details or {}))
+    db.commit()
+
+
+def _detect_mass_blocking(db: Session, admin: User) -> None:
+    window_start = datetime.now(timezone.utc) - timedelta(minutes=5)
+    recent_blocks = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "USER_BLOCKED")
+        .filter(AuditLog.created_at >= window_start)
+        .count()
+    )
+    if recent_blocks >= 2:
+        _maybe_create_alert(
+            db,
+            severity="high",
+            message="Mass user blocking detected",
+            details={"recent_blocks": recent_blocks, "triggered_by": admin.email},
+        )
+
+
+def generate_promo_code(db: Session, current_admin: User | None = None, expires_at: datetime | None = None, ip_address: str | None = None, public_ip: str | None = None) -> dict:
+>>>>>>> Stashed changes
     code_str = _generate_promo_string()
 
     while db.query(PromoCode).filter(PromoCode.code == code_str).first():
         code_str = _generate_promo_string()
 
+    # require and validate expires_at
+    now = datetime.now(timezone.utc)
+    if not expires_at:
+        raise HTTPException(status_code=400, detail="expires_at is required")
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= now:
+        raise HTTPException(status_code=400, detail="expires_at must be a future datetime")
+
     promo = PromoCode(
         code_id=str(uuid.uuid4()),
         code=code_str,
         is_used=False,
+        expires_at=expires_at,
     )
 
     db.add(promo)
@@ -51,6 +119,66 @@ def generate_promo_code(db: Session) -> dict:
         "message": "Promo code generated successfully",
         "code": promo.code,
     }
+
+
+def revoke_expired_promos(db: Session) -> int:
+    """Find promo codes that have expired, were used, and haven't been revoked yet.
+    Decrement the org's max_domains accordingly and mark promo.revoked=True.
+    Returns number of promos revoked.
+    """
+    now = datetime.now(timezone.utc)
+    expired_promos = (
+        db.query(PromoCode)
+        .filter(PromoCode.expires_at != None)
+        .filter(PromoCode.expires_at < now)
+        .filter(PromoCode.is_used.is_(True))
+        .filter(PromoCode.revoked.is_(False))
+        .all()
+    )
+
+    revoked_count = 0
+    # Process each promo individually to avoid session-cache issues and ensure commits
+    for promo in expired_promos:
+        try:
+            # double-check expires_at in Python (make timezone-aware if needed)
+            expires_at = getattr(promo, 'expires_at', None)
+            if not expires_at:
+                # nothing to do
+                promo.revoked = True
+                db.add(promo)
+                db.commit()
+                revoked_count += 1
+                continue
+
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+            if expires_at >= now:
+                # not expired according to python-side check
+                continue
+
+            grant = int(getattr(promo, 'grant_amount', 1) or 1)
+
+            if promo.used_by:
+                user = db.query(User).filter(User.user_id == promo.used_by).first()
+                if user and user.org_id:
+                    org = db.query(Organization).filter(Organization.org_id == user.org_id).first()
+                    if org:
+                        current_domains = len(org.domain or [])
+                        # ensure max_domains doesn't go below current domains or 1
+                        org.max_domains = max(1, org.max_domains - grant, current_domains)
+                        db.add(org)
+
+            promo.revoked = True
+            db.add(promo)
+            db.commit()
+            revoked_count += 1
+        except Exception:
+            # on error, rollback and continue with next promo
+            db.rollback()
+            continue
+
+    return revoked_count
 
 
 def get_promo_codes(db: Session) -> list[dict]:
@@ -84,7 +212,7 @@ def get_promo_codes(db: Session) -> list[dict]:
         {
             "code": code.code,
             "is_used": code.is_used,
-            "used_at": code.used_at.isoformat() if code.used_at else None,
+            "used_at": _format_datetime(code.used_at),
             "used_by": (
                 owners_by_id.get(orgs_by_id.get(user.org_id).user_id).email
                 if code.used_by
@@ -93,11 +221,55 @@ def get_promo_codes(db: Session) -> list[dict]:
                 and orgs_by_id[user.org_id].user_id in owners_by_id
                 else None
             ),
+            "expires_at": _format_datetime(getattr(code, 'expires_at', None)),
+            "revoked": bool(getattr(code, 'revoked', False)),
+            "grant_amount": int(getattr(code, 'grant_amount', 1) or 1),
         }
         for code in codes
     ]
 
 
+<<<<<<< Updated upstream
+=======
+def delete_promo_code(code_str: str, db: Session, current_admin: User | None = None, ip_address: str | None = None, public_ip: str | None = None) -> dict:
+    """Delete a promo code by its code string (both used and unused codes can be deleted)."""
+    promo = db.query(PromoCode).filter(PromoCode.code == code_str).first()
+
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promo code not found")
+
+    if promo.is_used and promo.used_by:
+        user = db.query(User).filter(User.user_id == promo.used_by).first()
+        if user and user.org_id:
+            org = db.query(Organization).filter(Organization.org_id == user.org_id).first()
+            if org:
+                current_domains = len(org.domain or [])
+                grant = int(getattr(promo, 'grant_amount', 1) or 1)
+                org.max_domains = max(1, org.max_domains - grant, current_domains)
+
+    # Delete the promo code from database
+    db.delete(promo)
+    db.commit()
+
+    if current_admin:
+        _record_audit_log(
+            db,
+            admin=current_admin,
+            action="PROMO_CODE_DELETED",
+            target_type="promo_code",
+            target_id=promo.code,
+            details={"code": promo.code},
+            ip_address=ip_address,
+            public_ip=public_ip,
+        )
+
+    return {
+        "message": "Promo code deleted successfully",
+        "code": promo.code,
+    }
+
+
+>>>>>>> Stashed changes
 def get_users_by_org(db: Session) -> dict:
     organizations = db.query(Organization).order_by(Organization.domain.asc()).all()
     users = (

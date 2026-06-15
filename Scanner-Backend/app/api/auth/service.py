@@ -433,6 +433,14 @@ def redeem_promo_code(user_id: str, code: str, db: Session):
     
     if not promo:
         raise HTTPException(status_code=404, detail="Promo code not found")
+    # check expiry
+    now_utc = datetime.now(timezone.utc)
+    if getattr(promo, 'expires_at', None):
+        expires_at = promo.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < now_utc:
+            raise HTTPException(status_code=400, detail="Promo code has expired")
         
     if promo.is_used:
         raise HTTPException(status_code=400, detail="Promo code already used")
@@ -445,7 +453,9 @@ def redeem_promo_code(user_id: str, code: str, db: Session):
     promo.used_at = datetime.now(timezone.utc)
     promo.used_by = user_id
     
-    org.max_domains += 1
+    # increase org.max_domains by promo.grant_amount (default 1)
+    grant = int(getattr(promo, 'grant_amount', 1) or 1)
+    org.max_domains += grant
     
     db.commit()
     return {

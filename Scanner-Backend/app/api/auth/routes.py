@@ -13,6 +13,7 @@ from app.api.auth.service import (
     send_forgot_password_otp, verify_otp_and_reset_password,
     reset_password_with_old_password,
 )
+from app.api.admin.service import revoke_expired_promos
 from app.core.middleware import require_owner, protect
 from app.db.models import User, Organization
 from app.utils.captcha import verify_captcha
@@ -140,6 +141,13 @@ def get_profile(
     current_user: User = Depends(protect),
     db: Session = Depends(get_db)
 ):
+    # ensure expired promos are revoked before returning profile limits
+    try:
+        revoke_expired_promos(db)
+    except Exception:
+        # non-fatal: continue even if revoker fails
+        pass
+
     org = db.query(Organization).filter(Organization.org_id == current_user.org_id).first()
     return {
         "user_id": current_user.user_id,
@@ -157,6 +165,11 @@ def add_domain_route(
     current_user: User = Depends(protect)
 ):
     try:
+        # Ensure expired promos are revoked before checking limits
+        try:
+            revoke_expired_promos(db)
+        except Exception:
+            pass
         return add_domain(current_user.user_id, req.domain, db)
     except HTTPException:
         raise

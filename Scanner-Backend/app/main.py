@@ -14,7 +14,15 @@ from app.api.fix.routes import router as fix_router
 from app.api.admin.routes import router as admin_router
 from app.api.malware.routes import router as malware_router
 from app.db.base import SessionLocal
+<<<<<<< Updated upstream
 from app.api.fix.routes import router as fix_router 
+=======
+from app.api.admin.service import seed_default_subscription_plans
+from app.api.admin.service import revoke_expired_promos
+import threading
+import time
+import logging
+>>>>>>> Stashed changes
 
 app = FastAPI()
 
@@ -35,6 +43,25 @@ async def startup_event():
             status_code=500,
             detail=f"env details for admin are not set: {e}"
         )
+
+    # Start background thread to revoke expired promo grants every minute
+    def _revoker_loop():
+        log = logging.getLogger("promo_revoker")
+        while True:
+            try:
+                db_session = SessionLocal()
+                try:
+                    revoked = revoke_expired_promos(db_session)
+                    if revoked:
+                        log.info(f"Revoked {revoked} expired promo(s)")
+                finally:
+                    db_session.close()
+            except Exception as e:
+                log.exception("Error running promo revoker loop: %s", e)
+            time.sleep(60)
+
+    t = threading.Thread(target=_revoker_loop, daemon=True)
+    t.start()
 
 # CORS
 app.add_middleware(

@@ -149,11 +149,32 @@ export function getWebSocketUrl(orgId) {
 
 // ─── Admin ────────────────────────────────────────────────────────────────────
 
+<<<<<<< Updated upstream
 export function generatePromoCode(token) {
   return request("/admin/generate-promo", {
     method: "POST",
     token,
   });
+=======
+export async function generatePromoCode(token, expires_at = null) {
+   const publicIp = await getPublicIp();
+   // Convert local 'datetime-local' value to an ISO UTC string so backend receives timezone-aware datetime
+   const payload = {};
+   if (expires_at) {
+      try {
+         payload.expires_at = new Date(expires_at).toISOString();
+      } catch (e) {
+         payload.expires_at = expires_at;
+      }
+   }
+
+   return request("/admin/generate-promo", {
+      method: "POST",
+      token,
+      publicIp,
+      body: payload,
+   });
+>>>>>>> Stashed changes
 }
 
 export function getPromoCodes(token) {
@@ -256,6 +277,7 @@ export function getMalwareScanHistory(domain, token, signal) {
 }
 
 export function abortMalwareScan(domain, token) {
+<<<<<<< Updated upstream
   return request("/malware/abort", {
     method: "POST",
     body: { domain },
@@ -292,3 +314,100 @@ export function getFixStatus(scanId, token) {
 }
 
 
+=======
+   return request("/malware/abort", {
+      method: "POST",
+      body: { domain },
+      token,
+   });
+}
+
+export function getAssessment(token) {
+   return request("/assessment/", { token });
+}
+
+export function saveAssessment(body, token) {
+   return request("/assessment/submit", {
+      method: "POST",
+      body,
+      token,
+   });
+}
+
+
+// ─── Fix (port verification queue) ───────────────────────────────────────────
+
+export function submitFix(data, token) {
+   return request("/fix/port", {
+      method: "POST",
+      body: data,
+      token,
+   });
+}
+
+export function getFixStatus(scanId, token) {
+   return request(`/fix/status/${scanId}`, { token });
+}
+
+
+
+export function verifyHeaderFix({ orgId, domain, subdomain, fixType, userId }) {
+   return request("/fix/verify-header", {
+      method: "POST",
+      body: {
+         org_id: orgId,
+         domain,
+         subdomain,
+         fix_type: fixType,
+         user_id: userId ?? null,
+      },
+   });
+}
+
+export function verifyTlsFix({ orgId, domain, subdomain, fixType, userId }) {
+   return request("/fix/verify-tls", {
+      method: "POST",
+      body: {
+         org_id: orgId,
+         domain,
+         subdomain,
+         fix_type: fixType,
+         user_id: userId ?? null,
+      },
+   });
+}
+
+export async function getFixRecommendation({ fix_type, technologies = [], tls_version = null, subdomain = null }) {
+   const res = await fetch(`${API_BASE}/fix/recommendation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fix_type, technologies, tls_version, subdomain }),
+   });
+
+   if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || `Failed to load fix guide (${res.status})`);
+   }
+
+   return res.json();
+}
+
+export function saveResolvedFinding({ orgId, domain, rule, subdomain, fixType, category }, token) {
+   return request("/fix/resolved", {
+      method: "POST",
+      body: {
+         org_id: orgId,
+         domain,
+         rule,
+         subdomain,
+         fix_type: fixType,
+         category,
+      },
+      token,
+   });
+}
+
+export function getResolvedFindings(domain, token) {
+   return request(`/fix/resolved/${encodeURIComponent(domain)}`, { token });
+}
+>>>>>>> Stashed changes
