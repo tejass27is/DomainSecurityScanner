@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.auth.service import hashPassword, verifyPassword
 from app.db.models import (
@@ -21,6 +22,12 @@ from app.db.models import (
     SecurityAlert,
     SubscriptionPlan,
     User,
+    ActiveScan,
+    MalwareScanResult,
+    PortFixRequest,
+    HeaderFixRequest,
+    TlsFixRequest,
+    ResolvedFinding,
 )
 from app.utils.email import send_new_admin_credentials_email, send_personal_email_invitation_email
 
@@ -203,6 +210,22 @@ def get_promo_codes(db: Session) -> list[dict]:
     ]
 
 
+def _cleanup_domain_data(db: Session, org_id: str, domains_to_remove: list[str]) -> None:
+    """Delete all scan-related data for specified domains."""
+    if not domains_to_remove:
+        return
+
+    # Delete from all tables that reference domain
+    db.query(PortFixRequest).filter(PortFixRequest.domain.in_(domains_to_remove)).delete(synchronize_session=False)
+    db.query(HeaderFixRequest).filter(HeaderFixRequest.domain.in_(domains_to_remove)).delete(synchronize_session=False)
+    db.query(TlsFixRequest).filter(TlsFixRequest.domain.in_(domains_to_remove)).delete(synchronize_session=False)
+    db.query(ResolvedFinding).filter(ResolvedFinding.domain.in_(domains_to_remove)).delete(synchronize_session=False)
+    db.query(MalwareScanResult).filter(MalwareScanResult.domain.in_(domains_to_remove)).delete(synchronize_session=False)
+    db.query(ScanScoreHistory).filter(ScanScoreHistory.domain.in_(domains_to_remove)).delete(synchronize_session=False)
+    db.query(ActiveScan).filter(ActiveScan.domain.in_(domains_to_remove)).delete(synchronize_session=False)
+    db.query(ScanSummary).filter(ScanSummary.domain.in_(domains_to_remove)).delete(synchronize_session=False)
+
+
 def delete_promo_code(code_str: str, db: Session, current_admin: User | None = None, ip_address: str | None = None, public_ip: str | None = None) -> dict:
     """Delete a promo code by its code string (both used and unused codes can be deleted)."""
     promo = db.query(PromoCode).filter(PromoCode.code == code_str).first()
@@ -210,13 +233,25 @@ def delete_promo_code(code_str: str, db: Session, current_admin: User | None = N
     if not promo:
         raise HTTPException(status_code=404, detail="Promo code not found")
 
+    removed_domains = []
+    org_id = None
     if promo.is_used and promo.used_by:
         user = db.query(User).filter(User.user_id == promo.used_by).first()
         if user and user.org_id:
             org = db.query(Organization).filter(Organization.org_id == user.org_id).first()
             if org:
-                current_domains = len(org.domain or [])
-                org.max_domains = max(1, org.max_domains - 1, current_domains)
+                org_id = org.org_id
+                if not promo.privilege_revoked:
+                    org.max_domains = max(1, org.max_domains - 1)
+
+                if org.domain and len(org.domain) > org.max_domains:
+                    removed_domains = org.domain[org.max_domains:]
+                    org.domain = org.domain[:org.max_domains]
+                    flag_modified(org, "domain")
+
+    # Clean up all scan data for removed domains
+    if removed_domains and org_id:
+        _cleanup_domain_data(db, org_id, removed_domains)
 
     db.delete(promo)
     db.commit()
@@ -253,17 +288,28 @@ def disable_promo_code(code_str: str, db: Session, current_admin: User | None = 
         raise HTTPException(status_code=400, detail="Promo code is already disabled")
 
     # Revoke the privilege and decrement max_domains for the organization
+    removed_domains = []
+    org_id = None
     if promo.used_by:
         user = db.query(User).filter(User.user_id == promo.used_by).first()
         if user and user.org_id:
             org = db.query(Organization).filter(Organization.org_id == user.org_id).first()
             if org:
-                current_domains = len(org.domain or [])
-                org.max_domains = max(1, org.max_domains - 1, current_domains)
+                org_id = org.org_id
+                org.max_domains = max(1, org.max_domains - 1)
+
+                if org.domain and len(org.domain) > org.max_domains:
+                    removed_domains = org.domain[org.max_domains:]
+                    org.domain = org.domain[:org.max_domains]
+                    flag_modified(org, "domain")
 
     # Mark the promo code as privilege revoked
     promo.privilege_revoked = True
     db.commit()
+
+    # Clean up all scan data for removed domains
+    if removed_domains and org_id:
+        _cleanup_domain_data(db, org_id, removed_domains)
 
     if current_admin:
         _record_audit_log(
@@ -575,7 +621,7 @@ def create_personal_email_invitation(email: str, current_admin: User, db: Sessio
 def list_personal_email_invitations(db: Session) -> list[dict]:
     invitations = db.query(PersonalEmailInvitation).order_by(PersonalEmailInvitation.created_at.desc()).all()
     now = datetime.now(timezone.utc)
-    
+
     return [
         {
             "invitation_id": item.invitation_id,
@@ -602,12 +648,12 @@ def _calculate_invitation_status(invitation: PersonalEmailInvitation, db: Sessio
     # Check if expired
     if invitation.expires_at and now > invitation.expires_at:
         return "expired"
-    
+
     # Check if user has signed up with this email
     user = db.query(User).filter(User.email == invitation.email).first()
     if user:
         return "accepted"
-    
+
     # Still pending
     return "pending"
 

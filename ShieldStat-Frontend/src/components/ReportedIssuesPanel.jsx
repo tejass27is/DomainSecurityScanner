@@ -22,43 +22,45 @@ const STATUS_CONFIG = {
 
 const SEVERITY_BADGE = {
   critical: "bg-red-600 text-white",
-  high:     "bg-red-500 text-white",
-  medium:   "bg-amber-500 text-white",
-  low:      "bg-blue-500 text-white",
-  info:     "bg-slate-500 text-white",
+  high: "bg-red-500 text-white",
+  medium: "bg-amber-500 text-white",
+  low: "bg-blue-500 text-white",
+  info: "bg-slate-500 text-white",
 };
 
 async function fetchReports(status) {
+  const token = localStorage.getItem("token");
   const url = status
     ? `${API_BASE}/report-issue?status=${status}`
     : `${API_BASE}/report-issue`;
   const res = await fetch(url, {
-    credentials: "include",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
   });
   if (!res.ok) throw new Error("Failed to fetch reports");
   return res.json();
 }
-
 async function updateReport(id, status, adminNote) {
+  const token = localStorage.getItem("token");
   const res = await fetch(`${API_BASE}/report-issue/${id}`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
     },
-    credentials: "include",
     body: JSON.stringify({ status, admin_note: adminNote }),
   });
   if (!res.ok) throw new Error("Failed to update report");
   return res.json();
 }
-
 // ─── Issue detail drawer ──────────────────────────────────────────────────────
 
 function IssueDrawer({ issue, onClose, onUpdate }) {
-  const [status, setStatus]     = useState(issue.status);
-  const [note, setNote]         = useState(issue.admin_note || "");
-  const [saving, setSaving]     = useState(false);
-  const [saved, setSaved]       = useState(false);
+  const [status, setStatus] = useState(issue.status);
+  const [note, setNote] = useState(issue.admin_note || "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const handleSave = async () => {
     setSaving(true);
@@ -85,7 +87,7 @@ function IssueDrawer({ issue, onClose, onUpdate }) {
       />
 
       {/* Drawer */}
-      <div className="relative z-10 w-full max-w-lg h-full bg-white shadow-2xl flex flex-col overflow-hidden">
+      <div className="relative z-10 w-full max-w-full sm:max-w-lg h-full bg-white shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-start gap-3 border-b border-slate-200 px-6 py-5">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500">
@@ -118,10 +120,10 @@ function IssueDrawer({ issue, onClose, onUpdate }) {
           {/* Meta grid */}
           <div className="grid grid-cols-2 gap-3">
             {[
-              { label: "Domain",    value: issue.domain,    icon: "language" },
+              { label: "Domain", value: issue.domain, icon: "language" },
               { label: "Subdomain", value: issue.subdomain || "—", icon: "subdomain" },
-              { label: "Severity",  value: issue.severity || "—",  icon: "crisis_alert" },
-              { label: "Reported",  value: new Date(issue.reported_at).toLocaleString(), icon: "schedule" },
+              { label: "Severity", value: issue.severity || "—", icon: "crisis_alert" },
+              { label: "Reported", value: new Date(issue.reported_at).toLocaleString(), icon: "schedule" },
             ].map(({ label, value, icon }) => (
               <div
                 key={label}
@@ -171,11 +173,10 @@ function IssueDrawer({ issue, onClose, onUpdate }) {
                   key={key}
                   type="button"
                   onClick={() => setStatus(key)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
-                    status === key
-                      ? cfg.badge + " shadow-sm"
-                      : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
-                  }`}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${status === key
+                    ? cfg.badge + " shadow-sm"
+                    : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
+                    }`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
                   {cfg.label}
@@ -199,7 +200,7 @@ function IssueDrawer({ issue, onClose, onUpdate }) {
         </div>
 
         {/* Footer */}
-        <div className="border-t border-slate-200 px-6 py-4 flex justify-end gap-2">
+        <div className="border-t border-slate-200 px-6 py-4 flex flex-col sm:flex-row sm:justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
@@ -227,11 +228,11 @@ function IssueDrawer({ issue, onClose, onUpdate }) {
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
 export default function ReportedIssuesPanel() {
-  const [issues, setIssues]       = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState(null);
+  const [issues, setIssues] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [filterStatus, setFilter] = useState("");
-  const [selected, setSelected]   = useState(null);
+  const [selected, setSelected] = useState(null);
 
   const load = () => {
     setLoading(true);
@@ -252,7 +253,7 @@ export default function ReportedIssuesPanel() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">
             Reported Issues
@@ -263,28 +264,26 @@ export default function ReportedIssuesPanel() {
         </div>
 
         {/* Status filter */}
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {[
-            { key: "",          label: "All",       count: issues.length },
-            { key: "open",      label: "Open",      count: counts.open || 0 },
-            { key: "reviewed",  label: "Reviewed",  count: counts.reviewed || 0 },
+            { key: "", label: "All", count: issues.length },
+            { key: "open", label: "Open", count: counts.open || 0 },
+            { key: "reviewed", label: "Reviewed", count: counts.reviewed || 0 },
             { key: "dismissed", label: "Dismissed", count: counts.dismissed || 0 },
           ].map(({ key, label, count }) => (
             <button
               key={key}
               type="button"
               onClick={() => setFilter(key)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold border transition-all ${
-                filterStatus === key
-                  ? "bg-indigo-600 text-white border-indigo-600"
-                  : "bg-white text-slate-600 border-slate-200 hover:border-indigo-300"
-              }`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold border transition-all ${filterStatus === key
+                ? "bg-indigo-600 text-white border-indigo-600"
+                : "bg-white text-slate-600 border-slate-200 hover:border-indigo-300"
+                }`}
             >
               {label}
               <span
-                className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
-                  filterStatus === key ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"
-                }`}
+                className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${filterStatus === key ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"
+                  }`}
               >
                 {count}
               </span>
@@ -320,77 +319,134 @@ export default function ReportedIssuesPanel() {
         )}
 
         {!loading && !error && issues.length > 0 && (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50">
-                {["Ref ID", "Domain", "Rule", "Issue Type", "Severity", "Status", "Reported", ""].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-slate-500"
-                    >
-                      {h}
-                    </th>
-                  ),
-                )}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
+          <>
+            <div className="space-y-3 px-4 py-4 sm:hidden">
               {issues.map((issue) => {
                 const scfg = STATUS_CONFIG[issue.status] || STATUS_CONFIG.open;
                 const sevBadge =
                   SEVERITY_BADGE[(issue.severity || "info").toLowerCase()] ||
                   SEVERITY_BADGE.info;
                 return (
-                  <tr
+                  <button
                     key={issue.id}
-                    className="hover:bg-slate-50 transition-colors cursor-pointer"
+                    type="button"
                     onClick={() => setSelected(issue)}
+                    className="w-full rounded-3xl border border-slate-200 bg-slate-50 p-4 text-left shadow-sm transition hover:border-slate-300"
                   >
-                    <td className="px-4 py-3 font-mono text-[11px] text-slate-500">
-                      {issue.ref_id}
-                    </td>
-                    <td className="px-4 py-3 font-semibold text-slate-800 max-w-[140px] truncate">
-                      {issue.domain}
-                    </td>
-                    <td className="px-4 py-3 text-slate-700 max-w-[160px] truncate">
-                      {issue.rule}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600 max-w-[140px] truncate">
-                      {issue.issue_type}
-                    </td>
-                    <td className="px-4 py-3">
-                      {issue.severity ? (
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${sevBadge}`}
-                        >
-                          {issue.severity}
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${scfg.badge}`}
-                      >
-                        <span className={`w-1.5 h-1.5 rounded-full ${scfg.dot}`} />
-                        {scfg.label}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-[11px] text-slate-400 whitespace-nowrap">
-                      {new Date(issue.reported_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="material-symbols-outlined text-[16px] text-slate-400">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-mono uppercase tracking-[0.16em] text-slate-400 truncate">
+                          {issue.ref_id}
+                        </p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900 truncate">
+                          {issue.domain}
+                        </p>
+                        <p className="mt-1 text-[13px] text-slate-600 truncate">
+                          {issue.rule}
+                        </p>
+                      </div>
+                      <span className="material-symbols-outlined text-slate-400">
                         chevron_right
                       </span>
-                    </td>
-                  </tr>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] text-slate-500">
+                      <div className="rounded-2xl bg-white px-3 py-2 border border-slate-200">
+                        <p className="font-semibold text-slate-700 truncate">{issue.issue_type}</p>
+                        <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400 mt-1">Type</p>
+                      </div>
+                      <div className="rounded-2xl bg-white px-3 py-2 border border-slate-200">
+                        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-black uppercase ${sevBadge}`}>
+                          {issue.severity || "Info"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[12px] text-slate-500">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1">
+                        <span className={`w-2 h-2 rounded-full ${scfg.dot}`} />
+                        {scfg.label}
+                      </span>
+                      <span className="whitespace-nowrap">
+                        {new Date(issue.reported_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </button>
                 );
               })}
-            </tbody>
-          </table>
+            </div>
+            <table className="hidden sm:table w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  {["Ref ID", "Domain", "Rule", "Issue Type", "Severity", "Status", "Reported", ""].map(
+                    (h) => (
+                      <th
+                        key={h}
+                        className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-slate-500"
+                      >
+                        {h}
+                      </th>
+                    ),
+                  )}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {issues.map((issue) => {
+                  const scfg = STATUS_CONFIG[issue.status] || STATUS_CONFIG.open;
+                  const sevBadge =
+                    SEVERITY_BADGE[(issue.severity || "info").toLowerCase()] ||
+                    SEVERITY_BADGE.info;
+                  return (
+                    <tr
+                      key={issue.id}
+                      className="hover:bg-slate-50 transition-colors cursor-pointer"
+                      onClick={() => setSelected(issue)}
+                    >
+                      <td className="px-4 py-3 font-mono text-[11px] text-slate-500">
+                        {issue.ref_id}
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-slate-800 max-w-[140px] truncate">
+                        {issue.domain}
+                      </td>
+                      <td className="px-4 py-3 text-slate-700 max-w-[160px] truncate">
+                        {issue.rule}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600 max-w-[140px] truncate">
+                        {issue.issue_type}
+                      </td>
+                      <td className="px-4 py-3">
+                        {issue.severity ? (
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${sevBadge}`}
+                          >
+                            {issue.severity}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${scfg.badge}`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${scfg.dot}`} />
+                          {scfg.label}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-[11px] text-slate-400 whitespace-nowrap">
+                        {new Date(issue.reported_at).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="material-symbols-outlined text-[16px] text-slate-400">
+                          chevron_right
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </>
         )}
       </div>
 

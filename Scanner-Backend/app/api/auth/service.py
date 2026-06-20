@@ -172,7 +172,7 @@ def _personal_email_invitation_is_valid(email_lower: str, invite_token: str | No
         db.query(PersonalEmailInvitation)
         .filter(PersonalEmailInvitation.email == email_lower)
         .filter(PersonalEmailInvitation.token == invite_token)
-        .filter(PersonalEmailInvitation.status.in_(["pending", "accepted"]))
+        .filter(PersonalEmailInvitation.status.in_(["pending", "approved", "accepted"]))
         .first()
     )
     

@@ -127,7 +127,7 @@ export default function PersonalInvitations() {
               disabled={invitingPersonal}
               className="rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-60"
             >
-              {invitingPersonal ? "Approving…" : "Approve Invite"}
+              {invitingPersonal ? "Approving…" : "Invite"}
             </button>
           </form>
         </section>
