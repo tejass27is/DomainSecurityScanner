@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, Integer, Boolean, ForeignKey, TIMESTAMP, Index, DateTime
+from sqlalchemy import Column, String, Text, Integer, Boolean, ForeignKey, TIMESTAMP, Index, DateTime, Float
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from app.db.base import Base
@@ -163,6 +163,9 @@ class ScanSummary(Base):
     domain = Column(Text, primary_key=True)
     org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
     domain_score = Column(Integer)
+    weighted_score = Column(Float, nullable=True)  # Weighted score (0-100)
+    base_score = Column(Float, nullable=True)  # Score before criticality adjustment
+    domain_criticality = Column(String(20), nullable=False, default="medium")  # critical, high, medium, low
     severity = Column(String)
     mail_security = Column(JSONB, nullable=True)
     app_security = Column(JSONB, nullable=True)
@@ -170,9 +173,13 @@ class ScanSummary(Base):
     tls_security = Column(JSONB, nullable=True)
     dns_security = Column(JSONB, nullable=True)
     ips = Column(JSONB, nullable=True)
+    scoring_breakdown = Column(JSONB, nullable=True)  # Detailed scoring breakdown
+    compliance_scores = Column(JSONB, nullable=True)  # PCI-DSS, SOC2, GDPR scores
 
     __table_args__ = (
         Index("idx_scan_summary_score", "domain_score"),
+        Index("idx_scan_summary_weighted", "weighted_score"),
+        Index("idx_scan_summary_criticality", "domain_criticality"),
     )
 
 

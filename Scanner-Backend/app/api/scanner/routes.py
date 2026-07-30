@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from app.api.scanner.service import create_scan_task_to_queue
-from app.api.scanner.schemas import ScanRequest as ScanReqSchema
+from app.api.scanner.schemas import ScanRequest as ScanReqSchema, CancelScanRequest
 from app.core.redis_queue import RedisClient
 from app.core.middleware import require_owner, protect
 from app.core.websocket_manager import ws_manager
@@ -39,6 +39,38 @@ async def register_scan_task(
 async def get_scan_list():
     data = redis_client.redis.lrange("scan_queue", 0, -1)
     return [json.loads(item) for item in data]
+
+
+@router.post("/cancel")
+async def cancel_scan_task(
+    request: CancelScanRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_owner)
+):
+    domain = request.domain.strip().lower()
+    org_id = user.org_id
+
+    if not domain:
+        return JSONResponse(status_code=400, content={"detail": "Domain is required"})
+
+    active_scan = db.query(ActiveScan).filter(
+        ActiveScan.domain == domain,
+        ActiveScan.org_id == org_id
+    ).first()
+
+    if active_scan:
+        active_scan.status = "cancelled"
+        db.commit()
+
+    await redis_client.redis.set(f"scan_cancel:{org_id}:{domain}", "1", ex=1800)
+    await ws_manager.send(org_id, {
+        "event": "scan_cancel_requested",
+        "org_id": org_id,
+        "domain": domain,
+        "status": "cancelled",
+        "message": "Scan cancellation requested. The worker will stop as soon as it can.",
+    })
+    return {"message": "Scan cancellation requested", "domain": domain}
 
 
 @router.get("/clear")

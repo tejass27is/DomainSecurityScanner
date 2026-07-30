@@ -1,6 +1,8 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from app.api.webhooks.schemas import ScannerWebhookRequest, ScannerWebhookResultRequest
+from typing import Any
 from app.api.analyzer.controller import calculate_and_store_summary
+from app.core.redis_queue import RedisClient
 from sqlalchemy.orm import Session
 from app.db.base import get_db
 from app.db.models import ActiveScan, PortFixRequest, ScanSummary
@@ -8,6 +10,8 @@ import logging
 
 # ✅ Import ws_manager LAST to avoid circular imports
 from app.core.websocket_manager import ws_manager
+
+redis_client = RedisClient()
 
 logger = logging.getLogger(__name__)
 
@@ -140,19 +144,33 @@ async def websocket_endpoint(websocket: WebSocket, org_id: str):
 @router.post("/scan/notification")
 async def scanner_webhook(request: ScannerWebhookRequest):
     """Notification webhook for scan progress events"""
-    
+
     event_map = {
         "subdomain_discovery_completed": "subdomain_discovery",
         "subdomain_filter_completed": "subdomain_filter",
         "subdomain_collection_completed": "data_collection",
+        "subdomain_discovery_started": "subdomain_discovery",
+        "subdomain_filter_started": "subdomain_filter",
+        "subdomain_collection_started": "data_collection",
+        "scan_completed": "scan_complete",
     }
 
-    payload = {
+    payload: dict[str, Any] = {
         "event": event_map.get(request.event, request.event),
         "org_id": request.scan_id,
         "domain": request.target,
+        "status": request.status,
+        "stage": request.stage,
+        "progress": request.progress,
+        "message": request.message,
+        "evidence_count": request.evidence_count,
+        "checkpoint": request.checkpoint,
     }
-    
+
+    if request.target and request.progress is not None:
+        progress_key = f"scan_progress:{request.scan_id}:{request.target.strip().lower()}"
+        await redis_client.redis.set(progress_key, int(request.progress), ex=3600)
+
     await ws_manager.send(request.scan_id, payload)
     return {"status": "received"}
 

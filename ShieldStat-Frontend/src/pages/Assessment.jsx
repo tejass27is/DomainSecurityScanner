@@ -158,7 +158,7 @@ function CategoryCard({ section, progress, done, total, ignored }) {
     <Link
       to={`/assessment/${section.id}`}
       id={`cat-${section.id}`}
-      className="group block rounded-2xl border border-slate-200 dark:border-slate-800/60 bg-white dark:bg-slate-900/80 hover:bg-slate-50 dark:hover:bg-slate-800/80 hover:border-indigo-200 dark:hover:border-slate-700 transition-all duration-200 overflow-hidden hover:shadow-lg hover:shadow-indigo-500/10 dark:hover:shadow-indigo-950/20"
+      className="group block overflow-hidden rounded-3xl border border-slate-200/80 bg-white/90 shadow-[0_12px_40px_rgba(15,23,42,0.06)] backdrop-blur-sm transition-all duration-200 hover:border-purple-200 hover:shadow-[0_20px_50px_rgba(139,92,246,0.15)] dark:border-slate-800 dark:bg-slate-900/80 dark:hover:border-purple-800"
     >
       {/* Top color accent */}
       <div className="h-1" style={{ backgroundColor: section.color }} />
@@ -256,22 +256,22 @@ function OverviewPage({ checks }) {
   );
 
   return (
-    <div className="min-h-screen bg-slate-100 dark:bg-slate-950">
-      <div className="mx-auto max-w-[1400px] px-4 pt-6 pb-20 sm:px-6 md:pt-8">
+    <div className="min-h-full space-y-8">
+      <div className="mx-auto max-w-[1400px]">
         {/* Page Header */}
-        <header className="mb-8">
-          <div className="flex items-center gap-3 mb-2">
+        <header className="mb-8 rounded-[2rem] border border-slate-200/70 bg-gradient-to-br from-purple-600 to-indigo-600 p-6 text-white shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-8">
+          <div className="flex flex-wrap items-center gap-3 mb-3">
             <span
-              className="material-symbols-outlined text-3xl text-indigo-600 dark:text-indigo-400"
+              className="material-symbols-outlined text-3xl"
               style={{ fontVariationSettings: '"FILL" 1' }}
             >
               verified_user
             </span>
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">
+            <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">
               Security Assessment
             </h1>
           </div>
-          <p className="text-slate-500 dark:text-slate-400 text-sm max-w-2xl">
+          <p className="max-w-2xl text-sm text-purple-50 sm:text-base">
             The ultimate personal security checklist to secure your digital
             life. Check off items as you complete them — your progress is saved
             automatically.
@@ -281,7 +281,7 @@ function OverviewPage({ checks }) {
         {/* Top Row: Spider Chart (Left) + Category Breakdown (Right) */}
         <div className="mb-8 grid grid-cols-1 gap-8 items-stretch lg:grid-cols-2">
           {/* Spider Chart + Score */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-6 shadow-sm flex flex-col items-center">
+          <div className="app-card-surface flex flex-col items-center p-6">
             <div className="w-full flex items-center gap-2 mb-6 pb-4 border-b border-slate-100 dark:border-slate-800/60">
               <span className="material-symbols-outlined text-indigo-600 dark:text-indigo-400 text-lg">radar</span>
               <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">Security Profile Radar</h3>
@@ -292,7 +292,7 @@ function OverviewPage({ checks }) {
           </div>
 
           {/* Category Breakdown */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-6 shadow-sm h-full">
+          <div className="app-card-surface h-full p-6">
             <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-4 flex items-center gap-2">
               <span className="material-symbols-outlined text-[16px]">analytics</span>
               Category Breakdown
@@ -500,8 +500,9 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
   const nextSection = currentIndex < CHECKLIST_SECTIONS.length - 1 ? CHECKLIST_SECTIONS[currentIndex + 1] : null;
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
-      <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 md:py-8">
+    <div className="min-h-full">
+      <div className="mx-auto max-w-[1400px]">
+
         {/* Navigation Breadcrumb */}
         <div className="flex items-center gap-2 mb-8">
           <Link to="/assessment" className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-slate-200 text-xs font-bold transition-all">
@@ -523,7 +524,7 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
             </div>
             <p className="text-slate-500 dark:text-slate-400 text-sm max-w-2xl leading-relaxed">{section.description}</p>
           </div>
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-5 shadow-sm">
+          <div className="app-card-surface p-5">
             <div className="flex items-center justify-between mb-3 text-[11px] font-black uppercase tracking-widest">
               <span className="text-slate-400 dark:text-slate-500">Section Progress</span>
               <span style={{ color: section.color }}>{progress}%</span>
@@ -538,7 +539,7 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
         </div>
 
         {/* Checklist Table Wrapper */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/60 rounded-2xl overflow-hidden shadow-sm">
+        <div className="app-card-surface overflow-hidden">
           {/* Table Header */}
           <div className="hidden bg-slate-50/80 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800/60 py-4 px-4 gap-6 md:grid md:grid-cols-[96px_180px_120px_1fr]">
             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 text-center flex items-center justify-center gap-1">
@@ -708,9 +709,9 @@ export default function Assessment() {
   if (!isReady) {
     return (
       <div className="flex justify-center py-20 pb-32">
-        <div className="inline-flex items-center gap-3">
+        <div className="app-card-surface inline-flex items-center gap-3 px-6 py-4">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-indigo-600" />
-          <p className="text-slate-500 font-medium">Loading assessment profile...</p>
+          <p className="font-medium text-slate-600 dark:text-slate-300">Loading assessment profile...</p>
         </div>
       </div>
     );

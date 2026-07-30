@@ -7,6 +7,22 @@ import (
 	"time"
 )
 
+func IsCancelled(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func WithStageTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 type DiscoveryPipeline struct {
 	registry *Registry
 	runner   *Runner
@@ -22,6 +38,10 @@ func NewDiscoveryPipeline(registry *Registry) *DiscoveryPipeline {
 func (p *DiscoveryPipeline) ExecuteDiscoveryScanner(ctx context.Context, target string) (Result, error) {
 	var results []string
 
+	if IsCancelled(ctx) {
+		return Result{}, context.Canceled
+	}
+
 	ips, err := net.LookupIP(target)
 	if err != nil || len(ips) == 0 {
 		return Result{}, err
@@ -30,8 +50,13 @@ func (p *DiscoveryPipeline) ExecuteDiscoveryScanner(ctx context.Context, target 
 	fmt.Println("Starting discovery pipeline for target:", target)
 
 	for _, scanner := range p.registry.All() {
+		if IsCancelled(ctx) {
+			return Result{}, context.Canceled
+		}
 		fmt.Println("Running scanner:", scanner.Name())
-		res, err := p.runner.RunDiscoveryScanner(ctx, scanner, target)
+		stageCtx, cancel := WithStageTimeout(ctx, 45*time.Second)
+		res, err := p.runner.RunDiscoveryScanner(stageCtx, scanner, target)
+		cancel()
 		if err != nil {
 			fmt.Println("Scanner error:", scanner.Name(), err)
 			continue
@@ -49,8 +74,6 @@ func (p *DiscoveryPipeline) ExecuteDiscoveryScanner(ctx context.Context, target 
 		Data:      results,
 		Timestamp: time.Now(),
 	}
-
-	// fmt.Println(discovered_subdomains)
 
 	return discovered_subdomains, nil
 }
@@ -72,8 +95,13 @@ func (p *FilterScannerPipeline) ExecuteFilterScanners(ctx context.Context, disco
 	subdomains := discovered_subdomains
 
 	for _, scanner := range p.registry.All() {
+		if IsCancelled(ctx) {
+			return Result{}, context.Canceled
+		}
 		fmt.Println("Running filter scanner:", scanner.Name())
-		res, err := p.runner.RunFilterScanners(ctx, scanner, subdomains, domain)
+		stageCtx, cancel := WithStageTimeout(ctx, 30*time.Second)
+		res, err := p.runner.RunFilterScanners(stageCtx, scanner, subdomains, domain)
+		cancel()
 		if err != nil {
 			fmt.Println("Filter scanner error:", scanner.Name(), err)
 			continue
@@ -117,10 +145,15 @@ func NewCollectionPipeline(registry *CollectionScannerRegistry) *CollectionPipel
 
 func (c *CollectionPipeline) ExecuteCollectionScanenrs(ctx context.Context, subdomains Result, domain string) (Result, error) {
 	fmt.Println("Starting collection pipeline for domain:", domain)
-	
+
 	for _, scanner := range c.registry.All() {
+		if IsCancelled(ctx) {
+			return Result{}, context.Canceled
+		}
 		fmt.Println("Running collection scanner:", scanner.Name())
-		res, err := c.runner.RunCollectionScanners(ctx, scanner, subdomains, domain)
+		stageCtx, cancel := WithStageTimeout(ctx, 90*time.Second)
+		res, err := c.runner.RunCollectionScanners(stageCtx, scanner, subdomains, domain)
+		cancel()
 		if err != nil {
 			fmt.Println("Collection scanner error:", scanner.Name(), err)
 		}
@@ -129,7 +162,6 @@ func (c *CollectionPipeline) ExecuteCollectionScanenrs(ctx context.Context, subd
 
 		subdomains = res
 	}
-	// fmt.Println("Total data collected so far:", len(data_collected))
 
 	return subdomains, nil
 }

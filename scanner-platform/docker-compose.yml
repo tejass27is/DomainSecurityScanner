@@ -15,7 +15,7 @@ services:
       - .:/app
 
   worker-fix:
-    build:
+    build: 
       context: .
       dockerfile: Dockerfile
     container_name: scanner-worker-fix
@@ -28,8 +28,7 @@ services:
       replicas: 1
     volumes:
       - .:/app
-  
-    
+
 networks:
   scanner-network:
     external: true

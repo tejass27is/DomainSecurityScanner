@@ -100,25 +100,21 @@ function Sidebar({ isOpen, onToggle, onClose, isDarkMode, onToggleDarkMode }) {
 
   return (
     <aside
-      className={`fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col border-r border-slate-200 bg-slate-50 shadow-2xl transition-all duration-300 dark:border-slate-800 dark:bg-slate-900 lg:static lg:translate-x-0 lg:shadow-none ${isOpen
-          ? "translate-x-0 w-72 overflow-visible px-6 py-8 pr-8"
-          : "-translate-x-full w-72 overflow-hidden px-6 py-8 pr-8 lg:w-16 lg:translate-x-0 lg:overflow-hidden lg:px-3 lg:py-6"
+      className={`fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col border-r border-slate-200 bg-slate-50 shadow-2xl transition-all duration-300 dark:border-slate-800 dark:bg-slate-900 lg:fixed lg:translate-x-0 lg:shadow-none ${isOpen
+          ? "translate-x-0 w-[88vw] max-w-[18rem] overflow-visible px-5 py-6 pr-5 sm:w-72 sm:px-6 sm:py-8 sm:pr-8"
+          : "-translate-x-full w-[88vw] max-w-[18rem] overflow-hidden px-5 py-6 pr-5 sm:w-72 sm:px-6 sm:py-8 sm:pr-8 lg:w-16 lg:translate-x-0 lg:overflow-hidden lg:px-3 lg:py-6"
         }`}
-      aria-hidden={!isOpen}
-      inert={!isOpen ? "" : undefined}
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        className={`absolute z-30 flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-400 ${isOpen ? "top-6 right-[-18px]" : "top-5 right-3 lg:top-5 lg:right-3"}`}
-        aria-label={isOpen ? "Close sidebar" : "Open sidebar"}
-      >
-        <span className="material-symbols-outlined">
-          {isOpen
-            ? "keyboard_double_arrow_left"
-            : "keyboard_double_arrow_right"}
-        </span>
-      </button>
+      {isOpen && (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="absolute z-30 flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-400 top-6 right-[-18px]"
+          aria-label="Close sidebar"
+        >
+          <span className="material-symbols-outlined">keyboard_double_arrow_left</span>
+        </button>
+      )}
 
       <div
         className={`flex h-full min-h-0 flex-col overflow-y-auto ${isOpen
@@ -126,14 +122,25 @@ function Sidebar({ isOpen, onToggle, onClose, isDarkMode, onToggleDarkMode }) {
             : "pointer-events-none opacity-0 lg:pointer-events-auto lg:opacity-100"
           }`}
       >
-        {/* Logo */}
-        <div className="mb-10">
-          <img
-            src={isDarkMode ? logoWhite : logo}
-            alt="isecurify"
-            className="max-h-10 w-auto object-contain"
-            style={isDarkMode ? { height: "3.4rem" } : undefined}
-          />
+        {/* Logo / toggle */}
+        <div className="mb-10 flex items-center justify-start">
+          {isOpen ? (
+            <img
+              src={isDarkMode ? logoWhite : logo}
+              alt="isecurify"
+              className="max-h-10 w-auto object-contain"
+              style={isDarkMode ? { height: "3.4rem" } : undefined}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={onToggle}
+              className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-400"
+              aria-label="Open sidebar"
+            >
+              <span className="material-symbols-outlined">keyboard_double_arrow_right</span>
+            </button>
+          )}
         </div>
 
         {/* Menu */}
@@ -219,7 +226,7 @@ function Sidebar({ isOpen, onToggle, onClose, isDarkMode, onToggleDarkMode }) {
         </nav>
 
         {/* Bottom */}
-        <div className="space-y-2 border-t border-slate-200 dark:border-slate-700 pt-8">
+        <div className="mt-auto space-y-2 border-t border-slate-200 pt-8 dark:border-slate-700">
           <Link
             to="/profile"
             onClick={onClose}

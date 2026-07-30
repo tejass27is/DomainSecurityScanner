@@ -6,9 +6,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"scanner-platform/internal/models"
 	"strings"
 )
+
+func getBackendBaseURL() string {
+	backendURL := os.Getenv("BACKEND_URL")
+	if backendURL == "" {
+		backendURL = "http://scanner-backend:8000"
+	}
+	return backendURL
+}
 
 func postJSON(url string, payload any) (string, error) {
 	jsonData, err := json.Marshal(payload)
@@ -43,18 +52,18 @@ func postJSON(url string, payload any) (string, error) {
 }
 
 func send_webhook_notification(payload models.ScanNotification) (string, error) {
-	url := "http://scanner-backend:8000/webhooks/scan/notification"
+	url := fmt.Sprintf("%s/webhooks/scan/notification", getBackendBaseURL())
 	return postJSON(url, payload)
 }
 
 func send_scan_result_webhook(payload models.ScanResult) (string, error) {
-	url := "http://scanner-backend:8000/webhooks/scan/result"
+	url := fmt.Sprintf("%s/webhooks/scan/result", getBackendBaseURL())
 	return postJSON(url, payload)
 }
 
 func send_fix_result_webhook(result models.FixScanResult) (string, error) {
 
-	url := "http://scanner-backend:8000/fix/result"
+	url := fmt.Sprintf("%s/fix/result", getBackendBaseURL())
 
 	payload := map[string]interface{}{
 		"scan_id":  result.ScanID,

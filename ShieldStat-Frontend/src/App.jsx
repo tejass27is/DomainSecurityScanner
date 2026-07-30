@@ -8,6 +8,7 @@ import AdminLayout from "./layouts/AdminLayout";
 const Landing = lazy(() => import("./pages/LandingPage"));
 const Auth = lazy(() => import("./pages/AuthPage"));
 const VerifyEmail = lazy(() => import("./pages/VerifyEmailPage"));
+const DomainOverview = lazy(() => import("./pages/DomainOverviewPage"));
 const Scan = lazy(() => import("./pages/AuditDomain"));
 const MalwareScan = lazy(() => import("./pages/MalwareScan"));
 const ScanDashboard = lazy(() => import("./pages/ScanDashboard"));
@@ -63,6 +64,7 @@ function App() {
         }
       >
         <Route index element={<Landing />} />
+        <Route path="domain-overview" element={<DomainOverview />} />
         <Route path="auth" element={<Auth />} />
         <Route path="auth/verify-email" element={<VerifyEmail />} />
       </Route>

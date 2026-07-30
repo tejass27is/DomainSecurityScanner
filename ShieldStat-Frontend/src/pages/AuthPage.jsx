@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Eye, EyeOff, Loader2, ArrowLeft } from "lucide-react";
+import { Eye, EyeOff, Loader2, ArrowLeft, Shield, Globe, Lock, TrendingUp, CheckCircle2 } from "lucide-react";
 import { useGoogleReCaptcha } from "react-google-recaptcha-v3";
 import { loginUser, registerUser, forgotPassword, resetPasswordWithOtp, setupTotp, verifyTotp, resetTotp } from "../services/api";
 import QRCode from "react-qr-code";
@@ -410,113 +410,199 @@ function AuthPage() {
    }, [hasInviteToken, view]);
 
    return (
-      <div className="min-h-screen flex flex-col bg-background-light font-body">
+      <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-50 to-purple-50 dark:from-slate-900 dark:to-slate-800 font-body relative overflow-hidden">
+         {/* Background Elements */}
+         <div className="absolute top-0 right-0 w-72 h-72 bg-purple-400 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
+         <div className="absolute bottom-0 left-0 w-72 h-72 bg-purple-400 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
 
-         <main className="flex-grow flex min-h-screen items-center justify-center px-4 py-2 relative">
+         <main className="flex-grow flex min-h-screen items-center justify-center px-4 py-12 relative z-10">
 
-            <div className="w-full max-w-lg lg:max-w-xl z-10">
+            <div className="w-full grid lg:grid-cols-2 gap-8 max-w-6xl items-center">
+               {/* Left side - Feature showcase (hidden on small screens) */}
+               <div className="hidden lg:flex flex-col justify-center">
+                  <div className="mb-8">
+                     <h2 className="text-4xl font-bold text-slate-900 dark:text-white mb-4">
+                        Enterprise Security at Your Fingertips
+                     </h2>
+                     <p className="text-lg text-slate-600 dark:text-slate-300">
+                        Comprehensive domain security analysis powered by real-time threat intelligence
+                     </p>
+                  </div>
 
-               {/* Brand */}
-               <div className="text-center mb-6 max-[480px]:mb-4">
-                  <div className="mb-3 flex justify-center">
-                     <div className="bg-white p-2.5 rounded-xl shadow dark:bg-slate-800">
-                        <img
-                           src={isecurify_logo}
-                           alt="isecurify"
-                           className="rounded-xl h-8 w-auto object-contain dark:invert dark:brightness-200"
-                        />
+                  <div className="space-y-4">
+                     <div className="flex gap-4 items-start">
+                        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
+                           <Shield size={20} className="text-purple-600 dark:text-purple-400" />
+                        </div>
+                        <div>
+                           <h3 className="font-bold text-slate-900 dark:text-white">SSL Certificate Verification</h3>
+                           <p className="text-sm text-slate-600 dark:text-slate-400">Detect expired certs and protocol vulnerabilities</p>
+                        </div>
+                     </div>
+
+                     <div className="flex gap-4 items-start">
+                        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
+                           <Globe size={20} className="text-purple-600 dark:text-purple-400" />
+                        </div>
+                        <div>
+                           <h3 className="font-bold text-slate-900 dark:text-white">DNS & DNSSEC Analysis</h3>
+                           <p className="text-sm text-slate-600 dark:text-slate-400">Monitor DNS integrity and prevent tampering</p>
+                        </div>
+                     </div>
+
+                     <div className="flex gap-4 items-start">
+                        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+                           <Lock size={20} className="text-green-600 dark:text-green-400" />
+                        </div>
+                        <div>
+                           <h3 className="font-bold text-slate-900 dark:text-white">Malware & Threat Detection</h3>
+                           <p className="text-sm text-slate-600 dark:text-slate-400">Real-time scanning against global threat databases</p>
+                        </div>
+                     </div>
+
+                     <div className="flex gap-4 items-start">
+                        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
+                           <TrendingUp size={20} className="text-purple-600 dark:text-purple-400" />
+                        </div>
+                        <div>
+                           <h3 className="font-bold text-slate-900 dark:text-white">Port Security Scanning</h3>
+                           <p className="text-sm text-slate-600 dark:text-slate-400">Identify open ports and vulnerable services</p>
+                        </div>
                      </div>
                   </div>
 
-                  <h1 className="text-3xl max-[480px]:text-2xl font-extrabold font-headline text-on-surface">
-                     Domain Security Scanner
-                  </h1>
-
-                  <p className="text-[10px] uppercase tracking-[0.4em] mt-3 text-on-surface-variant">
-                     Secure Identity Access
-                  </p>
+                  {/* Trust Badges */}
+                  <div className="mt-8 pt-8 border-t border-slate-200 dark:border-slate-700">
+                     <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">Trusted by enterprises worldwide</p>
+                     <div className="flex gap-4">
+                        <div className="text-sm">
+                           <div className="font-bold text-slate-900 dark:text-white">50K+</div>
+                           <div className="text-slate-600 dark:text-slate-400">Domains Scanned</div>
+                        </div>
+                        <div className="text-sm">
+                           <div className="font-bold text-slate-900 dark:text-white">99.9%</div>
+                           <div className="text-slate-600 dark:text-slate-400">Uptime SLA</div>
+                        </div>
+                        <div className="text-sm">
+                           <div className="font-bold text-slate-900 dark:text-white">ISO 27001</div>
+                           <div className="text-slate-600 dark:text-slate-400">Certified</div>
+                        </div>
+                     </div>
+                  </div>
                </div>
 
+               {/* Right side - Auth Form */}
+               <div className="w-full max-w-lg z-10">
+
+                  {/* Brand */}
+                  <div className="text-center mb-8 max-[480px]:mb-6">
+                     <div className="mb-4 flex justify-center">
+                        <div className="bg-white dark:bg-slate-700 p-3 rounded-2xl shadow-lg">
+                           <img
+                              src={isecurify_logo}
+                              alt="Logo"
+                              className="rounded-lg h-10 w-auto object-contain dark:brightness-200"
+                           />
+                        </div>
+                     </div>
+
+                     <h1 className="text-4xl max-[480px]:text-3xl font-extrabold font-headline text-slate-900 dark:text-white">
+                        Domain Security Intelligence
+                     </h1>
+                  </div>
+
                {/* Card */}
-               <div className="bg-white py-4 px-4 sm:py-5 sm:px-5 md:p-7 rounded-xl shadow border border-slate-200">
+               <div className="bg-white dark:bg-slate-800 py-8 px-6 sm:py-8 sm:px-8 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700">
 
                   {/* Back arrow for forgot / reset views */}
-                  {(view === "forgot" || view === "reset-otp") && (
+                  {(view === "forgot" || view === "reset-otp" || view === "totp-reset" || view === "totp-setup" || view === "totp-verify") && (
                      <button
                         onClick={() => switchView("login")}
-                        className="flex items-center gap-1 text-sm text-on-surface-variant hover:text-primary mb-4 transition"
+                        className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400 hover:text-purple-600 dark:hover:text-purple-400 mb-6 transition font-semibold"
                      >
-                        <ArrowLeft size={16} /> Back to Login
+                        <ArrowLeft size={18} /> Back
                      </button>
                   )}
 
                   {/* TITLE */}
                   <div className="text-center mx-auto max-w-xl">
-                     <h2 className="text-2xl max-[480px]:text-xl font-bold mb-2 text-on-surface">{heading}</h2>
-                     <p className="text-on-surface-variant mb-4 text-sm max-[480px]:text-xs">{sub}</p>
+                     <h2 className="text-3xl max-[480px]:text-2xl font-bold mb-2 text-slate-900 dark:text-white">{heading}</h2>
+                     <p className="text-slate-600 dark:text-slate-400 mb-6 text-sm leading-relaxed">{sub}</p>
                      {hasInviteToken && (
-                        <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-                           Approved invitation detected. Complete signup here, then sign in normally with your new password.
+                        <div className="mb-6 rounded-lg border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300 font-medium">
+                           <span className="font-bold">✓ Invitation Detected</span> — Complete your registration to get started
                         </div>
                      )}
                   </div>
 
                   {/* ─── Error / Success banners ─── */}
                   {error && (
-                     <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
-                        {error}
+                     <div className="mb-6 p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-sm font-medium flex items-start gap-3">
+                        <span className="text-lg">⚠️</span>
+                        <span>{error}</span>
                      </div>
                   )}
                   {success && (
-                     <div className="mb-4 p-3 rounded-lg bg-green-50 border border-green-200 text-green-700 text-sm">
-                        {success}
+                     <div className="mb-6 p-4 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-300 text-sm font-medium flex items-start gap-3">
+                        <span className="text-lg">✓</span>
+                        <span>{success}</span>
                      </div>
                   )}
 
                   {/* ================= LOGIN ================= */}
                   {view === "login" && (
-                     <form className="mx-auto max-w-lg space-y-5 max-[480px]:space-y-3" onSubmit={handleLogin}>
-                        <input
-                           id="login-email"
-                           type="email"
-                           placeholder="email@example.com"
-                           value={email}
-                           onChange={(e) => setEmail(e.target.value)}
-                           className="w-full p-2.5 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40 placeholder:text-on-surface-variant/70"
-                        />
-
-                        <div className="relative">
+                     <form className="mx-auto max-w-lg space-y-6 max-[480px]:space-y-4" onSubmit={handleLogin}>
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              Email Address
+                           </label>
                            <input
-                              id="login-password"
-                              type={loginShowPassword ? "text" : "password"}
-                              placeholder="••••••••"
-                              value={password}
-                              onChange={(e) => setPassword(e.target.value)}
-                              className="w-full p-2.5 pr-10 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40"
+                              id="login-email"
+                              type="email"
+                              placeholder="your@email.com"
+                              value={email}
+                              onChange={(e) => setEmail(e.target.value)}
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white dark:placeholder-slate-500 transition placeholder:text-slate-400"
                            />
-                           <button
-                              type="button"
-                              onClick={() => setLoginShowPassword(!loginShowPassword)}
-                              className="absolute right-3 top-3 text-gray-500 hover:text-gray-700"
-                           >
-                              {loginShowPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                           </button>
                         </div>
 
-                        <div className="flex flex-col gap-2 text-right -mt-2">
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              Password
+                           </label>
+                           <div className="relative">
+                              <input
+                                 id="login-password"
+                                 type={loginShowPassword ? "text" : "password"}
+                                 placeholder="••••••••"
+                                 value={password}
+                                 onChange={(e) => setPassword(e.target.value)}
+                                 className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
+                              />
+                              <button
+                                 type="button"
+                                 onClick={() => setLoginShowPassword(!loginShowPassword)}
+                                 className="absolute right-4 top-3 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
+                              >
+                                 {loginShowPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                              </button>
+                           </div>
+                        </div>
+
+                        <div className="flex flex-col gap-2 text-right">
                            <button
                               type="button"
                               onClick={() => switchView("forgot")}
-                              className="text-xs text-primary font-semibold hover:underline"
+                              className="text-sm text-purple-600 dark:text-purple-400 font-semibold hover:underline transition"
                            >
                               Forgot Password?
                            </button>
                            <button
                               type="button"
                               onClick={() => switchView("totp-reset")}
-                              className="text-xs text-on-surface-variant hover:text-primary hover:underline"
+                              className="text-xs text-slate-600 dark:text-slate-400 hover:text-purple-600 dark:hover:text-purple-400 hover:underline transition"
                            >
-                              Lost authenticator app? Reset via email OTP
+                              Lost authenticator app?
                            </button>
                         </div>
 
@@ -524,49 +610,33 @@ function AuthPage() {
                            id="login-submit"
                            type="submit"
                            disabled={loading}
-                           className="w-full py-2.5 bg-primary text-white rounded-lg font-bold hover:bg-primary-dim transition disabled:opacity-60 flex items-center justify-center gap-2"
+                           className="w-full py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg font-bold transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl"
                         >
-                           {loading && <Loader2 size={18} className="animate-spin" />}
+                           {loading && <Loader2 size={20} className="animate-spin" />}
                            {loading ? "Signing In…" : "Sign In"}
                         </button>
-                        <p style={{ fontSize: "11px", color: "#888" }}>
+
+                        <p className="text-xs text-slate-600 dark:text-slate-400 text-center">
                            This site is protected by reCAPTCHA and the Google{" "}
-                           <a href="https://policies.google.com/privacy">Privacy Policy</a> and{" "}
-                           <a href="https://policies.google.com/terms">Terms of Service</a> apply.
+                           <a href="https://policies.google.com/privacy" className="text-purple-600 dark:text-purple-400 hover:underline">Privacy Policy</a> and{" "}
+                           <a href="https://policies.google.com/terms" className="text-purple-600 dark:text-purple-400 hover:underline">Terms of Service</a> apply.
                         </p>
                      </form>
                   )}
 
                   {/* ================= TOTP SETUP ================= */}
                   {view === "totp-setup" && (
-                     <form className="mx-auto max-w-lg space-y-5 max-[480px]:space-y-3" onSubmit={handleConfirmTotpSetup}>
-                        <div className="flex justify-between items-center">
-                           <button
-                              type="button"
-                              onClick={() => switchView("login")}
-                              className="text-sm text-primary font-semibold hover:underline"
-                           >
-                              Back to Login
-                           </button>
-                        </div>
-
-                        <p className="text-sm text-on-surface-variant">
-                           Scan the QR code below with Google Authenticator or any TOTP app, then enter the 6-digit code to complete setup.
+                     <form className="mx-auto max-w-lg space-y-6 max-[480px]:space-y-4" onSubmit={handleConfirmTotpSetup}>
+                        <p className="text-sm text-slate-600 dark:text-slate-400">
+                           Scan the QR code below with Google Authenticator or Microsoft Authenticator, then enter the 6-digit code.
                         </p>
 
                         {totpSetupUri ? (
-                           <div className="flex justify-center py-4">
-                              <div
-                                 className="inline-flex rounded-2xl border border-slate-200 p-3"
-                                 style={{
-                                    backgroundColor: "#ffffff",
-                                    boxShadow: "inset 0 0 0 1px rgba(15, 23, 42, 0.04)",
-                                    width: "fit-content"
-                                 }}
-                              >
+                           <div className="flex justify-center py-6 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
+                              <div className="inline-flex rounded-2xl border border-slate-200 dark:border-slate-600 p-4 bg-white dark:bg-slate-800">
                                  <QRCode
                                     value={totpSetupUri}
-                                    size={190}
+                                    size={180}
                                     level="H"
                                     includeMargin={true}
                                     renderAs="svg"
@@ -574,42 +644,46 @@ function AuthPage() {
                                     fgColor="#0F172A"
                                     style={{
                                        display: "block",
-                                       width: 190,
-                                       height: 190,
-                                       backgroundColor: "#ffffff"
+                                       width: 180,
+                                       height: 180
                                     }}
                                  />
                               </div>
                            </div>
                         ) : (
-                           <div className="text-sm text-on-surface-variant">Preparing your authenticator setup...</div>
+                           <div className="text-sm text-slate-600 dark:text-slate-400 text-center py-6">Preparing authenticator setup...</div>
                         )}
 
                         {totpSecret && (
-                           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                              <div className="font-semibold text-on-surface mb-1">Manual key</div>
-                              <div className="font-mono break-all text-sm text-on-surface-variant">{totpSecret}</div>
+                           <div className="rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 p-4">
+                              <div className="text-xs font-bold text-slate-700 dark:text-slate-300 mb-2 uppercase">Can't scan? Enter this key manually:</div>
+                              <div className="font-mono text-sm text-slate-900 dark:text-slate-100 break-all font-bold tracking-wider">{totpSecret}</div>
                            </div>
                         )}
 
-                        <input
-                           id="totp-setup-code"
-                           type="text"
-                           inputMode="numeric"
-                           placeholder="Enter 6-digit code"
-                           maxLength={6}
-                           value={totpCode}
-                           onChange={(e) => setTotpCode(e.target.value.replace(/[^0-9]/g, ""))}
-                           className="w-full p-2.5 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40 tracking-widest text-center text-base"
-                        />
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              6-Digit Code
+                           </label>
+                           <input
+                              id="totp-setup-code"
+                              type="text"
+                              inputMode="numeric"
+                              placeholder="000000"
+                              maxLength={6}
+                              value={totpCode}
+                              onChange={(e) => setTotpCode(e.target.value.replace(/[^0-9]/g, ""))}
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition tracking-widest text-center text-lg font-mono"
+                           />
+                        </div>
 
                         <button
                            id="totp-setup-submit"
                            type="submit"
                            disabled={loading}
-                           className="w-full py-2.5 bg-primary text-white rounded-lg font-bold hover:bg-primary-dim transition disabled:opacity-60 flex items-center justify-center gap-2"
+                           className="w-full py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg font-bold transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl"
                         >
-                           {loading && <Loader2 size={18} className="animate-spin" />}
+                           {loading && <Loader2 size={20} className="animate-spin" />}
                            {loading ? "Verifying…" : "Verify & Complete Setup"}
                         </button>
                      </form>
@@ -617,65 +691,113 @@ function AuthPage() {
 
                   {/* ================= TOTP VERIFY ================= */}
                   {view === "totp-verify" && (
-                     <form className="mx-auto max-w-lg space-y-5 max-[480px]:space-y-3" onSubmit={handleVerifyTotp}>
-                        <div className="flex justify-between items-center">
-                           <button
-                              type="button"
-                              onClick={() => switchView("login")}
-                              className="text-sm text-primary font-semibold hover:underline"
-                           >
-                              Back to Login
-                           </button>
-                        </div>
-
-                        <p className="text-sm text-on-surface-variant">
+                     <form className="mx-auto max-w-lg space-y-6 max-[480px]:space-y-4" onSubmit={handleVerifyTotp}>
+                        <p className="text-sm text-slate-600 dark:text-slate-400">
                            Enter the 6-digit code from your authenticator app to complete sign in.
                         </p>
 
-                        <input
-                           id="totp-verify-code"
-                           type="text"
-                           inputMode="numeric"
-                           placeholder="Enter 6-digit code"
-                           maxLength={6}
-                           value={totpCode}
-                           onChange={(e) => setTotpCode(e.target.value.replace(/[^0-9]/g, ""))}
-                           className="w-full p-2.5 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40 tracking-widest text-center text-base"
-                        />
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              6-Digit Code
+                           </label>
+                           <input
+                              id="totp-verify-code"
+                              type="text"
+                              inputMode="numeric"
+                              placeholder="000000"
+                              maxLength={6}
+                              value={totpCode}
+                              onChange={(e) => setTotpCode(e.target.value.replace(/[^0-9]/g, ""))}
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition tracking-widest text-center text-lg font-mono"
+                           />
+                        </div>
 
                         <button
                            id="totp-verify-submit"
                            type="submit"
                            disabled={loading}
-                           className="w-full py-2.5 bg-primary text-white rounded-lg font-bold hover:bg-primary-dim transition disabled:opacity-60 flex items-center justify-center gap-2"
+                           className="w-full py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg font-bold transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl"
                         >
-                           {loading && <Loader2 size={18} className="animate-spin" />}
+                           {loading && <Loader2 size={20} className="animate-spin" />}
                            {loading ? "Verifying…" : "Verify & Sign In"}
+                        </button>
+                     </form>
+                  )}
+
+                  {/* ================= TOTP RESET ================= */}
+                  {view === "totp-reset" && (
+                     <form className="mx-auto max-w-lg space-y-6 max-[480px]:space-y-4" onSubmit={resetRequested ? handleResetTotp : handleSendTotpResetOtp}>
+                        <p className="text-sm text-slate-600 dark:text-slate-400">
+                           {resetRequested
+                              ? "Enter the one-time password sent to your email to reset your authenticator app."
+                              : "Verify your email to receive a one-time password and reset your authenticator app."}
+                        </p>
+
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              Email Address
+                           </label>
+                           <input
+                              id="totp-reset-email"
+                              type="email"
+                              placeholder="your@email.com"
+                              value={email}
+                              onChange={(e) => setEmail(e.target.value)}
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white dark:placeholder-slate-500 transition placeholder:text-slate-400"
+                           />
+                        </div>
+
+                        {resetRequested && (
+                           <div>
+                              <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                                 OTP Code
+                              </label>
+                              <input
+                                 id="totp-reset-otp"
+                                 type="text"
+                                 placeholder="000000"
+                                 maxLength={6}
+                                 value={otp}
+                                 onChange={(e) => setOtp(e.target.value.replace(/[^0-9]/g, ""))}
+                                 className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition tracking-widest text-center text-lg font-mono"
+                              />
+                           </div>
+                        )}
+
+                        <button
+                           id="totp-reset-submit"
+                           type="submit"
+                           disabled={loading}
+                           className="w-full py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg font-bold transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl"
+                        >
+                           {loading && <Loader2 size={20} className="animate-spin" />}
+                           {loading ? "Processing…" : resetRequested ? "Submit & Reset Authenticator" : "Send Reset OTP"}
                         </button>
                      </form>
                   )}
 
                   {/* ================= SIGNUP ================= */}
                   {view === "signup" && (
-                     <form className="mx-auto max-w-lg space-y-5 max-[480px]:space-y-3" onSubmit={handleRegister}>
+                     <form className="mx-auto max-w-lg space-y-6 max-[480px]:space-y-4" onSubmit={handleRegister}>
                         <div>
-                           <label className="text-[11px] font-semibold text-on-surface-variant">
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
                               Email Address
                            </label>
                            <input
                               id="register-email"
                               type="email"
-                              placeholder="name@example.com"
+                              placeholder="your@email.com"
                               value={email}
                               onChange={(e) => setEmail(e.target.value)}
-                              className="w-full mt-1 p-2.5 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40 placeholder:text-on-surface-variant/70"
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white dark:placeholder-slate-500 transition placeholder:text-slate-400"
                            />
                         </div>
 
-
-
-                        <div className="space-y-1.5">
-                           <div className="grid sm:grid-cols-2 gap-2">
+                        <div className="space-y-3">
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300">
+                              Password & Confirmation
+                           </label>
+                           <div className="grid sm:grid-cols-2 gap-3">
                               <div className="relative">
                                  <input
                                     id="register-password"
@@ -683,14 +805,14 @@ function AuthPage() {
                                     placeholder="Password"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
-                                    className="w-full p-2.5 pr-10 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
                                  />
                                  <button
                                     type="button"
                                     onClick={() => setSignupShowPassword(!signupShowPassword)}
-                                    className="absolute right-3 top-3 text-gray-500 hover:text-gray-700"
+                                    className="absolute right-4 top-3 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
                                  >
-                                    {signupShowPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                                    {signupShowPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                                  </button>
                               </div>
 
@@ -698,25 +820,28 @@ function AuthPage() {
                                  <input
                                     id="register-confirm-password"
                                     type={signupShowConfirmPassword ? "text" : "password"}
-                                    placeholder="Confirm Password"
+                                    placeholder="Confirm"
                                     value={confirmPassword}
                                     onChange={(e) => setConfirmPassword(e.target.value)}
-                                    className="w-full p-2.5 pr-10 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
                                  />
                                  <button
                                     type="button"
                                     onClick={() => setSignupShowConfirmPassword(!signupShowConfirmPassword)}
-                                    className="absolute right-3 top-3 text-gray-500 hover:text-gray-700"
+                                    className="absolute right-4 top-3 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
                                  >
-                                    {signupShowConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                                    {signupShowConfirmPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                                  </button>
                               </div>
                            </div>
-                           <p className="text-[11px] text-on-surface-variant">{PASSWORD_POLICY_MESSAGE}</p>
+                           <p className="text-xs text-slate-600 dark:text-slate-400 flex items-start gap-2">
+                              <span className="text-lg leading-none">ℹ️</span>
+                              <span>{PASSWORD_POLICY_MESSAGE}</span>
+                           </p>
                         </div>
 
                         <div>
-                           <label className="text-[11px] font-semibold text-on-surface-variant">
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
                               Domain {hasInviteToken ? "(Optional)" : "(Required)"}
                            </label>
                            <input
@@ -725,7 +850,7 @@ function AuthPage() {
                               placeholder={hasInviteToken ? "example.com (optional)" : "example.com"}
                               value={domain}
                               onChange={(e) => setDomain(e.target.value)}
-                              className="w-full mt-1 p-2.5 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40 placeholder:text-on-surface-variant/70"
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white dark:placeholder-slate-500 transition placeholder:text-slate-400"
                            />
                         </div>
 
@@ -733,164 +858,144 @@ function AuthPage() {
                            id="register-submit"
                            type="submit"
                            disabled={loading}
-                           className="w-full py-2.5 bg-primary text-white rounded-lg font-bold hover:bg-primary-dim transition disabled:opacity-60 flex items-center justify-center gap-2"
+                           className="w-full py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg font-bold transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl"
                         >
-                           {loading && <Loader2 size={18} className="animate-spin" />}
+                           {loading && <Loader2 size={20} className="animate-spin" />}
                            {loading ? "Creating Account…" : "Create Account"}
                         </button>
-                        <p style={{ fontSize: "11px", color: "#888" }}>
+
+                        <p className="text-xs text-slate-600 dark:text-slate-400 text-center">
                            This site is protected by reCAPTCHA and the Google{" "}
-                           <a href="https://policies.google.com/privacy">Privacy Policy</a> and{" "}
-                           <a href="https://policies.google.com/terms">Terms of Service</a> apply.
+                           <a href="https://policies.google.com/privacy" className="text-purple-600 dark:text-purple-400 hover:underline">Privacy Policy</a> and{" "}
+                           <a href="https://policies.google.com/terms" className="text-purple-600 dark:text-purple-400 hover:underline">Terms of Service</a> apply.
                         </p>
+
+                        {/* Benefits for signup */}
+                        <div className="pt-6 border-t border-slate-200 dark:border-slate-700">
+                           <p className="text-xs font-semibold text-slate-600 dark:text-slate-400 mb-4 uppercase">What you get:</p>
+                           <div className="space-y-2">
+                              <div className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                                 <CheckCircle2 size={16} className="text-green-500 flex-shrink-0" />
+                                 <span>Instant domain security analysis</span>
+                              </div>
+                              <div className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                                 <CheckCircle2 size={16} className="text-green-500 flex-shrink-0" />
+                                 <span>Real-time threat monitoring</span>
+                              </div>
+                              <div className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                                 <CheckCircle2 size={16} className="text-green-500 flex-shrink-0" />
+                                 <span>Actionable security reports</span>
+                              </div>
+                           </div>
+                        </div>
                      </form>
                   )}
 
                   {/* ================= FORGOT PASSWORD – Email ================= */}
                   {view === "forgot" && (
-                     <form className="mx-auto max-w-lg space-y-5 max-[480px]:space-y-3" onSubmit={handleForgotPassword}>
-                        <input
-                           id="forgot-email"
-                           type="email"
-                           placeholder="email@example.com"
-                           value={email}
-                           onChange={(e) => setEmail(e.target.value)}
-                           className="w-full p-2.5 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40"
-                        />
+                     <form className="mx-auto max-w-lg space-y-6 max-[480px]:space-y-4" onSubmit={handleForgotPassword}>
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              Email Address
+                           </label>
+                           <input
+                              id="forgot-email"
+                              type="email"
+                              placeholder="your@email.com"
+                              value={email}
+                              onChange={(e) => setEmail(e.target.value)}
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white dark:placeholder-slate-500 transition placeholder:text-slate-400"
+                           />
+                        </div>
 
                         <button
                            id="forgot-submit"
                            type="submit"
                            disabled={loading}
-                           className="w-full py-2.5 bg-primary text-white rounded-lg font-bold hover:bg-primary-dim transition disabled:opacity-60 flex items-center justify-center gap-2"
+                           className="w-full py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg font-bold transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl"
                         >
-                           {loading && <Loader2 size={18} className="animate-spin" />}
-                           {loading ? "Sending OTP…" : "Send OTP"}
+                           {loading && <Loader2 size={20} className="animate-spin" />}
+                           {loading ? "Sending OTP…" : "Send Reset OTP"}
                         </button>
+
+                        <p className="text-sm text-slate-600 dark:text-slate-400 text-center">
+                           We'll send a one-time password to your email address.
+                        </p>
                      </form>
                   )}
 
                   {/* ================= RESET PASSWORD – OTP + New Password ================= */}
                   {view === "reset-otp" && (
-                     <form className="mx-auto max-w-lg space-y-5 max-[480px]:space-y-3" onSubmit={handleResetWithOtp}>
-                        {/* Show the email this was sent to */}
-                        <p className="text-xs max-[480px]:text-[11px] text-on-surface-variant">
-                           OTP sent to <span className="font-semibold text-on-surface">{email}</span>
-                        </p>
+                     <form className="mx-auto max-w-lg space-y-6 max-[480px]:space-y-4" onSubmit={handleResetWithOtp}>
+                        <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-4">
+                           <p className="text-sm text-purple-900 dark:text-purple-300">
+                              One-time password sent to <span className="font-bold">{email}</span>
+                           </p>
+                        </div>
 
-                        <input
-                           id="reset-otp"
-                           type="text"
-                           placeholder="Enter 6-digit OTP"
-                           maxLength={6}
-                           value={otp}
-                           onChange={(e) => setOtp(e.target.value)}
-                           className="w-full p-2.5 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40 tracking-widest text-center text-base"
-                        />
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              OTP Code
+                           </label>
+                           <input
+                              id="reset-otp"
+                              type="text"
+                              placeholder="000000"
+                              maxLength={6}
+                              value={otp}
+                              onChange={(e) => setOtp(e.target.value)}
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition tracking-widest text-center text-lg font-mono"
+                           />
+                        </div>
 
-                        <div className="space-y-1.5">
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              New Password
+                           </label>
                            <div className="relative">
                               <input
                                  id="reset-new-password"
                                  type={showNewPassword ? "text" : "password"}
-                                 placeholder="New Password"
+                                 placeholder="••••••••"
                                  value={newPassword}
                                  onChange={(e) => setNewPassword(e.target.value)}
-                                 className="w-full p-2.5 pr-10 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40"
+                                 className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
                               />
                               <button
                                  type="button"
                                  onClick={() => setShowNewPassword(!showNewPassword)}
-                                 className="absolute right-3 top-3 text-gray-500 hover:text-gray-700"
+                                 className="absolute right-4 top-3 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
                               >
-                                 {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                                 {showNewPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                               </button>
                            </div>
-                           <p className="text-[11px] text-on-surface-variant">{PASSWORD_POLICY_MESSAGE}</p>
+                           <p className="text-xs text-slate-600 dark:text-slate-400 mt-2">{PASSWORD_POLICY_MESSAGE}</p>
                         </div>
 
                         <button
                            id="reset-submit"
                            type="submit"
                            disabled={loading}
-                           className="w-full py-2.5 bg-primary text-white rounded-lg font-bold hover:bg-primary-dim transition disabled:opacity-60 flex items-center justify-center gap-2"
+                           className="w-full py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg font-bold transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl"
                         >
-                           {loading && <Loader2 size={18} className="animate-spin" />}
+                           {loading && <Loader2 size={20} className="animate-spin" />}
                            {loading ? "Resetting…" : "Reset Password"}
                         </button>
                      </form>
                   )}
-
-                  {/* ================= TOTP RESET ================= */}
-                  {view === "totp-reset" && (
-                     <form className="mx-auto max-w-lg space-y-5 max-[480px]:space-y-3" onSubmit={resetRequested ? handleResetTotp : handleSendTotpResetOtp}>
-                        <div className="flex justify-between items-center">
-                           <button
-                              type="button"
-                              onClick={() => switchView("login")}
-                              className="text-sm text-primary font-semibold hover:underline"
-                           >
-                              Back to Login
-                           </button>
-                        </div>
-
-                        <p className="text-sm text-on-surface-variant">
-                           {resetRequested
-                              ? "Enter the OTP sent to your email to reset your authenticator app."
-                              : "Enter your email and request a reset OTP to recover your lost authenticator app."}
-                        </p>
-
-                        <input
-                           id="totp-reset-email"
-                           type="email"
-                           placeholder="email@example.com"
-                           value={email}
-                           onChange={(e) => setEmail(e.target.value)}
-                           className="w-full p-2.5 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40"
-                        />
-
-                        {resetRequested && (
-                           <input
-                              id="totp-reset-otp"
-                              type="text"
-                              placeholder="Enter OTP"
-                              maxLength={6}
-                              value={otp}
-                              onChange={(e) => setOtp(e.target.value)}
-                              className="w-full p-2.5 rounded-lg bg-surface-container-low outline-none focus:ring-2 focus:ring-primary/40 tracking-widest text-center text-base"
-                           />
-                        )}
-
-                        <button
-                           id="totp-reset-submit"
-                           type="submit"
-                           disabled={loading}
-                           className="w-full py-2.5 bg-primary text-white rounded-lg font-bold hover:bg-primary-dim transition disabled:opacity-60 flex items-center justify-center gap-2"
-                        >
-                           {loading && <Loader2 size={18} className="animate-spin" />}
-                           {loading ? "Processing…" : resetRequested ? "Submit OTP & Reset" : "Send Reset OTP"}
-                        </button>
-                     </form>
-                  )}
-
-                  {/* Toggle (only for login / signup) */}
                   {(view === "login" || view === "signup") && (
-                     <div className="mt-4 text-center text-sm max-[480px]:text-xs text-on-surface-variant">
-                        {view === "login" ? "New user?" : "Already have an account?"}
+                     <div className="mt-8 pt-8 border-t border-slate-200 dark:border-slate-700 text-center text-sm text-slate-600 dark:text-slate-400">
+                        {view === "login" ? "Don't have an account?" : "Already have an account?"}
                         <button
                            onClick={() => switchView(view === "login" ? "signup" : "login")}
-                           className="ml-2 text-primary font-semibold"
+                           className="ml-2 text-purple-600 dark:text-purple-400 font-bold hover:underline transition"
                         >
-                           {view === "login" ? "Create Account" : "Login"}
+                           {view === "login" ? "Sign Up" : "Sign In"}
                         </button>
                      </div>
                   )}
                </div>
-
-               {/* Footer */}
-               <div className="mt-4 text-center text-[10px] text-on-surface-variant">
-                  End-to-End Cryptographic Assurance
-               </div>
+            </div>
             </div>
          </main>
       </div>

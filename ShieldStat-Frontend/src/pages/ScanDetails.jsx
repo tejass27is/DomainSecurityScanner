@@ -154,19 +154,41 @@ function domainIsAssigned(domain, assignedDomains) {
 
 // ─── IP Reputation helpers ────────────────────────────────────────────────────
 
+function normalizeIpReputation(rep) {
+  if (!rep || typeof rep !== "object") return null;
+
+  const abuseConfidenceScore = Number(rep.abuseConfidenceScore ?? 0);
+  return {
+    ...rep,
+    abuseConfidenceScore: Number.isFinite(abuseConfidenceScore) ? abuseConfidenceScore : 0,
+    totalReports: Number(rep.totalReports ?? 0),
+    ip: rep.ip || "Unknown",
+    isp: rep.isp || "Unknown ISP",
+    countryCode: rep.countryCode || null,
+    usageType: rep.usageType || null,
+    domain: rep.domain || null,
+    isPublic: Boolean(rep.isPublic),
+    lastReportedAt: rep.lastReportedAt || null,
+  };
+}
+
 function getReputationSeverity(score) {
-  if (score >= 80) return "critical";
-  if (score >= 50) return "high";
-  if (score >= 20) return "medium";
-  if (score > 0) return "low";
+  const numericScore = Number(score ?? 0);
+  if (!Number.isFinite(numericScore)) return null;
+  if (numericScore >= 80) return "critical";
+  if (numericScore >= 50) return "high";
+  if (numericScore >= 20) return "medium";
+  if (numericScore > 0) return "low";
   return null;
 }
 
 function getReputationLabel(score) {
-  if (score >= 80) return "Malicious";
-  if (score >= 50) return "Suspicious";
-  if (score >= 20) return "Moderate Risk";
-  if (score > 0) return "Low Risk";
+  const numericScore = Number(score ?? 0);
+  if (!Number.isFinite(numericScore)) return "Clean";
+  if (numericScore >= 80) return "Malicious";
+  if (numericScore >= 50) return "Suspicious";
+  if (numericScore >= 20) return "Moderate Risk";
+  if (numericScore > 0) return "Low Risk";
   return "Clean";
 }
 
@@ -1003,11 +1025,14 @@ function ResolvedPanel({ domain, refresh }) {
 
 function IpReputationCard({ rep }) {
   const [expanded, setExpanded] = useState(false);
-  const sev = getReputationSeverity(rep.abuseConfidenceScore);
+  const safeRep = normalizeIpReputation(rep);
+  if (!safeRep) return null;
+
+  const sev = getReputationSeverity(safeRep.abuseConfidenceScore);
   const isClean = sev === null;
   const cfg = isClean ? CLEAN_CONFIG : getSeverityConfig(sev);
-  const label = getReputationLabel(rep.abuseConfidenceScore);
-  const score = rep.abuseConfidenceScore;
+  const label = getReputationLabel(safeRep.abuseConfidenceScore);
+  const score = safeRep.abuseConfidenceScore;
 
   const barColor = isClean
     ? "bg-emerald-500"
@@ -1040,10 +1065,10 @@ function IpReputationCard({ rep }) {
         </div>
         <div className="flex-grow min-w-0">
           <h4 className={`text-base font-extrabold ${cfg.titleColor} font-mono leading-snug`}>
-            {rep.ip}
+            {safeRep.ip}
           </h4>
           <p className={`text-xs font-medium mt-0.5 ${cfg.subColor}`}>
-            {rep.isp || "Unknown ISP"} {rep.countryCode ? `· ${rep.countryCode}` : ""}
+            {safeRep.isp} {safeRep.countryCode ? `· ${safeRep.countryCode}` : ""}
           </p>
         </div>
         <div className="flex flex-col items-center gap-1 shrink-0 w-20">
@@ -1074,18 +1099,18 @@ function IpReputationCard({ rep }) {
           </p>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {[
-              { label: "IP Address",    value: rep.ip,                         icon: "router" },
-              { label: "Abuse Score",   value: `${rep.abuseConfidenceScore}%`, icon: "crisis_alert" },
-              { label: "Total Reports", value: rep.totalReports,               icon: "flag" },
-              { label: "Country",       value: rep.countryCode || "—",         icon: "flag_circle" },
-              { label: "ISP",           value: rep.isp || "—",                 icon: "business" },
-              { label: "Usage Type",    value: rep.usageType || "—",           icon: "category" },
-              { label: "Domain",        value: rep.domain || "—",              icon: "language" },
-              { label: "Public IP",     value: rep.isPublic ? "Yes" : "No",    icon: "public" },
+              { label: "IP Address",    value: safeRep.ip,                         icon: "router" },
+              { label: "Abuse Score",   value: `${safeRep.abuseConfidenceScore}%`, icon: "crisis_alert" },
+              { label: "Total Reports", value: safeRep.totalReports,               icon: "flag" },
+              { label: "Country",       value: safeRep.countryCode || "—",         icon: "flag_circle" },
+              { label: "ISP",           value: safeRep.isp || "—",                 icon: "business" },
+              { label: "Usage Type",    value: safeRep.usageType || "—",           icon: "category" },
+              { label: "Domain",        value: safeRep.domain || "—",              icon: "language" },
+              { label: "Public IP",     value: safeRep.isPublic ? "Yes" : "No",    icon: "public" },
               {
                 label: "Last Reported",
-                value: rep.lastReportedAt
-                  ? new Date(rep.lastReportedAt).toLocaleDateString()
+                value: safeRep.lastReportedAt
+                  ? new Date(safeRep.lastReportedAt).toLocaleDateString()
                   : "Never",
                 icon: "schedule",
               },
@@ -1288,7 +1313,8 @@ function ScanDetails() {
       .then((results) => {
         const resolved = results
           .filter((r) => r.status === "fulfilled")
-          .map((r) => r.value);
+          .map((r) => normalizeIpReputation(r.value))
+          .filter(Boolean);
         setIpReps(resolved);
       })
       .finally(() => setIpRepsLoading(false));
@@ -1410,7 +1436,7 @@ function ScanDetails() {
   const severityOrder = ["critical", "high", "medium", "low"];
   const worstIpSev = ipReps.length
     ? severityOrder.find((s) =>
-        ipReps.some((r) => getReputationSeverity(r.abuseConfidenceScore) === s),
+        ipReps.some((r) => getReputationSeverity(r?.abuseConfidenceScore) === s),
       ) || null
     : null;
 
@@ -1457,7 +1483,7 @@ function ScanDetails() {
     vulnCategories.reduce(
       (sum, c) => sum + c.findings.reduce((s, f) => s + f.hosts.length, 0),
       0,
-    ) + ipReps.filter((r) => r.abuseConfidenceScore > 0).length;
+    ) + ipReps.filter((r) => (r?.abuseConfidenceScore ?? 0) > 0).length;
 
   const activeCfg = activeCat?.isIpRep
     ? worstIpSev === null ? CLEAN_CONFIG : getSeverityConfig(worstIpSev)
@@ -1544,9 +1570,9 @@ function ScanDetails() {
             startY: currentY,
             head: [["IP", "Abuse Score", "Total Reports", "ISP"]],
             body: ipReps.map((r) => [
-              r.ip,
-              r.abuseConfidenceScore + "%",
-              r.totalReports.toString(),
+              r.ip || "—",
+              `${r.abuseConfidenceScore ?? 0}%`,
+              (r.totalReports ?? 0).toString(),
               r.isp || "N/A",
             ]),
             theme: "grid",

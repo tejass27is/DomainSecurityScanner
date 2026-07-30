@@ -77,7 +77,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-100 dark:bg-slate-950">
+    <div className="flex min-h-screen overflow-x-hidden bg-slate-100 dark:bg-slate-950">
       <button
         type="button"
         className={`fixed inset-0 z-30 bg-slate-950/45 transition-opacity duration-200 lg:hidden ${isOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
@@ -96,7 +96,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
         <button
           type="button"
           onClick={onToggle}
-          className={`absolute z-30 flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-400 ${isOpen ? "top-6 right-[-18px]" : "top-5 right-3 lg:top-5 lg:right-3"
+          className={`absolute z-30 flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-400 ${isOpen ? "top-6 right-[-18px]" : "top-5 left-full ml-3 lg:top-5 lg:left-full lg:ml-3"
             }`}
           aria-label={isOpen ? "Close sidebar" : "Open sidebar"}
         >
@@ -224,9 +224,11 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
           isDarkMode={isDarkMode}
         />
 
-        <main className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 lg:p-8">
-          <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
-            <Outlet />
+        <main className="flex-1 min-h-0 overflow-y-auto bg-[radial-gradient(circle_at_top_left,_rgba(167,139,250,0.16),_transparent_28%),linear-gradient(135deg,_#f8fafc_0%,_#f5f3ff_100%)] px-3 py-3 transition-colors duration-300 sm:px-4 sm:py-4 lg:px-6 lg:py-6 dark:bg-[radial-gradient(circle_at_top_left,_rgba(139,92,246,0.2),_transparent_30%),linear-gradient(135deg,_#020617_0%,_#111827_100%)]">
+          <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-6">
+            <div className="rounded-[1.5rem] border border-slate-200/70 bg-white/70 p-3 shadow-[0_20px_60px_rgba(15,23,42,0.06)] backdrop-blur-xl sm:rounded-[2rem] sm:p-5 lg:p-8 dark:border-slate-800 dark:bg-slate-900/70">
+              <Outlet />
+            </div>
           </div>
         </main>
       </div>

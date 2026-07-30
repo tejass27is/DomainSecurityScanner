@@ -1,3 +1,4 @@
+import os
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -13,6 +14,7 @@ from app.api.analyzer.routes import router as analyzer_router
 from app.api.fix.routes import router as fix_router
 from app.api.admin.routes import router as admin_router
 from app.api.malware.routes import router as malware_router
+from app.api.public.routes import router as public_router
 from app.db.base import SessionLocal
 from app.api.fix.routes import router as fix_router
 from app.api.report_issue.routes import router as report_issue_router
@@ -66,9 +68,21 @@ async def startup_event():
     cleanup_thread.start()
 
 # CORS
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+
+if not cors_origins:
+    cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -93,6 +107,7 @@ app.include_router(fix_router)
 app.include_router(admin_router)
 app.include_router(webhook_scanner_router)
 app.include_router(malware_router)
+app.include_router(public_router)
 app.include_router(report_issue_router)
 
 if __name__ == "__main__":

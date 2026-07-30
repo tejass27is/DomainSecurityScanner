@@ -2,8 +2,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from app.db.models import ScanSummary, ScanScoreHistory
-from sqlalchemy import desc
+from sqlalchemy import desc, text
+import json
+import uuid
 START_SCORE = 100
 
 SAFE_PORTS = {80, 443, 993, 995, 465, 587}
@@ -359,64 +360,178 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
 
     ips_of_scan = get_ips_from_scan(subdomains)
 
-    existing_summary = db.query(ScanSummary).filter(
-        ScanSummary.domain == root_domain
-    ).first()
+    existing_summary = db.execute(
+        text(
+            """
+            SELECT org_id
+            FROM scan_summary
+            WHERE domain = :domain
+            LIMIT 1
+            """
+        ),
+        {"domain": root_domain},
+    ).fetchone()
+
+    existing_org_id = None
+    if existing_summary:
+        try:
+            existing_org_id = existing_summary[0]
+        except Exception:
+            existing_org_id = None
+
+    # prefer provided org_id, otherwise fall back to existing summary org_id
+    org_id_to_use = org_id or existing_org_id
 
     if existing_summary:
-        existing_summary.org_id = org_id
-        existing_summary.domain_score = scoring["domain_score"]
-        existing_summary.severity = scoring["severity"]
-        existing_summary.mail_security = mail_security
-        existing_summary.app_security = app_security
-        existing_summary.network_security = network_security
-        existing_summary.tls_security = tls_security
-        existing_summary.dns_security = dns_security
-        existing_summary.ips = ips_of_scan
-    else:
-        new_summary = ScanSummary(
-            domain=root_domain,
-            org_id=org_id,
-            domain_score=scoring["domain_score"],
-            severity=scoring["severity"],
-            mail_security=mail_security,
-            app_security=app_security,
-            network_security=network_security,
-            tls_security=tls_security,
-            dns_security=dns_security,
-            ips=ips_of_scan
+        db.execute(
+            text(
+                """
+                UPDATE scan_summary
+                SET org_id = COALESCE(:org_id, org_id),
+                    domain_score = :domain_score,
+                    domain_criticality = COALESCE(:domain_criticality, domain_criticality),
+                    severity = :severity,
+                    mail_security = :mail_security,
+                    app_security = :app_security,
+                    network_security = :network_security,
+                    tls_security = :tls_security,
+                    dns_security = :dns_security,
+                    ips = :ips
+                WHERE domain = :domain
+                """
+            ),
+            {
+                "org_id": org_id,
+                "domain_score": scoring["domain_score"],
+                "severity": scoring["severity"],
+                "domain_criticality": "medium",
+                "mail_security": json.dumps(mail_security),
+                "app_security": json.dumps(app_security),
+                "network_security": json.dumps(network_security),
+                "tls_security": json.dumps(tls_security),
+                "dns_security": json.dumps(dns_security),
+                "ips": json.dumps(ips_of_scan),
+                "domain": root_domain,
+            },
         )
-        db.add(new_summary)
+    else:
+        # If we still don't have an org_id, try to derive it from organizations or users
+        if org_id_to_use is None:
+            # Try organizations where domain JSONB contains the domain
+            try:
+                org_row = db.execute(
+                    text(
+                        "SELECT org_id FROM organizations WHERE domain @> :domain_json LIMIT 1"
+                    ),
+                    {"domain_json": json.dumps([root_domain])},
+                ).fetchone()
+                if org_row:
+                    org_id_to_use = org_row[0]
+            except Exception:
+                org_id_to_use = None
 
-    history_result = {
-        "domain": root_domain,
-        "domain_score": scoring["domain_score"],
-        "severity": scoring["severity"],
-        "host": {
-            "domain": root_domain,
-            "mail_security": mail_security or {},
-        },
-        "categorized_vulnerabilities": {
-            "Application Security": app_security or {},
-            "Network Security": network_security or {},
-            "TLS Security": tls_security or {},
-            "DNS Security": dns_security or {},
-        },
-        "ips": ips_of_scan or [],
-        "subdomains": scoring.get("subdomains") or [],
-        "raw_scan": raw_data or {},
-    }
+        if org_id_to_use is None:
+            # Fallback: try users.pending_registration_domain
+            try:
+                user_row = db.execute(
+                    text(
+                        "SELECT org_id FROM users WHERE pending_registration_domain = :domain LIMIT 1"
+                    ),
+                    {"domain": root_domain},
+                ).fetchone()
+                if user_row:
+                    org_id_to_use = user_row[0]
+            except Exception:
+                org_id_to_use = None
 
-    score_history = ScanScoreHistory(
-        org_id=org_id,
-        domain=root_domain,
-        domain_score=scoring["domain_score"],
-        result=history_result,
-        scan_date=datetime.now(timezone.utc),
-    )
-    db.add(score_history)
+        if org_id_to_use is None:
+            raise HTTPException(status_code=400, detail="org_id missing for new scan summary")
+
+        db.execute(
+            text(
+                """
+                INSERT INTO scan_summary (
+                    domain,
+                    org_id,
+                    domain_score,
+                    domain_criticality,
+                    severity,
+                    mail_security,
+                    app_security,
+                    network_security,
+                    tls_security,
+                    dns_security,
+                    ips
+                ) VALUES (
+                    :domain,
+                    :org_id,
+                    :domain_score,
+                    :domain_criticality,
+                    :severity,
+                    :mail_security,
+                    :app_security,
+                    :network_security,
+                    :tls_security,
+                    :dns_security,
+                    :ips
+                )
+                """
+            ),
+            {
+                "domain": root_domain,
+                "org_id": org_id_to_use,
+                "domain_score": scoring["domain_score"],
+                "domain_criticality": "medium",
+                "severity": scoring["severity"],
+                "mail_security": json.dumps(mail_security),
+                "app_security": json.dumps(app_security),
+                "network_security": json.dumps(network_security),
+                "tls_security": json.dumps(tls_security),
+                "dns_security": json.dumps(dns_security),
+                "ips": json.dumps(ips_of_scan),
+            },
+        )
 
     db.commit()
+
+    # Insert scan history only if we have an org_id (table enforces NOT NULL)
+    if org_id_to_use:
+        history_result = {
+            "domain": root_domain,
+            "domain_score": scoring["domain_score"],
+            "severity": scoring["severity"],
+            "host": {
+                "domain": root_domain,
+                "mail_security": mail_security or {},
+            },
+            "categorized_vulnerabilities": {
+                "Application Security": app_security or {},
+                "Network Security": network_security or {},
+                "TLS Security": tls_security or {},
+                "DNS Security": dns_security or {},
+            },
+            "ips": ips_of_scan or [],
+            "subdomains": scoring.get("subdomains") or [],
+            "raw_scan": raw_data or {},
+        }
+
+        db.execute(
+            text(
+                """
+                INSERT INTO scan_score_history (_id, org_id, domain, domain_score, result, scan_date)
+                VALUES (:_id, :org_id, :domain, :domain_score, :result, :scan_date)
+                """
+            ),
+            {
+                "_id": str(uuid.uuid4()),
+                "org_id": org_id_to_use,
+                "domain": root_domain,
+                "domain_score": scoring["domain_score"],
+                "result": json.dumps(history_result),
+                "scan_date": datetime.now(timezone.utc),
+            },
+        )
+        db.commit()
 
 def get_ips_from_scan(subdomains: list):
     ips = []

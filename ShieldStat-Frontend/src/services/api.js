@@ -1,4 +1,8 @@
 const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+const requestCache = new Map();
+const CACHE_TTL_MS = 30000;
+const OPTIONAL_ENRICHMENTS_ENABLED =
+  import.meta.env.PROD || import.meta.env.VITE_ENABLE_OPTIONAL_ENRICHMENTS === "true";
 
 async function getPublicIp() {
   try {
@@ -10,10 +14,18 @@ async function getPublicIp() {
   }
 }
 
-async function request(endpoint, { method = "GET", body, token, signal, publicIp } = {}) {
+async function request(endpoint, { method = "GET", body, token, signal, publicIp, allowFailure = false } = {}) {
   const headers = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   if (publicIp) headers["X-Public-IP"] = publicIp;
+
+  const cacheKey = method === "GET" ? `${method}:${endpoint}:${token || "anonymous"}` : null;
+  if (cacheKey) {
+    const cached = requestCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached.value;
+    }
+  }
 
   const res = await fetch(`${API_BASE}${endpoint}`, {
     method,
@@ -22,11 +34,24 @@ async function request(endpoint, { method = "GET", body, token, signal, publicIp
     signal,
   });
 
-  const data = await res.json().catch(() => null);
+  const contentType = res.headers.get("content-type") || "";
+  const data = contentType.includes("application/json")
+    ? await res.json().catch(() => null)
+    : await res.text().catch(() => null);
 
   if (!res.ok) {
-    const message = data?.detail || `Request failed (${res.status})`;
+    if (allowFailure) {
+      return null;
+    }
+
+    const message = typeof data === "object" && data?.detail
+      ? data.detail
+      : `Request failed (${res.status})`;
     throw new Error(message);
+  }
+
+  if (cacheKey) {
+    requestCache.set(cacheKey, { value: data, timestamp: Date.now() });
   }
 
   return data;
@@ -189,13 +214,44 @@ export function getScore(domain, token) {
   });
 }
 
+export function scanPublicDomain(domain) {
+  return request("/public/scan", {
+    method: "POST",
+    body: { domain },
+  });
+}
+
+export function getPublicScanStatus(domain) {
+  return request(`/public/scan-status?domain=${encodeURIComponent(domain)}`);
+}
+
+export function getPublicDomainOverview(domain) {
+  return request(`/public/domain-overview?domain=${encodeURIComponent(domain)}`);
+}
+
+export function setScoringCriticality(domain, criticality, token) {
+  return request(`/score/set-criticality?domain=${encodeURIComponent(domain)}&criticality=${criticality}`, {
+    method: "PUT",
+    token,
+  });
+}
+
+export function getCriticalityLevels(token) {
+  return request("/score/criticality-levels", { token });
+}
+
 export function getScanHistory(token) {
   return request("/score/history", { token });
 }
 
 export function getIpReputation(ip, token) {
+  if (!ip || !token || !OPTIONAL_ENRICHMENTS_ENABLED) {
+    return Promise.resolve(null);
+  }
+
   return request(`/score/ip-reputation?ip=${encodeURIComponent(ip)}`, {
     token,
+    allowFailure: true,
   });
 }
 
@@ -363,9 +419,14 @@ export function getMalwareReport(domain, token, signal) {
 }
 
 export function getMalwareLatestReport(domain, token, signal) {
+  if (!domain || !token || !OPTIONAL_ENRICHMENTS_ENABLED) {
+    return Promise.resolve(null);
+  }
+
   return request(`/malware/latest?domain=${encodeURIComponent(domain)}`, {
     token,
     signal,
+    allowFailure: true,
   });
 }
 
