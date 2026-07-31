@@ -48,9 +48,37 @@ function getStageLabel(msg) {
 const MILESTONES = [10, 33, 55, 78, 100];
 
 // --- GLOBAL STATE ---
-// We keep this outside the component so changing tabs doesn't reset it
-const rawState = sessionStorage.getItem('auditGlobalScanState');
-const savedState = rawState ? JSON.parse(rawState) : {};
+// Persist the scan state in browser storage so all tabs stay in sync.
+const SCAN_STATE_STORAGE_KEY = "auditGlobalScanState";
+
+function readPersistedScanState() {
+  if (typeof window === "undefined") return {};
+  try {
+    const rawState = localStorage.getItem(SCAN_STATE_STORAGE_KEY);
+    return rawState ? JSON.parse(rawState) : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistScanState() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(SCAN_STATE_STORAGE_KEY, JSON.stringify({
+      globalDomain,
+      globalIsScanRunning,
+      globalScanProgress,
+      globalTargetProgress,
+      globalScanError,
+      globalScanStage,
+      globalScanMessage
+    }));
+  } catch {
+    // ignore storage write failures
+  }
+}
+
+const savedState = readPersistedScanState();
 
 let globalDomain = savedState.globalDomain || "";
 let globalIsScanRunning = savedState.globalIsScanRunning || false;
@@ -62,18 +90,35 @@ let globalScanMessage = savedState.globalScanMessage || "Waiting for live update
 
 const listeners = new Set();
 function notifyListeners() {
-  sessionStorage.setItem('auditGlobalScanState', JSON.stringify({
-    globalDomain,
-    globalIsScanRunning,
-    globalScanProgress,
-    globalTargetProgress,
-    globalScanError,
-    globalScanStage,
-    globalScanMessage
-  }));
+  persistScanState();
   for (const listener of listeners) {
     listener();
   }
+}
+
+function syncGlobalStateFromStorage() {
+  const persistedState = readPersistedScanState();
+  globalDomain = persistedState.globalDomain || "";
+  globalIsScanRunning = persistedState.globalIsScanRunning || false;
+  globalScanProgress = persistedState.globalScanProgress || 0;
+  globalTargetProgress = persistedState.globalTargetProgress || 10;
+  globalScanError = persistedState.globalScanError || null;
+  globalScanStage = persistedState.globalScanStage || "Preparing scan";
+  globalScanMessage = persistedState.globalScanMessage || "Waiting for live updates";
+
+  if (globalIsScanRunning) {
+    startGlobalInterval();
+  } else {
+    clearGlobalInterval();
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== SCAN_STATE_STORAGE_KEY) return;
+    syncGlobalStateFromStorage();
+    notifyListeners();
+  });
 }
 
 // Immediately resume interval if restored as running

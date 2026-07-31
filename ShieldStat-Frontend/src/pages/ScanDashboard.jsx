@@ -923,11 +923,11 @@ function ScanDashboard() {
                       const [x, y] = getRadarPoint(MAX_RADAR_R, i, metrics.length).split(",");
                       return <line key={i} x1="200" y1="200" x2={x} y2={y} stroke="#cbd5e1" strokeWidth="1" />;
                     })}
-                    <polygon points={radarPoints} fill="rgba(139,92,246,0.13)" stroke="#8b5cf6" strokeWidth="2.5" strokeLinejoin="round" />
+                    <polygon points={radarPoints} fill="rgba(128,0,128,0.13)" stroke="#800080" strokeWidth="2.5" strokeLinejoin="round" />
                     {radarPoints.split(" ").map((point, index) => {
                       const [cx, cy] = point.split(",");
                       const value = metrics[index]?.value || 0;
-                      const fill = value >= 60 ? "#8b5cf6" : value >= 30 ? "#f59e0b" : "#e11d48";
+                      const fill = value >= 60 ? "#800080" : value >= 30 ? "#f59e0b" : "#e11d48";
                       return <circle key={index} cx={cx} cy={cy} r="6" fill={fill} stroke="white" strokeWidth="2" />;
                     })}
                     {metrics.map((m, i) => {

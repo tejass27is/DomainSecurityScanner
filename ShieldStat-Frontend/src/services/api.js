@@ -229,6 +229,13 @@ export function getPublicDomainOverview(domain) {
   return request(`/public/domain-overview?domain=${encodeURIComponent(domain)}`);
 }
 
+export function sendPublicScanReport(domain, email) {
+  return request("/public/send-report", {
+    method: "POST",
+    body: { domain, email },
+  });
+}
+
 export function setScoringCriticality(domain, criticality, token) {
   return request(`/score/set-criticality?domain=${encodeURIComponent(domain)}&criticality=${criticality}`, {
     method: "PUT",
@@ -383,6 +390,11 @@ export function getScanSummaries(token) {
 
 export function getTotalScans(token) {
   return request("/admin/scans/total", { token });
+}
+
+export function getPublicReportRequests(token, search = "") {
+  const query = search ? `?search=${encodeURIComponent(search)}` : "";
+  return request(`/admin/report-requests${query}`, { token });
 }
 
 export function getAuditLogs(token) {

@@ -6,8 +6,8 @@ export const CHECKLIST_SECTIONS = [
     id: "authentication",
     label: "Authentication",
     icon: "lock",
-    color: "#6366f1",
-    colorClass: "indigo",
+    color: "#800080",
+    colorClass: "purple",
     description:
       "Most reported data breaches are caused by the use of weak, default, or stolen passwords. Use long, strong, and unique passwords, manage them in a secure password manager, enable 2-factor authentication, keep on top of breaches, and take care while logging into your accounts.",
     items: [
@@ -434,8 +434,8 @@ export const CHECKLIST_SECTIONS = [
     id: "email",
     label: "Email",
     icon: "email",
-    color: "#8b5cf6",
-    colorClass: "violet",
+    color: "#800080",
+    colorClass: "purple",
     description:
       "Email is still a fundamental part of daily life, yet is fundamentally insecure by design. Email-related fraud is on the rise. If a hacker gets access to your emails, it provides a gateway for your other accounts to be compromised through password resets.",
     items: [

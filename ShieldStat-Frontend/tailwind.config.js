@@ -4,8 +4,8 @@ export default {
   theme: {
     extend: {
       colors: {
-        primary: "#4338CA",
-        "primary-dim": "#3730a3",
+        primary: "#800080",
+        "primary-dim": "#620062",
         "background-light": "#f6f6f8",
         "background-dark": "#14131f",
         surface: "#f7f9fb",
@@ -15,6 +15,18 @@ export default {
         "surface-container-low": "#f0f4f7",
         "surface-container-lowest": "#ffffff",
         "surface-container-high": "#e3e9ed",
+        purple: {
+          50: "#f7e5f7",
+          100: "#efd1ef",
+          200: "#d9aad9",
+          300: "#bf73bf",
+          400: "#800080",
+          500: "#800080",
+          600: "#800080",
+          700: "#800080",
+          800: "#620062",
+          900: "#4b004b",
+        },
       },
       fontFamily: {
         display: ["Manrope"],

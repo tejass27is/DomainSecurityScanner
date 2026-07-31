@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
 import Navbar from "../components/Navbar";
-import { getPublicDomainOverview, getPublicScanStatus } from "../services/api";
+import { getPublicDomainOverview, getPublicScanStatus, sendPublicScanReport } from "../services/api";
 
 function getScoreGrade(score) {
   if (score >= 80) return { label: "Optimal", color: "text-emerald-600" };
@@ -22,8 +22,11 @@ function DomainOverviewPage() {
   const [error, setError] = useState("");
   const [scanStatus, setScanStatus] = useState(null);
   const [polling, setPolling] = useState(false);
+  const [email, setEmail] = useState("");
+  const [reportSending, setReportSending] = useState(false);
+  const [reportMessage, setReportMessage] = useState("");
   const location = useLocation();
-  const scanQueued = location.state?.queued;
+  const scanQueued = location.state?.queued === true;
 
   const safeScore = Math.round(overview?.summary?.total_score ?? 0);
   const grade = getScoreGrade(safeScore);
@@ -109,7 +112,9 @@ function DomainOverviewPage() {
       } else {
         const loaded = await loadOverview();
         if (!loaded) {
-          await startPolling();
+          setOverview(null);
+          setPolling(false);
+          setError("No public overview is currently available for this domain. Please start a scan from the homepage.");
         }
       }
       setLoading(false);
@@ -127,6 +132,24 @@ function DomainOverviewPage() {
 
   const handleBack = () => {
     navigate("/");
+  };
+
+  const handleSendReport = async (event) => {
+    event.preventDefault();
+    if (!domain || !email.trim()) return;
+
+    setReportSending(true);
+    setReportMessage("");
+
+    try {
+      const result = await sendPublicScanReport(domain, email.trim());
+      setReportMessage(result?.message || "Report sent successfully.");
+      setEmail("");
+    } catch (err) {
+      setReportMessage(err?.message || "Unable to send the report right now.");
+    } finally {
+      setReportSending(false);
+    }
   };
 
   return (
@@ -153,7 +176,7 @@ function DomainOverviewPage() {
               <p className={`text-sm uppercase tracking-[0.25em] ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Quick scan</p>
               <h2 className={`text-4xl font-extrabold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{domain || "No domain entered"}</h2>
             </div>
-            <div className="rounded-2xl bg-gradient-to-r from-purple-600 to-purple-700 px-4 py-3 text-white shadow-lg">
+            <div className="rounded-2xl bg-gradient-to-r from-[#800080] to-[#800080] px-4 py-3 text-white shadow-lg">
               <p className="text-xs uppercase tracking-[0.2em]">Limited preview</p>
               <p className="mt-1 text-sm">Full report requires signup</p>
             </div>
@@ -168,7 +191,7 @@ function DomainOverviewPage() {
           {!loading && !overview && (polling || scanStatus) && (
             <div className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-slate-700 dark:border-slate-700 dark:text-slate-200">
               <div className="mb-4 inline-flex items-center justify-center gap-2 rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-800 dark:bg-slate-800 dark:text-slate-100">
-                <CheckCircle2 size={18} className="text-purple-600" /> Scan in progress
+                <CheckCircle2 size={18} className="text-[#800080]" /> Scan in progress
               </div>
               <p className="text-lg font-semibold">Preparing your public preview</p>
               <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-400">
@@ -193,7 +216,7 @@ function DomainOverviewPage() {
               <button
                 type="button"
                 onClick={handleBack}
-                className="mt-4 inline-flex items-center rounded-lg bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
+                className="mt-4 inline-flex items-center rounded-lg bg-[#800080] px-4 py-2 text-white hover:bg-[#800080]"
               >
                 Return to homepage
               </button>
@@ -206,7 +229,7 @@ function DomainOverviewPage() {
                 <div className={`rounded-3xl border p-6 ${isDarkMode ? 'border-slate-800 bg-slate-950/70' : 'border-slate-200 bg-slate-50'}`}>
                   <p className="text-sm uppercase tracking-[0.25em] text-slate-500">Security grade</p>
                   <div className="mt-6 flex items-end gap-3">
-                    <p className="text-6xl font-extrabold text-purple-600">{safeScore}</p>
+                    <p className="text-6xl font-extrabold text-[#800080]">{safeScore}</p>
                     <span className="text-xl text-slate-500">/100</span>
                   </div>
                   <div className="mt-6 h-1.5 bg-surface-container rounded-full overflow-hidden">
@@ -230,8 +253,8 @@ function DomainOverviewPage() {
 
                 <div className={`rounded-3xl border p-6 flex flex-col justify-between ${isDarkMode ? 'border-slate-800 bg-slate-950/70' : 'border-slate-200 bg-slate-50'}`}>
                   <div>
-                    <div className="inline-flex items-center gap-2 rounded-full bg-purple-50 px-3 py-2 text-sm font-semibold text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
-                      <span className="w-2.5 h-2.5 rounded-full bg-purple-600" /> Public preview
+                    <div className="inline-flex items-center gap-2 rounded-full bg-[#800080]/10 px-3 py-2 text-sm font-semibold text-[#800080] dark:bg-[#800080]/20 dark:text-[#800080]/80">
+                      <span className="w-2.5 h-2.5 rounded-full bg-[#800080]" /> Public preview
                     </div>
                     <div className="mt-6">
                       <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Top IP</p>
@@ -242,12 +265,35 @@ function DomainOverviewPage() {
                       <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Only a partial review is shown for anonymous scans.</p>
                     </div>
                   </div>
-                  <Link
-                    to="/auth?next=/scan-dashboard"
-                    className="mt-6 inline-flex items-center justify-center rounded-full bg-purple-600 px-4 py-3 text-sm font-semibold text-white hover:bg-purple-700 transition"
-                  >
-                    Get full report →
-                  </Link>
+                  <form onSubmit={handleSendReport} className="mt-6 space-y-3">
+                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300" htmlFor="report-email">
+                      Email full report
+                    </label>
+                    <div className="flex flex-col gap-3 sm:flex-row">
+                      <input
+                        id="report-email"
+                        type="email"
+                        value={email}
+                        onChange={(event) => setEmail(event.target.value)}
+                        placeholder="you@example.com"
+                        className="w-full rounded-full border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 shadow-sm outline-none focus:border-[#800080] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                      />
+                      <button
+                        type="submit"
+                        disabled={reportSending || !email.trim()}
+                        className="inline-flex items-center justify-center rounded-full bg-[#800080] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#800080] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {reportSending ? "Sending..." : "Send report"}
+                      </button>
+                    </div>
+                    {reportMessage ? (
+                      <p className={`text-sm ${reportMessage.toLowerCase().includes("success") ? "text-emerald-600" : "text-rose-600"}`}>
+                        {reportMessage}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-slate-500 dark:text-slate-400">The full PDF report will be emailed to the address you provide.</p>
+                    )}
+                  </form>
                 </div>
               </div>
 
@@ -270,7 +316,7 @@ function DomainOverviewPage() {
                               <p className="text-sm font-semibold text-slate-900 dark:text-white">{finding.check || "Finding"}</p>
                               <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">{finding.subdomain || "Redacted host"}</p>
                             </div>
-                            <span className={`rounded-full bg-purple-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${getSeverityColor(finding.severity)}`}>{finding.severity || "Unknown"}</span>
+                            <span className={`rounded-full bg-[#800080]/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${getSeverityColor(finding.severity)}`}>{finding.severity || "Unknown"}</span>
                           </div>
                           <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">IP: <span className="inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">{finding.ip || "xxx.xxx.xxx.xxx"}</span></p>
                         </div>
@@ -294,7 +340,7 @@ function DomainOverviewPage() {
                                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{preview.category}</p>
                                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Top public findings from this category</p>
                               </div>
-                              <span className="inline-flex items-center rounded-full bg-purple-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-purple-700">Limited</span>
+                              <span className="inline-flex items-center rounded-full bg-[#800080]/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#800080]">Limited</span>
                             </div>
                             <div className="mt-4 space-y-3">
                               {preview.top_findings.map((finding, index) => (
@@ -335,7 +381,7 @@ function DomainOverviewPage() {
                               <span className="text-sm font-semibold text-rose-600 dark:text-rose-400 uppercase">High</span>
                             )}
                           </div>
-                          <p className="mt-2 text-3xl font-bold text-purple-600">{count}</p>
+                          <p className="mt-2 text-3xl font-bold text-[#800080]">{count}</p>
                           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">reported finding{count === 1 ? '' : 's'}</p>
                         </div>
                       );
@@ -354,7 +400,7 @@ function DomainOverviewPage() {
                 <div className="mt-6 grid gap-4 sm:grid-cols-3">
                   <div className="rounded-3xl bg-white/80 p-4 shadow-sm dark:bg-slate-900/80">
                     <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Total score</p>
-                    <p className="mt-4 text-3xl font-bold text-purple-600">{overview.summary.total_score ?? safeScore}</p>
+                    <p className="mt-4 text-3xl font-bold text-[#800080]">{overview.summary.total_score ?? safeScore}</p>
                   </div>
                   <div className="rounded-3xl bg-white/80 p-4 shadow-sm dark:bg-slate-900/80">
                     <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Categories</p>

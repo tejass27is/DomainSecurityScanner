@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, Text, Integer, Boolean, ForeignKey, TIMESTAMP, Index, DateTime, Float
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import JSON
 from sqlalchemy.sql import func
 from app.db.base import Base
 import enum
@@ -19,7 +20,7 @@ class Organization(Base):
 
     org_id = Column(String(36), primary_key=True)
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False)
-    domain = Column(JSONB, nullable=True)
+    domain = Column(JSON, nullable=True)
     max_domains = Column(Integer, default=1, nullable=False)
 
 class User(Base):
@@ -74,6 +75,20 @@ class PersonalEmailInvitation(Base):
     notes = Column(Text, nullable=True)
 
 
+class PublicReportRequest(Base):
+    __tablename__ = "public_report_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), nullable=False, index=True)
+    domain = Column(Text, nullable=False, index=True)
+    report_payload = Column(JSON, nullable=False, default={})
+    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_public_report_requests_created", "created_at"),
+    )
+
+
 class PasswordResetOTP(Base):
     __tablename__ = "password_reset_otps"
 
@@ -104,8 +119,8 @@ class SubscriptionPlan(Base):
     color = Column(String(255), nullable=True)
     container_color = Column(String(255), nullable=True)
     popular = Column(Boolean, nullable=False, server_default="false")
-    features = Column(JSONB, nullable=True)
-    tags = Column(JSONB, nullable=True)
+    features = Column(JSON, nullable=True)
+    tags = Column(JSON, nullable=True)
 
 class Blacklist(Base):
     __tablename__ = "blacklist"
@@ -123,7 +138,7 @@ class AuditLog(Base):
     action = Column(String(100), nullable=False)
     target_type = Column(String(50), nullable=True)
     target_id = Column(String(100), nullable=True)
-    details = Column(JSONB, nullable=True)
+    details = Column(JSON, nullable=True)
     ip_address = Column(String(45), nullable=True)
     public_ip = Column(String(45), nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
@@ -135,7 +150,7 @@ class SecurityAlert(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     severity = Column(String(20), nullable=False, default="medium")
     message = Column(Text, nullable=False)
-    details = Column(JSONB, nullable=True)
+    details = Column(JSON, nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
 
 
@@ -143,18 +158,18 @@ class UserAssessment(Base):
     __tablename__ = "user_assessments"
 
     user_id = Column(String(36), ForeignKey("users.user_id"), primary_key=True)
-    authentication = Column(JSONB, nullable=True)
-    web_browsing = Column(JSONB, nullable=True)
-    emails = Column(JSONB, nullable=True)
-    messaging = Column(JSONB, nullable=True)
-    social_media = Column(JSONB, nullable=True)
-    networks = Column(JSONB, nullable=True)
-    mobile_devices = Column(JSONB, nullable=True)
-    personal_computers = Column(JSONB, nullable=True)
-    smart_home = Column(JSONB, nullable=True)
-    personal_finance = Column(JSONB, nullable=True)
-    human_aspect = Column(JSONB, nullable=True)
-    physical_security = Column(JSONB, nullable=True)
+    authentication = Column(JSON, nullable=True)
+    web_browsing = Column(JSON, nullable=True)
+    emails = Column(JSON, nullable=True)
+    messaging = Column(JSON, nullable=True)
+    social_media = Column(JSON, nullable=True)
+    networks = Column(JSON, nullable=True)
+    mobile_devices = Column(JSON, nullable=True)
+    personal_computers = Column(JSON, nullable=True)
+    smart_home = Column(JSON, nullable=True)
+    personal_finance = Column(JSON, nullable=True)
+    human_aspect = Column(JSON, nullable=True)
+    physical_security = Column(JSON, nullable=True)
 
 
 class ScanSummary(Base):
@@ -167,14 +182,14 @@ class ScanSummary(Base):
     base_score = Column(Float, nullable=True)  # Score before criticality adjustment
     domain_criticality = Column(String(20), nullable=False, default="medium")  # critical, high, medium, low
     severity = Column(String)
-    mail_security = Column(JSONB, nullable=True)
-    app_security = Column(JSONB, nullable=True)
-    network_security = Column(JSONB, nullable=True)
-    tls_security = Column(JSONB, nullable=True)
-    dns_security = Column(JSONB, nullable=True)
-    ips = Column(JSONB, nullable=True)
-    scoring_breakdown = Column(JSONB, nullable=True)  # Detailed scoring breakdown
-    compliance_scores = Column(JSONB, nullable=True)  # PCI-DSS, SOC2, GDPR scores
+    mail_security = Column(JSON, nullable=True)
+    app_security = Column(JSON, nullable=True)
+    network_security = Column(JSON, nullable=True)
+    tls_security = Column(JSON, nullable=True)
+    dns_security = Column(JSON, nullable=True)
+    ips = Column(JSON, nullable=True)
+    scoring_breakdown = Column(JSON, nullable=True)  # Detailed scoring breakdown
+    compliance_scores = Column(JSON, nullable=True)  # PCI-DSS, SOC2, GDPR scores
 
     __table_args__ = (
         Index("idx_scan_summary_score", "domain_score"),
@@ -190,7 +205,7 @@ class ScanScoreHistory(Base):
     org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
     domain = Column(Text, nullable=False)
     domain_score = Column(Integer, nullable=False)
-    result = Column(JSONB, nullable=True)
+    result = Column(JSON, nullable=True)
     scan_date = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -200,7 +215,7 @@ class MalwareScanResult(Base):
     scan_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
     domain = Column(Text, nullable=False)
-    result = Column(JSONB, nullable=False)
+    result = Column(JSON, nullable=False)
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
 
     __table_args__ = (

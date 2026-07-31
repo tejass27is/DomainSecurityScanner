@@ -11,12 +11,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.auth.service import hashPassword, verifyPassword
+from sqlalchemy import or_
+
 from app.db.models import (
     AuditLog,
     Blacklist,
     Organization,
     PersonalEmailInvitation,
     PromoCode,
+    PublicReportRequest,
     ScanScoreHistory,
     ScanSummary,
     SecurityAlert,
@@ -717,6 +720,49 @@ def get_scan_summaries(db: Session) -> list[dict]:
 def get_total_scans(db: Session) -> dict:
     total_scans = db.query(ScanScoreHistory).count()
     return {"total_scans": total_scans}
+
+
+def create_public_report_request(db: Session, email: str, domain: str, report_payload: dict | None = None) -> PublicReportRequest:
+    normalized_email = _normalize_email(email)
+    normalized_domain = domain.strip().lower() if domain else ""
+
+    if not normalized_email or not normalized_domain:
+        raise HTTPException(status_code=400, detail="Email and domain are required")
+
+    record = PublicReportRequest(
+        email=normalized_email,
+        domain=normalized_domain,
+        report_payload=report_payload or {},
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+def get_public_report_requests(db: Session, search: str | None = None) -> list[dict]:
+    query = db.query(PublicReportRequest).order_by(PublicReportRequest.created_at.desc())
+
+    if search and search.strip():
+        needle = f"%{search.strip().lower()}%"
+        query = query.filter(
+            or_(
+                PublicReportRequest.email.ilike(needle),
+                PublicReportRequest.domain.ilike(needle),
+            )
+        )
+
+    rows = query.all()
+    return [
+        {
+            "id": row.id,
+            "email": row.email,
+            "domain": row.domain,
+            "report_payload": row.report_payload or {},
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
 
 
 def get_audit_logs(db: Session) -> list[dict]:

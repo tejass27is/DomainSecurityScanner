@@ -6,7 +6,10 @@ from app.db.models import ScanSummary, Organization, User, ActiveScan
 from app.api.analyzer.scoring_service import format_scoring_response, calculate_weighted_score, get_criticality_from_domain_keywords
 from app.api.scanner.service import _validate_domain_dns
 from app.api.auth.service import hashPassword
+from app.api.admin.service import create_public_report_request
 from app.core.redis_queue import RedisClient
+from app.utils.email import send_scan_report_email
+from app.utils.generate_scan_report_pdf import generate_domain_scan_report_pdf_bytes
 
 router = APIRouter(prefix="/public", tags=["public"])
 redis_client = RedisClient()
@@ -17,8 +20,41 @@ PUBLIC_ORG_ID = "00000000-0000-0000-0000-000000000010"
 PUBLIC_USER_PASSWORD = "PublicScan123!"
 
 
+def _normalize_findings(payload: dict | None):
+    if not payload:
+        return []
+
+    findings = []
+    for rule_name, hosts in (payload or {}).items():
+        if not isinstance(hosts, list):
+            continue
+        normalized_hosts = []
+        severity = "info"
+        for host in hosts:
+            if isinstance(host, dict):
+                normalized_hosts.append({
+                    "subdomain": host.get("subdomain") or host.get("host") or host.get("name"),
+                    "ip": host.get("ip") or host.get("ip_address"),
+                    "port": host.get("port"),
+                    "severity": host.get("severity"),
+                })
+                if host.get("severity"):
+                    severity = str(host.get("severity")).lower()
+        findings.append({
+            "rule": rule_name,
+            "severity": severity,
+            "hosts": normalized_hosts,
+        })
+    return findings
+
+
 class PublicScanRequest(BaseModel):
     domain: str
+
+
+class PublicReportEmailRequest(BaseModel):
+    domain: str
+    email: str
 
 
 def ensure_public_org_exists(db: Session) -> None:
@@ -139,6 +175,60 @@ async def public_scan_status(
 
 
 # Public query for a lightweight domain overview
+@router.post("/send-report")
+def send_report_email(
+    request: PublicReportEmailRequest,
+    db: Session = Depends(get_db),
+):
+    domain = request.domain.strip().lower()
+    email = request.email.strip().lower()
+
+    if not domain:
+        raise HTTPException(status_code=400, detail="Domain is required")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    row = db.query(ScanSummary).filter(ScanSummary.domain == domain).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="No scan report available for this domain")
+
+    categories = []
+    if row.app_security:
+        categories.append({"name": "Application Security", "findings": _normalize_findings(row.app_security)})
+    if row.network_security:
+        categories.append({"name": "Network Security", "findings": _normalize_findings(row.network_security)})
+    if row.tls_security:
+        categories.append({"name": "TLS Security", "findings": _normalize_findings(row.tls_security)})
+    if row.dns_security:
+        categories.append({"name": "DNS Security", "findings": _normalize_findings(row.dns_security)})
+    if row.mail_security:
+        categories.append({"name": "Mail Security", "findings": _normalize_findings(row.mail_security)})
+
+    ip_reps = []
+    if isinstance(row.ips, list):
+        ip_reps = [item for item in row.ips if isinstance(item, dict)]
+
+    report_payload = {
+        "domain": domain,
+        "score": row.domain_score or 0,
+        "grade_label": "Completed" if (row.domain_score or 0) >= 60 else "Needs attention",
+        "categories": categories,
+        "ip_reps": ip_reps,
+    }
+
+    pdf_bytes = generate_domain_scan_report_pdf_bytes(
+        domain=domain,
+        score=row.domain_score or 0,
+        grade_label="Completed" if (row.domain_score or 0) >= 60 else "Needs attention",
+        categories=categories,
+        ip_reps=ip_reps,
+    )
+
+    send_scan_report_email(email, domain, pdf_bytes)
+    create_public_report_request(db, email=email, domain=domain, report_payload=report_payload)
+    return {"message": "Report sent successfully", "email": email, "domain": domain}
+
+
 @router.get("/domain-overview")
 def public_domain_overview(
     domain: str = Query(..., description="Domain to preview"),

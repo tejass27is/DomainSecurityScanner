@@ -6,7 +6,19 @@ import ResetPasswordModal from "./ResetPasswordModal";
 import { getProfile } from "../services/api";
 import { logoutAndRedirect } from "../utils/auth";
 
-function Sidebar({ isOpen, onToggle, onClose, isDarkMode, onToggleDarkMode }) {
+function Sidebar({
+  isOpen,
+  onToggle,
+  onClose,
+  isDarkMode,
+  onToggleDarkMode,
+  navItems = [
+    { to: "/scan-dashboard", label: "Dashboard", icon: "dashboard" },
+    { to: "/assessment", label: "Assessment", icon: "security" },
+    { to: "/scan", label: "Audit Domain", icon: "radar" },
+    { to: "/malware", label: "Malware Scan", icon: "bug_report" },
+  ],
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const settingsRef = useRef(null);
@@ -77,7 +89,11 @@ function Sidebar({ isOpen, onToggle, onClose, isDarkMode, onToggleDarkMode }) {
     };
   }, [isSettingsOpen]);
 
-  const isActive = (path) => location.pathname === path;
+  const isActive = (path) => {
+    if (!path || path === "/") return location.pathname === path;
+    if (path === "/admin") return location.pathname === "/admin";
+    return location.pathname === path || location.pathname.startsWith(`${path}/`);
+  };
 
   const handleSettingsClick = () => {
     if (!isOpen) onToggle();
@@ -145,84 +161,26 @@ function Sidebar({ isOpen, onToggle, onClose, isDarkMode, onToggleDarkMode }) {
 
         {/* Menu */}
         <nav className="flex-1 space-y-2">
-          {/* Scan Dashboard (moved to top per request) */}
-          <Link
-            to="/scan-dashboard"
-            onClick={onClose}
-            className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive("/scan-dashboard") ? activeClass : inactiveClass}`}
-          >
-            <span
-              className={
-                isActive("/scan-dashboard")
-                  ? "absolute left-0 top-0 bottom-0 w-1 bg-indigo-600 rounded-r-full transition-all duration-200"
-                  : "absolute left-0 top-0 bottom-0 w-0 bg-indigo-600 rounded-r-full transition-all duration-200"
-              }
-            />
-            <span className="material-symbols-outlined lg:text-xl lg:leading-none">dashboard</span>
-            <span className={isOpen ? "block" : "hidden"}>Dashboard</span>
-          </Link>
-
-          <Link
-            to="/assessment"
-            onClick={onClose}
-            className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive("/assessment") ? activeClass : inactiveClass}`}
-          >
-            <span
-              className={
-                isActive("/assessment")
-                  ? "absolute left-0 top-0 bottom-0 w-1 bg-indigo-600 rounded-r-full transition-all duration-200"
-                  : "absolute left-0 top-0 bottom-0 w-0 bg-indigo-600 rounded-r-full transition-all duration-200"
-              }
-            />
-            <span className="material-symbols-outlined lg:text-xl lg:leading-none">security</span>
-            <span className={isOpen ? "block" : "hidden"}>Assessment</span>
-          </Link>
-
-          {/* New Scan always present */}
-          <Link
-            to="/scan"
-            onClick={onClose}
-            className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive("/scan") ? activeClass : inactiveClass}`}
-          >
-            <span
-              className={
-                isActive("/scan")
-                  ? "absolute left-0 top-0 bottom-0 w-1 bg-indigo-600 rounded-r-full transition-all duration-200"
-                  : "absolute left-0 top-0 bottom-0 w-0 bg-indigo-600 rounded-r-full transition-all duration-200"
-              }
-            />
-            <span className="material-symbols-outlined lg:text-xl lg:leading-none">radar</span>
-            <div className="flex flex-1 items-center justify-between">
-              <span className={isOpen ? "block" : "hidden"}>Audit Domain</span>
-            </div>
-          </Link>
-
-          {/* Dashboard link moved to top of the menu */}
-
-          {/* Scan History moved into the New Scan page header per UX request */}
-
-          {/* Malware Scan link */}
-          <Link
-            to="/malware"
-            onClick={onClose}
-            className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive("/malware") ? activeClass : inactiveClass}`}
-          >
-            <span
-              className={
-                isActive("/malware")
-                  ? "absolute left-0 top-0 bottom-0 w-1 bg-indigo-600 rounded-r-full transition-all duration-200"
-                  : "absolute left-0 top-0 bottom-0 w-0 bg-indigo-600 rounded-r-full transition-all duration-200"
-              }
-            />
-            <span className="material-symbols-outlined lg:text-xl lg:leading-none">bug_report</span>
-            <div className="flex flex-1 items-center justify-between">
-              <span className={isOpen ? "block" : "hidden"}>Malware Scan</span>
-            </div>
-          </Link>
-
-
-
-          {/* Malware Scan History moved to the Malware page header per UX request */}
+          {navItems.map((item) => (
+            <Link
+              key={item.to}
+              to={item.to}
+              onClick={onClose}
+              className={`${baseClass} ${!isOpen ? compactClass : ""} ${isActive(item.to) ? activeClass : inactiveClass}`}
+            >
+              <span
+                className={
+                  isActive(item.to)
+                    ? "absolute left-0 top-0 bottom-0 w-1 bg-indigo-600 rounded-r-full transition-all duration-200"
+                    : "absolute left-0 top-0 bottom-0 w-0 bg-indigo-600 rounded-r-full transition-all duration-200"
+                }
+              />
+              <span className="material-symbols-outlined lg:text-xl lg:leading-none">{item.icon}</span>
+              <div className="flex flex-1 items-center justify-between">
+                <span className={isOpen ? "block" : "hidden"}>{item.label}</span>
+              </div>
+            </Link>
+          ))}
         </nav>
 
         {/* Bottom */}

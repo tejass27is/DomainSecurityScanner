@@ -157,20 +157,20 @@ html.dark [class~="bg-sky-100"] {
 
 html.dark [class~="bg-purple-50"],
 html.dark [class~="bg-purple-100"] {
-  background-color: rgba(88, 28, 135, 0.36) !important;
+  background-color: rgba(128, 0, 128, 0.28) !important;
 }
 
 html.dark [class~="bg-primary/5"] {
-  background-color: rgba(67, 56, 202, 0.15) !important;
+  background-color: rgba(128, 0, 128, 0.15) !important;
 }
 
 html.dark [class~="bg-primary/10"] {
-  background-color: rgba(67, 56, 202, 0.2) !important;
+  background-color: rgba(128, 0, 128, 0.2) !important;
 }
 
 html.dark [class~="bg-primary-container"],
 html.dark [class~="bg-primary-container/30"] {
-  background-color: rgba(67, 56, 202, 0.2) !important;
+  background-color: rgba(128, 0, 128, 0.2) !important;
 }
 
 /* ─── DARK MODE: Colored bg hover overrides ─── */
@@ -193,7 +193,7 @@ html.dark [class~="hover:bg-emerald-50"]:hover {
 html.dark [class~="hover:bg-blue-50"]:hover,
 html.dark [class~="hover:bg-cyan-50"]:hover,
 html.dark [class~="hover:bg-purple-50"]:hover {
-  background-color: rgba(30, 58, 138, 0.35) !important;
+  background-color: rgba(128, 0, 128, 0.25) !important;
 }
 
 /* ─── DARK MODE: Text color overrides ─── */
@@ -279,11 +279,11 @@ html.dark [class~="text-sky-700"],
 html.dark [class~="text-sky-600"],
 html.dark [class~="text-purple-700"],
 html.dark [class~="text-purple-600"] {
-  color: #93c5fd !important;
+  color: #800080 !important;
 }
 
 html.dark [class~="text-primary"] {
-  color: #a5b4fc !important;
+  color: #800080 !important;
 }
 
 /* ─── DARK MODE: Border overrides ─── */
@@ -303,7 +303,7 @@ html.dark [class~="border-indigo-100"],
 html.dark [class~="border-indigo-200"],
 html.dark [class~="border-indigo-300"],
 html.dark [class~="border-primary/10"] {
-  border-color: #4338ca !important;
+  border-color: #800080 !important;
 }
 
 html.dark [class~="border-red-100"],
@@ -337,7 +337,7 @@ html.dark [class~="border-sky-100"],
 html.dark [class~="border-sky-200"],
 html.dark [class~="border-purple-100"],
 html.dark [class~="border-purple-200"] {
-  border-color: rgba(147, 197, 253, 0.38) !important;
+  border-color: rgba(128, 0, 128, 0.38) !important;
 }
 
 /* border-b, border-t, border-r, border-l without color => inherit from parent or global */
@@ -367,8 +367,8 @@ html.dark textarea::placeholder {
 html.dark input:focus,
 html.dark select:focus,
 html.dark textarea:focus {
-  border-color: #6366f1 !important;
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2) !important;
+  border-color: #800080 !important;
+  box-shadow: 0 0 0 2px rgba(128, 0, 128, 0.2) !important;
 }
 
 html.dark input.landing-domain-input {

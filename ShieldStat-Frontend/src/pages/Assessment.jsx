@@ -96,8 +96,8 @@ function SpiderChart({ metrics, size = 320 }) {
       {/* Filled area */}
       <polygon
         points={radarPoints}
-        fill="rgba(99,102,241,0.12)"
-        stroke="#6366f1"
+        fill="rgba(128,0,128,0.12)"
+        stroke="#800080"
         strokeWidth="2"
         strokeLinejoin="round"
       />
@@ -108,7 +108,7 @@ function SpiderChart({ metrics, size = 320 }) {
         const pt = getRadarPoint(r, i, n, 250);
         const [x, y] = pt.split(",").map(Number);
         const fill =
-          m.value >= 60 ? "#6366f1" : m.value >= 30 ? "#f59e0b" : "#ef4444";
+          m.value >= 60 ? "#800080" : m.value >= 30 ? "#f59e0b" : "#ef4444";
         return (
           <circle
             key={i}
@@ -158,7 +158,7 @@ function CategoryCard({ section, progress, done, total, ignored }) {
     <Link
       to={`/assessment/${section.id}`}
       id={`cat-${section.id}`}
-      className="group block overflow-hidden rounded-3xl border border-slate-200/80 bg-white/90 shadow-[0_12px_40px_rgba(15,23,42,0.06)] backdrop-blur-sm transition-all duration-200 hover:border-purple-200 hover:shadow-[0_20px_50px_rgba(139,92,246,0.15)] dark:border-slate-800 dark:bg-slate-900/80 dark:hover:border-purple-800"
+      className="group block overflow-hidden rounded-3xl border border-slate-200/80 bg-white/90 shadow-[0_12px_40px_rgba(15,23,42,0.06)] backdrop-blur-sm transition-all duration-200 hover:border-purple-200 hover:shadow-[0_20px_50px_rgba(128,0,128,0.15)] dark:border-slate-800 dark:bg-slate-900/80 dark:hover:border-purple-800"
     >
       {/* Top color accent */}
       <div className="h-1" style={{ backgroundColor: section.color }} />
@@ -306,7 +306,7 @@ function OverviewPage({ checks }) {
               </div>
               <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
                 <div
-                  className="h-full rounded-full bg-indigo-600 transition-all duration-1000"
+                  className="h-full rounded-full bg-purple-600 transition-all duration-1000"
                   style={{ width: `${overall}%` }}
                 />
               </div>

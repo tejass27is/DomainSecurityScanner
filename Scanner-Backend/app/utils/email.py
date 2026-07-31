@@ -1,7 +1,8 @@
 import os
 import smtplib
-from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 # Parse SMTP_PORT safely; default to 0 when not provided to avoid import-time errors.
@@ -236,6 +237,34 @@ def send_new_admin_credentials_email(to_email: str, plain_password: str, invited
     part2 = MIMEText(html_content, "html")
     msg.attach(part1)
     msg.attach(part2)
+
+    server = None
+    try:
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(SMTP_USER, to_email, msg.as_string())
+    finally:
+        if server:
+            server.quit()
+
+    return True
+
+
+def send_scan_report_email(to_email: str, domain: str, pdf_bytes: bytes):
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
+
+    msg = MIMEMultipart()
+    msg["Subject"] = f"Your Domain Scanner report for {domain}"
+    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
+    msg["To"] = to_email
+
+    msg.attach(MIMEText(f"Hello,\n\nYour requested security scan report for {domain} is attached below.\n\nRegards,\niSecurify", "plain"))
+
+    pdf_part = MIMEApplication(pdf_bytes, Name=f"{domain}-scan-report.pdf")
+    pdf_part["Content-Disposition"] = 'attachment; filename="%s"' % f"{domain}-scan-report.pdf"
+    msg.attach(pdf_part)
 
     server = None
     try:

@@ -19,6 +19,7 @@ from app.api.admin.service import (
     get_scan_summaries,
     get_security_alerts,
     get_subscription_plans,
+    get_public_report_requests,
     get_total_scans,
     get_users_by_org,
     provision_admin_account,
@@ -214,6 +215,15 @@ def get_scans_total(
     _current_admin: User = Depends(require_admin),
 ):
     return get_total_scans(db)
+
+
+@router.get("/report-requests")
+def list_public_report_requests(
+    search: str | None = None,
+    db: Session = Depends(get_db),
+    _current_admin: User = Depends(require_admin),
+):
+    return get_public_report_requests(db, search=search)
 
 
 @router.get("/subscription/plans")
