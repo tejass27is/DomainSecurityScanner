@@ -661,7 +661,60 @@ function ScanDashboard() {
     : mw?.timestr || "—";
 
   return (
-    <div className="min-h-screen bg-white dark:bg-slate-950 relative overflow-hidden">
+    <div className="min-h-screen bg-white dark:bg-slate-950 relative overflow-hidden scan-dashboard-accent">
+      <style>{`
+        .scan-dashboard-accent .text-purple-600,
+        .scan-dashboard-accent .text-purple-500,
+        .scan-dashboard-accent .text-purple-700,
+        .scan-dashboard-accent .text-purple-400,
+        .scan-dashboard-accent .text-purple-300,
+        .scan-dashboard-accent .group-hover\:text-purple-600:hover,
+        .scan-dashboard-accent .group-hover\:text-purple-400:hover,
+        .scan-dashboard-accent .hover\:text-purple-700:hover,
+        .scan-dashboard-accent .hover\:text-purple-400:hover,
+        .scan-dashboard-accent .dark\:text-purple-400,
+        .scan-dashboard-accent .dark\:text-purple-300,
+        .scan-dashboard-accent .dark\:hover\:text-purple-400:hover,
+        .scan-dashboard-accent .dark\:hover\:text-purple-300:hover {
+          color: #800080 !important;
+        }
+
+        .scan-dashboard-accent .border-purple-200,
+        .scan-dashboard-accent .border-purple-600,
+        .scan-dashboard-accent .border-purple-100,
+        .scan-dashboard-accent .hover\:border-purple-200:hover,
+        .scan-dashboard-accent .dark\:border-purple-800\/50,
+        .scan-dashboard-accent .dark\:border-purple-900\/40 {
+          border-color: rgba(128, 0, 128, 0.28) !important;
+        }
+
+        .scan-dashboard-accent .bg-purple-600,
+        .scan-dashboard-accent .bg-purple-500,
+        .scan-dashboard-accent .bg-purple-700 {
+          background-color: #800080 !important;
+        }
+
+        .scan-dashboard-accent .bg-purple-50,
+        .scan-dashboard-accent .bg-purple-100,
+        .scan-dashboard-accent .hover\:bg-purple-50:hover,
+        .scan-dashboard-accent .dark\:bg-purple-950\/30,
+        .scan-dashboard-accent .dark\:bg-purple-900\/50,
+        .scan-dashboard-accent .dark\:hover\:bg-purple-900\/40:hover {
+          background-color: rgba(128, 0, 128, 0.12) !important;
+        }
+
+        .scan-dashboard-accent .from-purple-500,
+        .scan-dashboard-accent .from-purple-600,
+        .scan-dashboard-accent .from-purple-700,
+        .scan-dashboard-accent .to-purple-600,
+        .scan-dashboard-accent .to-purple-700,
+        .scan-dashboard-accent .to-purple-800,
+        .scan-dashboard-accent .hover\:from-purple-700:hover,
+        .scan-dashboard-accent .hover\:to-purple-800:hover {
+          --tw-gradient-from: #800080 !important;
+          --tw-gradient-to: #800080 !important;
+        }
+      `}</style>
       {/* Animated Background Blobs */}
       {/* <div className="absolute top-0 right-0 w-96 h-96 bg-purple-400 rounded-full mix-blend-multiply filter blur-3xl opacity-5 animate-pulse"></div>
       <div className="absolute bottom-0 left-0 w-96 h-96 bg-purple-400 rounded-full mix-blend-multiply filter blur-3xl opacity-5 animate-pulse"></div> */}

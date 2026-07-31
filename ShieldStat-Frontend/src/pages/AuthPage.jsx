@@ -411,10 +411,6 @@ function AuthPage() {
 
    return (
       <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-50 to-purple-50 dark:from-slate-900 dark:to-slate-800 font-body relative overflow-hidden">
-         {/* Background Elements */}
-         <div className="absolute top-0 right-0 w-72 h-72 bg-purple-400 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
-         <div className="absolute bottom-0 left-0 w-72 h-72 bg-purple-400 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
-
          <main className="flex-grow flex min-h-screen items-center justify-center px-4 py-12 relative z-10">
 
             <div className="w-full grid lg:grid-cols-2 gap-8 max-w-6xl items-center">

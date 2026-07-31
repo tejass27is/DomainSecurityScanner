@@ -33,7 +33,7 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
           <div className="w-full">
             <div className="rounded-[1.5rem] border border-slate-200/70 bg-white/70 p-3 shadow-[0_20px_60px_rgba(15,23,42,0.06)] backdrop-blur-xl sm:rounded-[2rem] sm:p-5 lg:p-8 dark:border-slate-800 dark:bg-slate-900/70">
               <Outlet />
-            </div>z
+            </div>
           </div>
         </main>
       </div>

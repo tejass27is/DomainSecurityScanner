@@ -82,7 +82,7 @@ class PublicReportRequest(Base):
     email = Column(String(255), nullable=False, index=True)
     domain = Column(Text, nullable=False, index=True)
     report_payload = Column(JSON, nullable=False, default={})
-    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         Index("idx_public_report_requests_created", "created_at"),

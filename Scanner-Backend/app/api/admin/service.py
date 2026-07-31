@@ -733,11 +733,20 @@ def create_public_report_request(db: Session, email: str, domain: str, report_pa
         email=normalized_email,
         domain=normalized_domain,
         report_payload=report_payload or {},
+        created_at=datetime.now(timezone.utc),
     )
     db.add(record)
     db.commit()
     db.refresh(record)
     return record
+
+
+def _format_timestamp_to_utc_iso(timestamp: datetime | None) -> str | None:
+    if not timestamp:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def get_public_report_requests(db: Session, search: str | None = None) -> list[dict]:
@@ -759,7 +768,7 @@ def get_public_report_requests(db: Session, search: str | None = None) -> list[d
             "email": row.email,
             "domain": row.domain,
             "report_payload": row.report_payload or {},
-            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "created_at": _format_timestamp_to_utc_iso(row.created_at),
         }
         for row in rows
     ]

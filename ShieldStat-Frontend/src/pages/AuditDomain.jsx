@@ -314,8 +314,8 @@ function DomainTab({ domain, isActive, onClick, disabled }) {
       onClick={onClick}
       disabled={disabled}
       className={`flex-shrink-0 inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-bold transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 ${isActive
-          ? "border-indigo-600 bg-indigo-600 text-white shadow-sm"
-          : "border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+          ? "border-[#800080] bg-[#800080] text-white shadow-sm"
+          : "border-slate-200 bg-white text-slate-700 hover:border-[#800080]/30 hover:bg-[#800080]/10 hover:text-[#800080]"
         }`}
     >
       <span
@@ -467,14 +467,14 @@ function NewScan() {
   return (
     <div className="min-h-full">
       <div className="mx-auto w-full max-w-5xl space-y-6 sm:space-y-8">
-        <div className="rounded-[2rem] border border-slate-200/70 bg-gradient-to-br from-purple-600 to-indigo-600 p-6 text-white shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-8">
+        <div className="rounded-[2rem] border border-slate-200/70 bg-gradient-to-br from-[#800080] to-[#6a006a] p-6 text-white shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h1 className="mb-3 text-3xl font-extrabold tracking-tight sm:text-4xl lg:text-5xl">
                 New Domain Scan
               </h1>
 
-              <p className="max-w-3xl text-base text-purple-50 sm:text-lg">
+              <p className="max-w-3xl text-base text-white/90 sm:text-lg">
                 Deploy an autonomous audit of your digital perimeter. Enter a
                 domain to begin high-fidelity asset discovery and vulnerability
                 profiling.
@@ -519,9 +519,9 @@ function NewScan() {
                   {availableSlots > 0 && (
                   <form
                     onSubmit={handleAddDomain}
-                    className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50/50 p-1 pl-3 shadow-sm focus-within:border-indigo-400 sm:w-auto sm:flex-nowrap"
+                    className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-[#800080]/20 bg-[#800080]/10 p-1 pl-3 shadow-sm focus-within:border-[#800080] sm:w-auto sm:flex-nowrap"
                   >
-                    <span className="material-symbols-outlined text-indigo-500 text-sm">add_circle</span>
+                    <span className="material-symbols-outlined text-[#800080] text-sm">add_circle</span>
                     <input
                       type="text"
                       value={newDomain}
@@ -533,7 +533,7 @@ function NewScan() {
                     <button
                       type="submit"
                       disabled={addDomainLoading || !newDomain.trim()}
-                      className="flex h-8 w-8 items-center justify-center rounded bg-indigo-600 text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50"
+                      className="flex h-8 w-8 items-center justify-center rounded bg-[#800080] text-white shadow-sm transition hover:bg-[#6a006a] disabled:opacity-50"
                     >
                       <span className={`material-symbols-outlined text-[16px] ${addDomainLoading ? "animate-spin" : ""}`}>
                         {addDomainLoading ? "sync" : "keyboard_return"}
@@ -549,7 +549,7 @@ function NewScan() {
                   type="button"
                   onClick={handleStartScan}
                   disabled={isStartDisabled}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-6 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none xl:w-auto xl:flex-shrink-0"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#800080] px-6 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-[#6a006a] disabled:cursor-not-allowed disabled:bg-[#c8a0c8] disabled:shadow-none xl:w-auto xl:flex-shrink-0"
                 >
                   <span>{isScanRunning ? "Scan Running" : "Initialize Scan"}</span>
                   <span
@@ -572,30 +572,30 @@ function NewScan() {
 
         {/* Dynamic Progress Bar */}
         {isScanRunning && (
-          <div className="app-card-surface border border-indigo-100/70 bg-gradient-to-br from-indigo-50/70 to-purple-50/70 p-5 sm:p-8 dark:border-indigo-900/30 dark:from-indigo-900/20 dark:to-purple-900/20">
+          <div className="app-card-surface border border-[#800080]/20 bg-gradient-to-br from-[#800080]/10 to-[#800080]/5 p-5 sm:p-8 dark:border-[#800080]/30 dark:from-[#800080]/20 dark:to-[#800080]/10">
             <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <h3 className="flex items-center gap-2 text-base font-bold text-slate-800 sm:text-lg">
-                <span className="material-symbols-outlined animate-spin text-indigo-600">
+                <span className="material-symbols-outlined animate-spin text-[#800080]">
                   progress_activity
                 </span>
                 Active Scan in Progress
               </h3>
 
-              <span className="text-xl font-bold text-indigo-600">
+              <span className="text-xl font-bold text-[#800080]">
                 {scanProgress}%
               </span>
             </div>
 
-            <div className="w-full h-3 bg-indigo-100 rounded-full overflow-hidden">
+            <div className="w-full h-3 bg-[#800080]/15 rounded-full overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-indigo-500 to-indigo-600 rounded-full transition-all duration-500 ease-out"
+                className="h-full bg-gradient-to-r from-[#800080] to-[#6a006a] rounded-full transition-all duration-500 ease-out"
                 style={{ width: `${scanProgress}%` }}
               />
             </div>
 
-            <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-indigo-200/70 bg-white/70 px-4 py-3 text-sm text-slate-700 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-[#800080]/20 bg-white/70 px-4 py-3 text-sm text-slate-700 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-indigo-600">timeline</span>
+                <span className="material-symbols-outlined text-[#800080]">timeline</span>
                 <span className="font-semibold text-slate-800">{scanStage || "Preparing scan"}</span>
               </div>
               <span className="text-slate-600">{scanMessage || "Waiting for live updates"}</span>

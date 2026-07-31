@@ -15,6 +15,7 @@ const ScanDashboard = lazy(() => import("./pages/ScanDashboard"));
 const ScanDetails = lazy(() => import("./pages/ScanDetails"));
 const ScanHistory = lazy(() => import("./pages/ScanHistory"));
 const AdminUsers = lazy(() => import("./pages/AdminUsers"));
+const AdminPublicUsers = lazy(() => import("./pages/AdminPublicUsers"));
 const AdminAudit = lazy(() => import("./pages/AdminAudit"));
 const PersonalInvitations = lazy(() => import("./pages/PersonalInvitations"));
 const AdminSubscription = lazy(() => import("./pages/AdminSubscription"));
@@ -101,6 +102,7 @@ function App() {
         }
       >
         <Route index element={<AdminUsers />} />
+        <Route path="public-users" element={<AdminPublicUsers />} />
         <Route path="personal-invitations" element={<PersonalInvitations />} />
         <Route path="subscription" element={<AdminSubscription />} />
         <Route path="audit" element={<AdminAudit />} />

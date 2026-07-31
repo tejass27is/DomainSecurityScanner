@@ -39,6 +39,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
         onToggleDarkMode={onToggleDarkMode}
         navItems={[
           { to: "/admin", label: "User Management", icon: "group" },
+          { to: "/admin/public-users", label: "Public User", icon: "person_search" },
           { to: "/admin/subscription", label: "Subscription Management", icon: "payments" },
           { to: "/admin/audit", label: "Audit & Security", icon: "shield" },
           { to: "/admin/reports", label: "Reported Issues", icon: "flag" },
