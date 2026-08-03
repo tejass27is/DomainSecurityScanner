@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
-import { ArrowLeft, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Download } from "lucide-react";
 import Navbar from "../components/Navbar";
-import { getPublicDomainOverview, getPublicScanStatus, sendPublicScanReport } from "../services/api";
+import { getPublicDomainOverview, getPublicScanStatus, sendPublicScanReport, downloadPublicScanReport } from "../services/api";
 
 function getScoreGrade(score) {
   if (score >= 80) return { label: "Optimal", color: "text-emerald-600" };
@@ -24,6 +24,7 @@ function DomainOverviewPage() {
   const [polling, setPolling] = useState(false);
   const [email, setEmail] = useState("");
   const [reportSending, setReportSending] = useState(false);
+  const [reportDownloading, setReportDownloading] = useState(false);
   const [reportMessage, setReportMessage] = useState("");
   const location = useLocation();
   const scanQueued = location.state?.queued === true;
@@ -149,6 +150,22 @@ function DomainOverviewPage() {
       setReportMessage(err?.message || "Unable to send the report right now.");
     } finally {
       setReportSending(false);
+    }
+  };
+
+  const handleDownloadReport = async () => {
+    if (!domain) return;
+
+    setReportDownloading(true);
+    setReportMessage("");
+
+    try {
+      await downloadPublicScanReport(domain);
+      setReportMessage("Report downloaded successfully.");
+    } catch (err) {
+      setReportMessage(err?.message || "Unable to download the report right now.");
+    } finally {
+      setReportDownloading(false);
     }
   };
 
@@ -286,12 +303,21 @@ function DomainOverviewPage() {
                         {reportSending ? "Sending..." : "Send report"}
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      onClick={handleDownloadReport}
+                      disabled={reportDownloading}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-[#800080]/40 bg-white px-4 py-3 text-sm font-semibold text-[#800080] transition hover:bg-[#800080]/10 disabled:cursor-not-allowed disabled:opacity-60 dark:border-[#800080]/50 dark:bg-slate-900 dark:text-[#800080]/90"
+                    >
+                      <Download size={16} />
+                      {reportDownloading ? "Preparing..." : "Download report"}
+                    </button>
                     {reportMessage ? (
                       <p className={`text-sm ${reportMessage.toLowerCase().includes("success") ? "text-emerald-600" : "text-rose-600"}`}>
                         {reportMessage}
                       </p>
                     ) : (
-                      <p className="text-sm text-slate-500 dark:text-slate-400">The full PDF report will be emailed to the address you provide.</p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400">Download the full PDF now, or enter your email to have it sent to you.</p>
                     )}
                   </form>
                 </div>

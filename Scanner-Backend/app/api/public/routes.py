@@ -1,4 +1,7 @@
+import urllib.parse
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.db.base import get_db
@@ -13,6 +16,42 @@ from app.utils.generate_scan_report_pdf import generate_domain_scan_report_pdf_b
 
 router = APIRouter(prefix="/public", tags=["public"])
 redis_client = RedisClient()
+
+
+def _score_grade(score: int) -> str:
+    """Grade label matching the frontend report (ScanDetails getScoreGrade)."""
+    if score >= 80:
+        return "Optimal"
+    if score >= 60:
+        return "Fair"
+    if score >= 40:
+        return "Moderate"
+    return "At Risk"
+
+
+def _build_report_data(row: ScanSummary):
+    """Build the shared (categories, ip_reps, score, grade_label) used by the PDF report."""
+    categories = []
+    if row.app_security:
+        categories.append({"name": "Application Security", "findings": _normalize_findings(row.app_security)})
+    if row.network_security:
+        categories.append({"name": "Network Security", "findings": _normalize_findings(row.network_security)})
+    if row.tls_security:
+        categories.append({"name": "TLS Security", "findings": _normalize_findings(row.tls_security)})
+    if row.dns_security:
+        categories.append({"name": "DNS Security", "findings": _normalize_findings(row.dns_security)})
+    if row.mail_security:
+        categories.append({"name": "Mail Security", "findings": _normalize_findings(row.mail_security)})
+
+    ip_reps = []
+    if isinstance(row.ips, list):
+        ip_reps = [item for item in row.ips if isinstance(item, dict)]
+
+    # IP Reputation always appears (mirrors the logged-in report), even when empty
+    categories.append({"name": "IP Reputation", "isIpRep": True, "findings": ip_reps})
+
+    score = row.domain_score or 0
+    return categories, ip_reps, score, _score_grade(score)
 
 PUBLIC_USER_EMAIL = "public@shieldstat.local"
 PUBLIC_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -192,34 +231,20 @@ def send_report_email(
     if not row:
         raise HTTPException(status_code=404, detail="No scan report available for this domain")
 
-    categories = []
-    if row.app_security:
-        categories.append({"name": "Application Security", "findings": _normalize_findings(row.app_security)})
-    if row.network_security:
-        categories.append({"name": "Network Security", "findings": _normalize_findings(row.network_security)})
-    if row.tls_security:
-        categories.append({"name": "TLS Security", "findings": _normalize_findings(row.tls_security)})
-    if row.dns_security:
-        categories.append({"name": "DNS Security", "findings": _normalize_findings(row.dns_security)})
-    if row.mail_security:
-        categories.append({"name": "Mail Security", "findings": _normalize_findings(row.mail_security)})
-
-    ip_reps = []
-    if isinstance(row.ips, list):
-        ip_reps = [item for item in row.ips if isinstance(item, dict)]
+    categories, ip_reps, score, grade_label = _build_report_data(row)
 
     report_payload = {
         "domain": domain,
-        "score": row.domain_score or 0,
-        "grade_label": "Completed" if (row.domain_score or 0) >= 60 else "Needs attention",
+        "score": score,
+        "grade_label": grade_label,
         "categories": categories,
         "ip_reps": ip_reps,
     }
 
     pdf_bytes = generate_domain_scan_report_pdf_bytes(
         domain=domain,
-        score=row.domain_score or 0,
-        grade_label="Completed" if (row.domain_score or 0) >= 60 else "Needs attention",
+        score=score,
+        grade_label=grade_label,
         categories=categories,
         ip_reps=ip_reps,
     )
@@ -227,6 +252,39 @@ def send_report_email(
     send_scan_report_email(email, domain, pdf_bytes)
     create_public_report_request(db, email=email, domain=domain, report_payload=report_payload)
     return {"message": "Report sent successfully", "email": email, "domain": domain}
+
+
+@router.get("/download-report")
+def download_report(
+    domain: str = Query(..., description="Domain to download the report for"),
+    db: Session = Depends(get_db),
+):
+    normalized_domain = domain.strip().lower()
+    if not normalized_domain:
+        raise HTTPException(status_code=400, detail="Domain is required")
+
+    row = db.query(ScanSummary).filter(ScanSummary.domain == normalized_domain).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="No scan report available for this domain")
+
+    categories, ip_reps, score, grade_label = _build_report_data(row)
+    pdf_bytes = generate_domain_scan_report_pdf_bytes(
+        domain=normalized_domain,
+        score=score,
+        grade_label=grade_label,
+        categories=categories,
+        ip_reps=ip_reps,
+    )
+
+    filename = f"{normalized_domain}-scan-report.pdf"
+    quoted = urllib.parse.quote(filename)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"; filename*=UTF-8\'\'{quoted}'
+        },
+    )
 
 
 @router.get("/domain-overview")

@@ -262,8 +262,9 @@ def send_scan_report_email(to_email: str, domain: str, pdf_bytes: bytes):
 
     msg.attach(MIMEText(f"Hello,\n\nYour requested security scan report for {domain} is attached below.\n\nRegards,\niSecurify", "plain"))
 
-    pdf_part = MIMEApplication(pdf_bytes, Name=f"{domain}-scan-report.pdf")
-    pdf_part["Content-Disposition"] = 'attachment; filename="%s"' % f"{domain}-scan-report.pdf"
+    attachment_name = f"{domain}-scan-report.pdf"
+    pdf_part = MIMEApplication(pdf_bytes, Name=attachment_name)
+    pdf_part["Content-Disposition"] = 'attachment; filename="%s"' % attachment_name
     msg.attach(pdf_part)
 
     server = None

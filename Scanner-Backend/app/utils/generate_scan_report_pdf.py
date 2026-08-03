@@ -6,21 +6,58 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm, inch
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-# Logo assets, resolved relative to this file's location inside the repo:
-#   ShieldStat-Frontend/src/assets/isecurify_logo.png  -> full colour logo with wordmark
-#   ShieldStat-Frontend/src/assets/logo.svg            -> icon-only mark (vector)
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-HERO_LOGO_PATH = _REPO_ROOT / "ShieldStat-Frontend" / "src" / "assets" / "isecurify_logo.png"
-ICON_LOGO_PATH = _REPO_ROOT / "ShieldStat-Frontend" / "src" / "assets" / "logo.svg"
+
+_APP_ROOT = Path(__file__).resolve().parent.parent
+HERO_LOGO_PATH = _APP_ROOT / "assets" / "isecurify_logo.png"
+if not HERO_LOGO_PATH.exists():
+    _REPO_ROOT = Path(__file__).resolve().parents[3]
+    HERO_LOGO_PATH = _REPO_ROOT / "ShieldStat-Frontend" / "src" / "assets" / "isecurify_logo.png"
+
+
+INDIGO = colors.HexColor("#4f46e5")       
+TEXT_COLOR = colors.HexColor("#282828")   
+BODY_TEXT = colors.HexColor("#374151")   
+GRID = colors.HexColor("#e5e7eb")         # 
+
+LEFT = RIGHT = BOTTOM = 14 * mm
+TOP = 15 * mm
+LOGO_SIZE = 40 * mm
+
+SUMMARY_CATEGORIES = [
+    "Application Security",
+    "Network Security",
+    "TLS Security",
+    "DNS Security",
+    "IP Reputation",
+]
+
+
+_BASE_STYLES = getSampleStyleSheet()
+HEAD_STYLE = ParagraphStyle(
+    "thead",
+    parent=_BASE_STYLES["Normal"],
+    fontName="Helvetica-Bold",
+    fontSize=9,
+    leading=11,
+    textColor=colors.white,
+)
+CELL_STYLE = ParagraphStyle(
+    "tcell",
+    parent=_BASE_STYLES["Normal"],
+    fontName="Helvetica",
+    fontSize=9,
+    leading=11,
+    textColor=BODY_TEXT,
+)
 
 
 def _load_raster(path: Path):
-    """Load a PNG/JPEG. Returns (source, aspect_ratio) or (None, None)."""
+    """Load a PNG/JPEG. Returns (source_path, aspect_ratio) or (None, None)."""
     if not path.exists():
         return None, None
     from PIL import Image as PILImage
@@ -30,64 +67,58 @@ def _load_raster(path: Path):
     return str(path), w / h
 
 
-def _load_svg(path: Path):
-    """Rasterize an SVG via cairosvg. Returns (png_bytes, aspect_ratio) or (None, None)."""
-    if not path.exists():
-        return None, None
-    try:
-        import cairosvg
-    except ImportError:
-        return None, None
-
-    png_bytes = cairosvg.svg2png(url=str(path), scale=4)
-    from PIL import Image as PILImage
-
-    with PILImage.open(io.BytesIO(png_bytes)) as im:
-        w, h = im.size
-    return png_bytes, w / h
+def _esc(value: Any) -> str:
+    """Escape text so it is safe inside a reportlab Paragraph."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def _style_table(rows: List[List[Any]], col_widths: List[float]) -> Table:
-    table = Table(rows, colWidths=col_widths, repeatRows=1)
+    """Build a wrapped-cell table with an indigo header row (matches the logged-in report)."""
+    wrapped_rows = []
+    for r_idx, row in enumerate(rows):
+        style = HEAD_STYLE if r_idx == 0 else CELL_STYLE
+        wrapped_rows.append([Paragraph(_esc(cell), style) for cell in row])
+
+    table = Table(wrapped_rows, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
     table.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#111827")),
-                ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor("#374151")),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("BACKGROUND", (0, 0), (-1, 0), INDIGO),
+                ("GRID", (0, 0), (-1, -1), 0.25, GRID),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ]
         )
     )
     return table
 
 
-def _icon_reader(png_bytes: bytes):
-    from reportlab.lib.utils import ImageReader
-
-    return ImageReader(io.BytesIO(png_bytes))
-
-
-def _draw_report_header(canvas_obj, doc, icon_png_bytes, icon_aspect):
-    # Small icon mark, top-left, on every page. Page 1 carries its own
-    # large icon inline in the flowable story instead, so skip it here.
+def _draw_page_header(canvas_obj, doc, logo_path: str | None, logo_aspect: float | None):
     canvas_obj.saveState()
-    if canvas_obj.getPageNumber() > 1 and icon_png_bytes:
-        h = 0.4 * inch
-        w = h * icon_aspect
+    if logo_path and logo_aspect:
+        logo_h = 0.3 * inch
+        logo_w = logo_h * logo_aspect
         canvas_obj.drawImage(
-            _icon_reader(icon_png_bytes), 50, 745, width=w, height=h,
+            logo_path, LEFT, A4[1] - 10 - logo_h, width=logo_w, height=logo_h,
             preserveAspectRatio=True, mask="auto",
         )
-        canvas_obj.setStrokeColor(colors.HexColor("#e5e7eb"))
-        canvas_obj.line(50, 740, 550, 740)
+        canvas_obj.setFont("Helvetica-Bold", 14)
+        canvas_obj.setFillColor(TEXT_COLOR)
+        canvas_obj.drawString(
+            LEFT + logo_w + 8,
+            A4[1] - 10 - logo_h + (logo_h - 10) * 0.55,
+            "iSecurify",
+        )
+        canvas_obj.setStrokeColor(GRID)
+        canvas_obj.line(LEFT, A4[1] - 38, A4[0] - RIGHT, A4[1] - 38)
     canvas_obj.restoreState()
 
 
@@ -102,64 +133,95 @@ def generate_domain_scan_report_pdf_bytes(
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
-        pagesize=letter,
-        leftMargin=50,
-        rightMargin=50,
-        topMargin=80,
-        bottomMargin=50,
+        pagesize=A4,
+        leftMargin=LEFT,
+        rightMargin=RIGHT,
+        topMargin=TOP,
+        bottomMargin=BOTTOM,
         title="Security Scan Report",
     )
 
     styles = getSampleStyleSheet()
+    logo_path, logo_aspect = _load_raster(HERO_LOGO_PATH)
+
+    title_style = ParagraphStyle(
+        "reportTitle",
+        parent=styles["Normal"],
+        fontSize=22,
+        leading=26,
+        textColor=TEXT_COLOR,
+        spaceBefore=0,
+        spaceAfter=0,
+    )
+
+    detail_style = ParagraphStyle(
+        "detail",
+        parent=styles["Normal"],
+        fontSize=12,
+        leading=20,
+        textColor=TEXT_COLOR,
+        spaceBefore=0,
+        spaceAfter=0,
+    )
+
+    exec_style = ParagraphStyle(
+        "exec",
+        parent=styles["Normal"],
+        fontSize=18,
+        leading=22,
+        textColor=TEXT_COLOR,
+        spaceBefore=0,
+        spaceAfter=0,
+    )
+
+    section_style = ParagraphStyle(
+        "section",
+        parent=styles["Normal"],
+        fontSize=16,
+        leading=20,
+        textColor=TEXT_COLOR,
+        spaceBefore=0,
+        spaceAfter=0,
+    )
+
+    content_w = A4[0] - LEFT - RIGHT
     story = []
 
-    icon_png_bytes, icon_aspect = _load_svg(ICON_LOGO_PATH)
-    # HERO_LOGO_PATH (full wordmark) is resolved but not drawn on this layout —
-    # the page-1 header uses the icon mark only, per the approved design.
-    # Kept available for other templates: _load_raster(HERO_LOGO_PATH)
-
-    detail_style = styles["Normal"].clone("detail")
-    detail_style.fontSize = 12
-    detail_style.leading = 20
-    detail_style.textColor = colors.HexColor("#1f2937")
-
-    title_style = styles["Title"].clone("reportTitle")
-    title_style.textColor = colors.HexColor("#111827")
-    title_style.alignment = 0  # left
-    title_style.spaceBefore = 0
-
-    if icon_png_bytes:
-        icon_w = 1.3 * inch
-        icon_h = icon_w / icon_aspect
-        story.append(Image(io.BytesIO(icon_png_bytes), width=icon_w, height=icon_h))
-        story.append(Spacer(1, 0.3 * inch))
+    # ── Header: logo top-left, then title (same placement as the logged-in report) ──
+    if logo_path and logo_aspect:
+        story.append(Image(logo_path, width=LOGO_SIZE, height=LOGO_SIZE / logo_aspect, hAlign="LEFT"))
+        story.append(Spacer(1, 6 * mm))
 
     story.append(Paragraph("Security Scan Report", title_style))
-    story.append(Spacer(1, 0.22 * inch))
-    story.append(Paragraph(f"Domain: {domain or 'Unknown'}", detail_style))
-    story.append(Paragraph(f"Score: {score} / 100 ({grade_label})", detail_style))
-    story.append(Paragraph(f"Date: {(generated_at or datetime.now()).strftime('%d/%m/%Y')}", detail_style))
-    story.append(Spacer(1, 0.35 * inch))
+    story.append(Spacer(1, 7 * mm))
 
+    story.append(Paragraph(f"Domain: {_esc(domain or 'Unknown')}", detail_style))
+    story.append(Paragraph(f"Score: {score} / 100 ({_esc(grade_label)})", detail_style))
+    story.append(Paragraph(f"Date: {(generated_at or datetime.now()).strftime('%d/%m/%Y')}", detail_style))
+    story.append(Spacer(1, 18 * mm))
+
+    # ── Executive summary — same fixed category order as the logged-in report ──
     summary_rows = [["Category", "Summary"]]
-    for cat in categories:
-        name = cat.get("name") or "Unknown"
-        if cat.get("isIpRep"):
-            summary_rows.append([name, f"{len(cat.get('findings') or [])} IPs"])
+    for name in SUMMARY_CATEGORIES:
+        cat = next((c for c in categories if (c.get("name") or "") == name), None)
+        if cat is None:
+            summary_rows.append([name, "0 findings"])
+        elif cat.get("isIpRep"):
+            summary_rows.append([name, f"{len(ip_reps or [])} IPs"])
         else:
-            count = sum(len((f.get("hosts") or [])) for f in cat.get("findings") or [])
+            count = sum(len(f.get("hosts") or []) for f in cat.get("findings") or [])
             summary_rows.append([name, f"{count} finding{'s' if count != 1 else ''}"])
 
-    story.append(Paragraph("<font color='#4f46e5'><b>Executive Summary</b></font>", styles["Heading2"]))
-    story.append(Spacer(1, 0.08 * inch))
-    summary_table = _style_table(summary_rows, [2.8 * inch, 2.8 * inch])
-    story.append(summary_table)
-    story.append(Spacer(1, 0.25 * inch))
+    story.append(Paragraph("Executive Summary", exec_style))
+    story.append(Spacer(1, 4 * mm))
+    story.append(_style_table(summary_rows, [content_w * 0.5, content_w * 0.5]))
+    story.append(Spacer(1, 12 * mm))
 
+    # ── Per-category detail sections ──
     for cat in categories:
         name = cat.get("name") or "Unknown"
-        story.append(Paragraph(f"<font color='#4f46e5'><b>{name}</b></font>", styles["Heading2"]))
-        story.append(Spacer(1, 0.06 * inch))
+        story.append(Paragraph(_esc(name), section_style))
+        story.append(Spacer(1, 3 * mm))
 
         if cat.get("isIpRep"):
             if not ip_reps:
@@ -173,7 +235,7 @@ def generate_domain_scan_report_pdf_bytes(
                         str(rep.get("totalReports") or 0),
                         str(rep.get("isp") or "N/A"),
                     ])
-                story.append(_style_table(rows, [1.6 * inch, 1.3 * inch, 1.2 * inch, 2.0 * inch]))
+                story.append(_style_table(rows, [content_w * 0.25] * 4))
         else:
             findings = cat.get("findings") or []
             if not findings:
@@ -189,21 +251,13 @@ def generate_domain_scan_report_pdf_bytes(
                             str(host.get("port") or "—"),
                             str(finding.get("severity") or "INFO").upper(),
                         ])
-                story.append(_style_table(rows, [2.0 * inch, 1.6 * inch, 1.3 * inch, 0.8 * inch, 0.9 * inch]))
+                story.append(_style_table(rows, [content_w * 0.2] * 5))
 
-        story.append(Spacer(1, 0.2 * inch))
-
-    story.append(Spacer(1, 0.3 * inch))
-    story.append(
-        Paragraph(
-            f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Domain Scanner",
-            styles["Normal"],
-        )
-    )
+        story.append(Spacer(1, 12 * mm))
 
     doc.build(
         story,
-        onFirstPage=lambda canvas, doc: _draw_report_header(canvas, doc, icon_png_bytes, icon_aspect),
-        onLaterPages=lambda canvas, doc: _draw_report_header(canvas, doc, icon_png_bytes, icon_aspect),
+        onFirstPage=lambda canvas, d: _draw_page_header(canvas, d, logo_path, logo_aspect),
+        onLaterPages=lambda canvas, d: _draw_page_header(canvas, d, logo_path, logo_aspect),
     )
     return buf.getvalue()

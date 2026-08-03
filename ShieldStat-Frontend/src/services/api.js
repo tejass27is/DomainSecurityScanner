@@ -236,6 +236,25 @@ export function sendPublicScanReport(domain, email) {
   });
 }
 
+export async function downloadPublicScanReport(domain) {
+  const res = await fetch(
+    `${API_BASE}/public/download-report?domain=${encodeURIComponent(domain)}`,
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || `Failed to download report (${res.status})`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${domain}-scan-report.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function setScoringCriticality(domain, criticality, token) {
   return request(`/score/set-criticality?domain=${encodeURIComponent(domain)}&criticality=${criticality}`, {
     method: "PUT",
