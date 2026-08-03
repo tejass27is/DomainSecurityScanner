@@ -1,0 +1,207 @@
+API Documentation – Scanner Backend
+
+Authentication APIs # NOT WORKING
+
+Note: Auth section currently marked as not working
+
+1. Register User
+
+Endpoint: POST /api/auth/register
+
+Request
+
+curl -X POST "http://127.0.0.1:8000/api/auth/register"-H "accept: application/json"-H "Content-Type: application/json"-d '{  "username": "tirth09",  "email": "tirth09@example.com",  "password": "tirth"}'
+
+Response
+
+{  "id": "...",  "username": "tirth09",  "email": "tirth09@example.com",  "token": "JWT_TOKEN"}
+
+2. Login
+
+Endpoint: POST /api/auth/login
+
+Request
+
+curl -X POST "http://127.0.0.1:8000/api/auth/login"-H "accept: application/json"-H "Content-Type: application/json"-d '{  "email": "user@example.com",  "password": "string"}'
+
+Response
+
+{  "id": "...",  "username": "string",  "email": "user@example.com",  "token": "JWT_TOKEN"}
+
+3. Get Profile
+
+Endpoint: GET /api/auth/profile/{id}
+
+Request
+
+curl -X GET "http://127.0.0.1:8000/api/auth/profile/{id}"-H "accept: application/json" 
+
+Response
+
+{  "_id": "...",  "username": "tirth09",  "email": "tirth09@example.com"}
+
+Scanner APIs
+
+Register Scan Task
+
+Endpoint: POST /api/scanner/register-scan-task
+
+Request
+
+curl -X POST "http://127.0.0.1:8000/api/scanner/register-scan-task"-H "accept: application/json"-H "Content-Type: application/json"-d '{  "target": "allianzcloud.com"}'
+
+Response
+
+{  "message": "Scan task registered successfully",  "scan_id": "..."}
+
+Assessment APIs
+
+Submit Assessment
+
+Endpoint: POST /api/assess/
+
+Request
+
+{  "answers": [    { "questionId": "1", "selectedOption": "A" },    { "questionId": "2", "selectedOption": "B" },    ......................  ]}
+
+Response
+
+{  "success": true,  "resultId": "...",  "data": {    "summary": { "grade": "F", "score": 60 },    "answers": [      { "questionId": "1", "questionText": "..."},      ......................      { "questionId": "40", "questionText": "..."}    ]  }}
+
+Get Latest Assessment
+
+Endpoint: GET /api/assess/latest
+
+Response
+
+{  "_id": "...",  "summary": { "grade": "F", "score": 60 },  "answers": [    ......................  ]}
+
+Get Questions
+
+Endpoint: GET /api/questions/
+
+Response
+
+[  {    "_id": 1,    "question_text": "...",    "options": [      {"option_key": "A"},      {"option_key": "B"}    ]  },  ......................]
+
+Analyzer APIs
+
+Submit for Analyzer
+
+Endpoint: POST /score/{scan_id}
+
+Request
+
+Scan_id : str
+
+Response
+
+{
+
+  "scan_id": "333b4ffa-57b2-4427-99af-c9f011957461",
+
+  "domain_score": 84,
+
+  "categorized_vulnerabilities": {
+
+    "DNS Health": {
+
+      "Missing MX record": [
+
+        "www.krosspost.ai",
+
+        "radar.krosspost.ai",
+
+        "dev.krosspost.ai",
+
+        "api.krosspost.ai"
+
+      ],
+
+      "Missing NS record": [
+
+        "radar.krosspost.ai",
+
+        "api.krosspost.ai"
+
+      ],
+
+      "Missing TXT record": [
+
+        "www.krosspost.ai",
+
+        "radar.krosspost.ai",
+
+        "dev.krosspost.ai",
+
+        "api.krosspost.ai"
+
+      ]
+
+    },
+
+    "Network Security": {
+
+      "Unexpected open port": [
+
+        "radar.krosspost.ai"
+
+      ]
+
+    },
+
+    "Application Security": {
+
+      "Missing CSP header": [
+
+        "www.krosspost.ai",
+
+        "radar.krosspost.ai",
+
+        "dev.krosspost.ai",
+
+        "api.krosspost.ai"
+
+      ],
+
+      "Missing HSTS header": [
+
+        "www.krosspost.ai",
+
+        "radar.krosspost.ai",
+
+        "dev.krosspost.ai",
+
+        "api.krosspost.ai"
+
+      ],
+
+      "Missing X-Frame-Options": [
+
+        "www.krosspost.ai",
+
+        "radar.krosspost.ai",
+
+        "dev.krosspost.ai",
+
+        "api.krosspost.ai"
+
+      ],
+
+      "Missing X-Content-Type-Options": [
+
+        "www.krosspost.ai",
+
+        "radar.krosspost.ai",
+
+        "dev.krosspost.ai",
+
+        "api.krosspost.ai"
+
+      ]
+
+    }
+
+  }
+
+}

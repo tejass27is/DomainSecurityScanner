@@ -1,0 +1,26 @@
+# Git and IDE
+.git
+.gitignore
+.cursor
+.vscode
+*.md
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.venv
+venv
+env
+.pytest_cache
+.coverage
+htmlcov
+
+# Env (use docker-compose env instead)
+.env
+.env.*
+
+# Test and misc
+test
+*.log

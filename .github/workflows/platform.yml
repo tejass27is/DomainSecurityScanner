@@ -1,0 +1,30 @@
+name: Deploy Platform
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scanner-platform/**'
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy Platform via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /home/allianzcloud/scannerdomain/scanner-platform
+
+            echo "Pulling latest code..."
+            git pull
+
+            echo "Rebuilding platform..."
+            docker-compose down
+            docker-compose up -d --build
+
+            echo "Platform deployed!"

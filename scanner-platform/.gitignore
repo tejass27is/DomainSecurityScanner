@@ -1,0 +1,10 @@
+.DS_Store
+.VSCode
+test/
+scanner-engine/scanners/test/
+
+cmd/scanner/resume.cfg
+cmd/worker/resume.cfg
+resume.cfg
+
+analyser/

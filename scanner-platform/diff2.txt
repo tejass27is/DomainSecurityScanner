@@ -1,0 +1,12 @@
+diff --git a/scanner-platform/internal/worker/runner.go b/scanner-platform/internal/worker/runner.go
+index 2b543a9..86f8e4e 100644
+--- a/scanner-platform/internal/worker/runner.go
++++ b/scanner-platform/internal/worker/runner.go
+@@ -139,6 +139,7 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
+ 	scanResult := models.ScanResult{
+ 		ScanID:    job.ScanID,
+ 		Target:    job.Target,
++		Status:    "completed",
+ 		Data:      collection_data_results.Data,
+ 		Timestamp: time.Now(),
+ 	}
