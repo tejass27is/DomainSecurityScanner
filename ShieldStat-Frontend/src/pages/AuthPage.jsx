@@ -124,7 +124,7 @@ function AuthPage() {
             localStorage.setItem("token", data.token);
             localStorage.setItem("user", JSON.stringify(data.user));
 
-            if (data.user?.role === "admin") {
+            if (data.user?.role === "admin" || data.user?.role === "marketing") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -217,7 +217,7 @@ function AuthPage() {
             localStorage.setItem("token", data.token);
             localStorage.setItem("user", JSON.stringify(data.user));
 
-            if (data.user?.role === "admin") {
+            if (data.user?.role === "admin" || data.user?.role === "marketing") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -251,7 +251,7 @@ function AuthPage() {
             localStorage.setItem("token", data.token);
             localStorage.setItem("user", JSON.stringify(data.user));
 
-            if (data.user?.role === "admin") {
+            if (data.user?.role === "admin" || data.user?.role === "marketing") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -363,7 +363,7 @@ function AuthPage() {
             localStorage.setItem("token", data.token);
             localStorage.setItem("user", JSON.stringify(data.user));
 
-            if (data.user?.role === "admin") {
+            if (data.user?.role === "admin" || data.user?.role === "marketing") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");

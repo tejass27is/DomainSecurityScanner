@@ -1,13 +1,3 @@
-"""
-Live verification + resolution helpers for the Admin Issue Review workflow.
-
-Provides:
-- Port verification (TCP socket connect → open / closed / filtered + service map)
-- HTTP header verification (live GET, checks 7 security headers)
-- SSL/TLS verification (real handshake, full certificate details)
-- DNS verification (live lookups via socket.getaddrinfo)
-- Score recalculation when an admin resolves an issue
-"""
 import socket
 import ssl
 from datetime import datetime, timezone
@@ -245,13 +235,6 @@ def verify_dns(domain: str, record_type: str = "A") -> dict:
 # ─── 5. Score recalculation on resolution ─────────────────────────────────────
 
 def resolve_issue_score(db, issue) -> dict:
-    """
-    Called when an admin resolves an issue.
-
-    1. Removes the finding from the ScanSummary category.
-    2. Recalculates the domain score using severity-adjusted penalties.
-    3. If the finding can't be found in scan data, applies a fixed +2 bonus.
-    """
     from app.db.models import ScanSummary
     from app.api.fix.service import _recalculate_score
     from app.api.analyzer.controller import get_cvss_severity

@@ -50,3 +50,8 @@ def require_admin(current_user = Depends(protect)):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Only an admin can perform this action")
     return current_user
+
+def require_admin_or_marketing(current_user = Depends(protect)):
+    if current_user.role not in ("admin", "marketing"):
+        raise HTTPException(status_code=403, detail="Only an admin or marketing team member can perform this action")
+    return current_user

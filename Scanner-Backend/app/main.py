@@ -55,6 +55,8 @@ async def startup_event():
 
         from scripts.create_admin import create_admin_user
         create_admin_user()
+        from scripts.create_marketing import create_marketing_user
+        create_marketing_user()
     except RuntimeError as e:
         raise HTTPException(
             status_code=500,

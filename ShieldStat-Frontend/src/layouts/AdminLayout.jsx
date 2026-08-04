@@ -1,10 +1,11 @@
 import React, { useState } from "react";
-import { Outlet, Navigate } from "react-router-dom";
+import { Outlet, Navigate, useLocation } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import Sidebar from "../components/Sidebar";
 
 function AdminLayout({ isDarkMode, onToggleDarkMode }) {
   const [isOpen, setIsOpen] = useState(true);
+  const location = useLocation();
 
   const onToggle = () => setIsOpen((v) => !v);
   let currentUser = null;
@@ -18,8 +19,15 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
     return <Navigate to="/auth" replace />;
   }
 
-  if (currentUser.role !== "admin") {
+  if (currentUser.role !== "admin" && currentUser.role !== "marketing") {
     return <Navigate to="/scan-dashboard" replace />;
+  }
+
+  const isMarketing = currentUser.role === "marketing";
+
+  // Marketing team only has access to the public reports page.
+  if (isMarketing && (location.pathname === "/admin" || location.pathname === "/admin/")) {
+    return <Navigate to="/admin/public-users" replace />;
   }
 
   return (
@@ -37,13 +45,17 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
         onClose={() => setIsOpen(false)}
         isDarkMode={isDarkMode}
         onToggleDarkMode={onToggleDarkMode}
-        navItems={[
-          { to: "/admin", label: "User Management", icon: "group" },
-          { to: "/admin/public-users", label: "Public User", icon: "person_search" },
-          { to: "/admin/subscription", label: "Subscription Management", icon: "payments" },
-          { to: "/admin/audit", label: "Audit & Security", icon: "shield" },
-          { to: "/admin/reports", label: "Reported Issues", icon: "flag" },
-        ]}
+        navItems={
+          isMarketing
+            ? [{ to: "/admin/public-users", label: "Public Reports", icon: "person_search" }]
+            : [
+                { to: "/admin", label: "User Management", icon: "group" },
+                { to: "/admin/public-users", label: "Public User", icon: "person_search" },
+                { to: "/admin/subscription", label: "Subscription Management", icon: "payments" },
+                { to: "/admin/audit", label: "Audit & Security", icon: "shield" },
+                { to: "/admin/reports", label: "Reported Issues", icon: "flag" },
+              ]
+        }
       />
 
       <div className={`relative flex min-w-0 flex-1 flex-col transition-all duration-200 ${isOpen ? "lg:ml-72" : "lg:ml-16"}`}>

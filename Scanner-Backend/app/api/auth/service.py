@@ -55,15 +55,11 @@ PUBLIC_EMAIL_DOMAINS = {
     "gmx.com", "yandex.com", "inbox.com", "me.com", "msn.com",
 }
 
-# Reads ADMIN_TOTP_REQUIRED from .env once at startup.
-# ADMIN_TOTP_REQUIRED=false  → admins skip TOTP and get a JWT straight away
-# ADMIN_TOTP_REQUIRED=true   → admins must use TOTP like everyone else (default)
 ADMIN_TOTP_REQUIRED: bool = os.getenv("ADMIN_TOTP_REQUIRED", "true").strip().lower() in {"1", "true", "yes", "on"}
 PASSWORD_POLICY_REGEX = re.compile(r"^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$")
 
 
 def _normalize_datetime_to_utc(timestamp: datetime | None) -> datetime | None:
-    """Convert timezone-naive or aware datetime to UTC-aware datetime."""
     if not timestamp:
         return None
     if timestamp.tzinfo is None:
@@ -120,12 +116,10 @@ def decode_token(token: str):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 def _normalize_domain(domain: str) -> str:
-    """Normalize an organization domain for consistent validation."""
     return domain.strip().lower().replace("https://", "").replace("http://", "").strip("/").lstrip("www.")
 
 
 def _email_domain_matches_org(email_lower: str, domain: str) -> bool:
-    """Ensure the email belongs to the organization domain being registered."""
     email_domain = email_lower.split("@")[-1].strip().lower()
     normalized_domain = _normalize_domain(domain)
 
@@ -136,13 +130,11 @@ def _email_domain_matches_org(email_lower: str, domain: str) -> bool:
 
 
 def _is_public_email_domain(email_lower: str) -> bool:
-    """Reject common public email providers for organization signup."""
     email_domain = email_lower.split("@")[-1].strip().lower()
     return email_domain in PUBLIC_EMAIL_DOMAINS
 
 
 def _email_domain_has_owner(email_lower: str, db: Session) -> bool:
-    """True if a verified owner exists for this email domain (unverified signups do not count)."""
     email_domain = email_lower.split("@")[-1]
     return (
         db.query(User)
@@ -189,11 +181,9 @@ def _personal_email_invitation_is_valid(email_lower: str, invite_token: str | No
     if not invitation:
         return False
 
-    # If expires_at is None, treat it as valid (for backward compatibility with old invitations)
     if invitation.expires_at is None:
         return True
 
-    # Check if invitation hasn't expired
     expires_at_utc = _normalize_datetime_to_utc(invitation.expires_at)
     return expires_at_utc > now_utc if expires_at_utc else True
 
@@ -210,18 +200,13 @@ def register(email: str, password: str, domain: str, db: Session, invite_token: 
 
     # For invited users: skip all domain and email validation
     if is_invited_personal_signup:
-        # Invited users can enter ANY domain (including empty)
         domain = _normalize_domain(domain) if domain else ""
     else:
-        # For regular signups: domain is required and must be valid
         domain = _normalize_domain(domain)
         if not domain:
             raise HTTPException(status_code=400, detail="Domain is required")
 
-        # Domain validation only applies to regular signups, NOT invited users
-        # Invited users join existing organizations and can use any email address
         if DOMAIN_EMAIL_VALIDATION_ENABLED:
-            # Public email domains are rejected for regular signups (without invitation)
             if _is_public_email_domain(email_lower):
                 raise HTTPException(
                     status_code=400,
@@ -431,7 +416,7 @@ def login_user(email: str, password: str, db: Session):
     user.locked_until = None
     db.commit()
 
-    if user.role == "admin" and not ADMIN_TOTP_REQUIRED:
+    if user.role in ("admin", "marketing") and not ADMIN_TOTP_REQUIRED:
         access_token = generateToken(user.user_id, org_id=user.org_id, role=user.role)
         return {
             "token": access_token,

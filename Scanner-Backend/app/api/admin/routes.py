@@ -27,7 +27,7 @@ from app.api.admin.service import (
     unblock_email,
     update_subscription_plan,
 )
-from app.core.middleware import require_admin
+from app.core.middleware import require_admin, require_admin_or_marketing
 from app.db.base import get_db
 from app.db.models import User
 
@@ -221,7 +221,7 @@ def get_scans_total(
 def list_public_report_requests(
     search: str | None = None,
     db: Session = Depends(get_db),
-    _current_admin: User = Depends(require_admin),
+    _current_admin: User = Depends(require_admin_or_marketing),
 ):
     return get_public_report_requests(db, search=search)
 

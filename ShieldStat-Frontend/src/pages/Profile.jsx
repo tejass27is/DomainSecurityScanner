@@ -88,7 +88,7 @@ function Profile() {
         const data = await getProfile(token);
         setProfile(data);
 
-        if (data.role !== "admin") {
+        if (data.role !== "admin" && data.role !== "marketing") {
           setMembersLoading(true);
           try {
             const membersList = await getMembers(token);
@@ -115,12 +115,14 @@ function Profile() {
   useEffect(() => {
     if (!profile || profileLoading) return;
 
-    if (profile.role === "admin" && location.pathname === "/profile") {
+    const isStaffRole = profile.role === "admin" || profile.role === "marketing";
+
+    if (isStaffRole && location.pathname === "/profile") {
       navigate("/admin/profile", { replace: true });
       return;
     }
 
-    if (isAdminProfileRoute && profile.role !== "admin") {
+    if (isAdminProfileRoute && !isStaffRole) {
       navigate("/scan-dashboard", { replace: true });
     }
   }, [
@@ -134,7 +136,7 @@ function Profile() {
   useEffect(() => {
     if (!profile || !token) return;
 
-    if (profile.role === "admin") {
+    if (profile.role === "admin" || profile.role === "marketing") {
       setDomainScans([]);
       setDomainScansLoading(false);
       return;
@@ -299,7 +301,7 @@ function Profile() {
     );
   }
 
-  if (profile?.role === "admin") {
+  if (profile?.role === "admin" || profile?.role === "marketing") {
     return (
       <div className="mx-auto max-w-7xl p-6 md:p-12">
         <div className="mb-8">
@@ -307,7 +309,7 @@ function Profile() {
             Platform administration
           </p>
           <h1 className="font-headline text-4xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100">
-            Administrator profile
+            {profile?.role === "marketing" ? "Marketing team profile" : "Administrator profile"}
           </h1>
           <p className="mt-2 max-w-2xl text-slate-600 dark:text-slate-400">
             Your account details for the admin console. Use Settings in the
@@ -322,7 +324,7 @@ function Profile() {
                 {getInitials(profile?.email)}
               </div>
               <span className="mt-1 inline-block rounded-full bg-indigo-100 px-3 py-0.5 text-xs font-bold uppercase text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
-                Administrator
+                {profile?.role === "marketing" ? "Marketing" : "Administrator"}
               </span>
             </div>
 
