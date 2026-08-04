@@ -1297,7 +1297,7 @@ function ScanDetails() {
 
     getScore(domain, token)
       .then((result) => setData(result))
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(e?.message || "Unable to load score data."))
       .finally(() => setLoading(false));
   }, [domain, profileLoaded, knownDomains, preloadedResult]);
 

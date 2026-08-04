@@ -87,16 +87,19 @@ async def get_active_scan(
     user: User = Depends(protect)
 ):
     domain = domain.strip().lower()
-    active_scan = db.query(ActiveScan).filter(
-        ActiveScan.domain == domain, 
-        ActiveScan.org_id == org_id
-    ).first()
-    
+    try:
+        active_scan = db.query(ActiveScan).filter(
+            ActiveScan.domain == domain,
+            ActiveScan.org_id == org_id,
+        ).first()
+    except Exception:
+        active_scan = None
+
     if not active_scan:
         return {"status": "scan complete"}
-        
+
     return {
-        "domain": active_scan.domain,
-        "org_id": active_scan.org_id,
-        "status": active_scan.status
+        "domain": getattr(active_scan, "domain", domain),
+        "org_id": getattr(active_scan, "org_id", org_id),
+        "status": getattr(active_scan, "status", "pending"),
     }

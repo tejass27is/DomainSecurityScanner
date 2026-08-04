@@ -525,7 +525,10 @@ function ScanDashboard() {
     setLoading(true);
 
     const currentDomain = normalizeDomain(domain);
-    const scorePromise = currentDomain ? getScore(currentDomain, token).catch(() => null) : Promise.resolve(null);
+    const scorePromise = currentDomain ? getScore(currentDomain, token).catch((err) => {
+      console.warn("Score load failed", err);
+      return null;
+    }) : Promise.resolve(null);
     const assessmentPromise = getAssessment(token).catch(() => null);
     const malwarePromise = currentDomain ? getMalwareLatestReport(currentDomain, token).catch(() => null) : Promise.resolve(null);
 

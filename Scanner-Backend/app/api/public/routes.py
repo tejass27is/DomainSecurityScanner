@@ -59,6 +59,51 @@ PUBLIC_ORG_ID = "00000000-0000-0000-0000-000000000010"
 PUBLIC_USER_PASSWORD = "PublicScan123!"
 
 
+@router.get("/test-redis/{domain}")
+async def test_redis(domain: str):
+    """Test endpoint to verify Redis operations and progress values."""
+    normalized_domain = domain.strip().lower()
+    progress_key = f"scan_progress:{PUBLIC_ORG_ID}:{normalized_domain}"
+    
+    test_results = {}
+    
+    try:
+        test_results["redis_connection"] = "ok"
+        # Try to set a test value
+        await redis_client.redis.set("test_key", "test_value", ex=60)
+        test_results["set_operation"] = "ok"
+        
+        # Try to get it back
+        test_val = await redis_client.redis.get("test_key")
+        test_results["get_operation"] = f"ok (value={test_val})"
+        
+        # Check the actual progress key
+        progress_val = await redis_client.redis.get(progress_key)
+        test_results["progress_key"] = progress_key
+        test_results["progress_value"] = str(progress_val) if progress_val else "not_set"
+        
+    except Exception as e:
+        test_results["error"] = str(e)
+    
+    return test_results
+
+
+def _clear_existing_public_scan_results(db: Session, domain: str) -> None:
+    normalized_domain = domain.strip().lower()
+    if not normalized_domain:
+        return
+
+    try:
+        db.query(ScanSummary).filter(ScanSummary.domain == normalized_domain).delete(synchronize_session=False)
+        db.query(ActiveScan).filter(
+            ActiveScan.domain == normalized_domain,
+            ActiveScan.org_id == PUBLIC_ORG_ID,
+        ).delete(synchronize_session=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
 def _normalize_findings(payload: dict | None):
     if not payload:
         return []
@@ -144,26 +189,46 @@ async def public_scan(
         raise HTTPException(status_code=422, detail=dns_message)
 
     ensure_public_org_exists(db)
+    _clear_existing_public_scan_results(db, domain)
 
     scan_job = {"scan_id": PUBLIC_ORG_ID, "target": domain}
-    await redis_client.PushToQueue(data=scan_job)
+    print(f"[PUBLIC SCAN] Queueing job: {scan_job}")
+    try:
+        await redis_client.PushToQueue(data=scan_job)
+    except Exception as e:
+        print(f"[PUBLIC SCAN] ✗ Failed to queue scan job: {e}")
+        print(f"[PUBLIC SCAN] Redis host: {redis_client.host}")
+        raise HTTPException(status_code=503, detail="Unable to queue public scan. Redis is unavailable.")
 
-    active_scan = db.query(ActiveScan).filter(
-        ActiveScan.domain == domain,
-        ActiveScan.org_id == PUBLIC_ORG_ID
-    ).first()
+    progress_key = f"scan_progress:{PUBLIC_ORG_ID}:{domain.strip().lower()}"
+    try:
+        result = await redis_client.redis.set(progress_key, "0", ex=3600)
+        print(f"[PUBLIC SCAN] ✓ Set progress key {progress_key} = 0 (result={result})")
+    except Exception as e:
+        print(f"[PUBLIC SCAN] ✗ Failed to set progress: {e}")
+        print(f"[PUBLIC SCAN] Redis host: {redis_client.host}")
 
-    if active_scan:
-        active_scan.status = "pending"
-    else:
-        active_scan = ActiveScan(
-            domain=domain,
-            org_id=PUBLIC_ORG_ID,
-            status="pending"
-        )
-        db.add(active_scan)
+    try:
+        active_scan = db.query(ActiveScan).filter(
+            ActiveScan.domain == domain,
+            ActiveScan.org_id == PUBLIC_ORG_ID,
+        ).first()
 
-    db.commit()
+        if active_scan:
+            active_scan.status = "pending"
+        else:
+            active_scan = ActiveScan(
+                domain=domain,
+                org_id=PUBLIC_ORG_ID,
+                status="pending",
+            )
+            db.add(active_scan)
+
+        db.commit()
+        print(f"[PUBLIC SCAN] ✓ Created/updated ActiveScan for {domain}")
+    except Exception as e:
+        print(f"[PUBLIC SCAN] ✗ Failed to create ActiveScan: {e}")
+        db.rollback()
 
     return {"message": "Public scan queued successfully", "domain": domain}
 
@@ -185,20 +250,35 @@ async def public_scan_status(
             "message": "Scan complete",
         }
 
-    active_scan = db.query(ActiveScan).filter(
-        ActiveScan.domain == normalized_domain,
-        ActiveScan.org_id == PUBLIC_ORG_ID
-    ).first()
+    try:
+        active_scan = db.query(ActiveScan).filter(
+            ActiveScan.domain == normalized_domain,
+            ActiveScan.org_id == PUBLIC_ORG_ID,
+        ).first()
+    except Exception:
+        active_scan = None
 
     if active_scan:
         progress = 10
         progress_key = f"scan_progress:{PUBLIC_ORG_ID}:{normalized_domain}"
         try:
             cached = await redis_client.redis.get(progress_key)
+            print(f"[SCAN STATUS] key={progress_key}, raw_cached={repr(cached)}, type={type(cached).__name__}")
             if cached is not None:
-                progress = min(max(int(cached), 0), 100)
-        except Exception:
-            pass
+                try:
+                    cached_str = str(cached) if cached else "None"
+                    progress_int = int(cached_str)
+                    progress = min(max(progress_int, 0), 100)
+                    print(f"[SCAN STATUS] ✓ Parsed progress: {cached_str} -> {progress}")
+                except (ValueError, TypeError) as ve:
+                    print(f"[SCAN STATUS] ✗ Failed to parse '{cached}': {ve}")
+                    progress = 10
+            else:
+                print(f"[SCAN STATUS] cached is None, using default progress=10")
+        except Exception as e:
+            print(f"[SCAN STATUS] ✗ Redis get failed for {progress_key}: {e}")
+            print(f"[SCAN STATUS] Redis host: {redis_client.host}")
+            progress = 10
 
         return {
             "status": active_scan.status or "pending",

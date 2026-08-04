@@ -39,7 +39,7 @@ function DomainOverviewPage() {
   const categoryPreviews = overview?.preview?.category_previews || [];
   const topIp = overview?.preview?.detailed_preview?.top_findings?.[0]?.ip || "Redacted";
   const totalCategoryCount = overview?.summary?.category_count ?? 0;
-  const progressPercent = scanStatus?.progress != null ? Math.min(Math.max(scanStatus.progress, 0), 100) : 10;
+  const progressPercent = scanStatus?.progress != null ? Math.min(Math.max(Number(scanStatus.progress) || 0, 0), 100) : 10;
   const getSeverityColor = (severity) => {
     const level = severity?.toLowerCase();
     if (level === "high") return "text-rose-600 dark:text-rose-400";
@@ -63,14 +63,17 @@ function DomainOverviewPage() {
     const refreshScanStatus = async () => {
       try {
         const status = await getPublicScanStatus(domain);
+        console.log(`[DomainOverviewPage] Scan status for ${domain}:`, status);
         setScanStatus(status);
         if (status.status === "complete") {
+          console.log(`[DomainOverviewPage] Scan complete for ${domain}, fetching overview...`);
           const data = await getPublicDomainOverview(domain);
           setOverview(data);
           setPolling(false);
           return true;
         }
       } catch (statusErr) {
+        console.error(`[DomainOverviewPage] Status error for ${domain}:`, statusErr);
         setError(statusErr?.message || "Unable to load scan status.");
       }
       return false;
@@ -92,24 +95,32 @@ function DomainOverviewPage() {
     };
 
     const startPolling = async () => {
+      console.log(`[DomainOverviewPage] Starting poll for ${domain}`);
       const isComplete = await refreshScanStatus();
       if (!isComplete) {
         setPolling(true);
+        console.log(`[DomainOverviewPage] Scan not complete, polling every 1500ms`);
         intervalId = window.setInterval(async () => {
           const complete = await refreshScanStatus();
           if (complete && intervalId) {
+            console.log(`[DomainOverviewPage] Scan complete, stopping poll`);
             window.clearInterval(intervalId);
           }
-        }, 5000);
+        }, 1500);
+      } else {
+        console.log(`[DomainOverviewPage] Scan already complete`);
       }
     };
 
     let intervalId = null;
 
     const init = async () => {
+      console.log(`[DomainOverviewPage] Initializing with domain: ${domain}, scanQueued: ${scanQueued}`);
       if (scanQueued) {
+        console.log(`[DomainOverviewPage] Scan was queued, starting polling...`);
         await startPolling();
       } else {
+        console.log(`[DomainOverviewPage] No recent queue, loading overview...`);
         const loaded = await loadOverview();
         if (!loaded) {
           setOverview(null);
@@ -204,7 +215,7 @@ function DomainOverviewPage() {
                 />
               </div>
               <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">
-                {scanStatus?.progress != null ? `${scanStatus.progress}% complete` : "Checking scan status..."}
+                {scanStatus?.progress != null ? `${Number(scanStatus.progress)}% complete` : "Checking scan status..."}
               </p>
             </div>
           )}

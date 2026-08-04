@@ -169,7 +169,11 @@ async def scanner_webhook(request: ScannerWebhookRequest):
 
     if request.target and request.progress is not None:
         progress_key = f"scan_progress:{request.scan_id}:{request.target.strip().lower()}"
-        await redis_client.redis.set(progress_key, int(request.progress), ex=3600)
+        try:
+            await redis_client.redis.set(progress_key, str(int(request.progress)), ex=3600)
+            print(f"✓ Updated progress: key={progress_key}, value={request.progress}")
+        except Exception as e:
+            print(f"✗ Failed to set progress: {progress_key}: {e}")
 
     await ws_manager.send(request.scan_id, payload)
     return {"status": "received"}
@@ -200,14 +204,16 @@ async def scan_result_webhook(
             "domain": target.strip().lower(),
         })
 
-        active_scan = db.query(ActiveScan).filter(
-            ActiveScan.domain == target.strip().lower(),
-            ActiveScan.org_id == org_id
-        ).first()
-        
-        if active_scan:
-            db.delete(active_scan)
-            db.commit()
+        try:
+            active_scan = db.query(ActiveScan).filter(
+                ActiveScan.domain == target.strip().lower(),
+                ActiveScan.org_id == org_id,
+            ).first()
+            if active_scan:
+                db.delete(active_scan)
+                db.commit()
+        except Exception:
+            db.rollback()
 
         return {"status": "ok"}
 

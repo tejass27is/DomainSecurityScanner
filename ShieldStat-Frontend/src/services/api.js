@@ -221,8 +221,12 @@ export function scanPublicDomain(domain) {
   });
 }
 
-export function getPublicScanStatus(domain) {
-  return request(`/public/scan-status?domain=${encodeURIComponent(domain)}`);
+export async function getPublicScanStatus(domain) {
+  const response = await request(`/public/scan-status?domain=${encodeURIComponent(domain)}`);
+  if (response && response.progress != null) {
+    response.progress = Number(response.progress);
+  }
+  return response;
 }
 
 export function getPublicDomainOverview(domain) {

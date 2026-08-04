@@ -47,7 +47,6 @@ async def create_scan_task_to_queue(db: Session, domain: str, org_id: str):
             raise HTTPException(status_code=404, detail="Organization not found")
 
         org_domains = list(org.domain) if org.domain else []
-
         if domain not in org_domains:
             raise HTTPException(
                 status_code=403,
@@ -58,32 +57,47 @@ async def create_scan_task_to_queue(db: Session, domain: str, org_id: str):
 
         scan_job = {
             "scan_id": org_id,
-            "target": domain
+            "target": domain,
         }
 
-        await redis_client.PushToQueue(data=scan_job)
+        queue_status = "queued"
+        warning_message = None
+        try:
+            await redis_client.PushToQueue(data=scan_job)
+        except Exception as queue_error:
+            queue_status = "deferred"
+            warning_message = f"Queue submission failed: {queue_error}"
 
-        active_scan = db.query(ActiveScan).filter(
-            ActiveScan.domain == domain,
-            ActiveScan.org_id == org_id
-        ).first()
-        if active_scan:
-            active_scan.org_id = org_id
-            active_scan.status = "pending"
-        else:
-            active_scan = ActiveScan(
-                domain=domain,
-                org_id=org_id,
-                status="pending"
-            )
-            db.add(active_scan)
-        
-        db.commit()
+        try:
+            active_scan = db.query(ActiveScan).filter(
+                ActiveScan.domain == domain,
+                ActiveScan.org_id == org_id,
+            ).first()
+            if active_scan:
+                active_scan.org_id = org_id
+                active_scan.status = "pending"
+            else:
+                active_scan = ActiveScan(
+                    domain=domain,
+                    org_id=org_id,
+                    status="pending",
+                )
+                db.add(active_scan)
+            db.commit()
+        except Exception:
+            db.rollback()
 
-        return {
+        response = {
             "message": "Scan task registered successfully",
-            "domain_validation": True
+            "domain_validation": True,
+            "queue_status": queue_status,
         }
+        if queue_status == "deferred" and warning_message:
+            response["warning"] = warning_message
+        return response
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise e

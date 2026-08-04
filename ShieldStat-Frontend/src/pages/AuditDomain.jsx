@@ -238,7 +238,14 @@ async function startGlobalScan(domainStr) {
 
     ws.onopen = async () => {
       try {
-        await registerScanTask(domainStr, token);
+        const result = await registerScanTask(domainStr, token);
+        if (result?.domain_validation === false) {
+          setGlobalError(result?.detail || "Domain validation failed.");
+          setGlobalIsScanRunning(false);
+          ws.close();
+          activeWs = null;
+          return;
+        }
       } catch (e) {
         setGlobalError(e.message || "Failed to start scan");
         setGlobalIsScanRunning(false);

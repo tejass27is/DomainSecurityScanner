@@ -2,11 +2,6 @@ import os
 import json
 import redis.asyncio as redis
 
-redis_client = redis.Redis(
-    host="redis",
-    port=6379,
-    decode_responses=True,
-)
 
 class RedisClient:
     def __init__(
@@ -16,18 +11,47 @@ class RedisClient:
         db: int = 0,
         decode_responses: bool = True,
     ):
-        host = host or os.getenv("REDIS_HOST", "redis")
+        configured_host = host or os.getenv("REDIS_HOST")
+        self.host = configured_host or "localhost"
         port = port if port is not None else int(os.getenv("REDIS_PORT", "6379"))
 
         self.redis = redis.Redis(
-            host=host,
+            host=self.host,
             port=port,
             db=db,
             decode_responses=decode_responses,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            retry_on_timeout=False,
+        )
+        self.port = port
+        self.db = db
+        self.decode_responses = decode_responses
+
+    def _build_client(self, host: str):
+        return redis.Redis(
+            host=host,
+            port=self.port,
+            db=self.db,
+            decode_responses=self.decode_responses,
         )
 
+    async def _execute_with_fallback(self, operation, *args, **kwargs):
+        try:
+            return await operation(self.redis, *args, **kwargs)
+        except Exception:
+            if self.host not in {"localhost", "127.0.0.1"}:
+                fallback_client = self._build_client("localhost")
+                self.redis = fallback_client
+                self.host = "localhost"
+                return await operation(self.redis, *args, **kwargs)
+            raise
+
     async def PushToQueue(self, queue_name: str = "scan_queue", data: dict = {}):
-        await self.redis.lpush(queue_name, json.dumps(data))
+        await self._execute_with_fallback(lambda client, *_args, **_kwargs: client.lpush(queue_name, json.dumps(data)))
 
     async def PopFromQueue(self, queue_name: str = "scan_queue"):
-        return await self.redis.brpop(queue_name)
+        return await self._execute_with_fallback(lambda client, *_args, **_kwargs: client.brpop(queue_name))
+
+
+redis_client = RedisClient()
