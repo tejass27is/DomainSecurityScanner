@@ -49,7 +49,7 @@ export default function PublicScanPage() {
   const categoryRows = overview?.categories ? Object.entries(overview.categories) : [];
   const totalCategoryCount = overview?.summary?.category_count ?? 0;
   const topIp = overview?.preview?.detailed_preview?.top_findings?.[0]?.ip || 'Redacted';
-  const progressPercent = scanStatus?.progress != null ? Math.min(Math.max(Number(scanStatus.progress) || 0, 0), 100) : 10;
+  const showScanningState = Boolean(!overview && (loading || polling || scanStatus));
 
   const severityCounts = publicFindings.reduce((counts, finding) => {
     const severity = String(finding?.severity || '').toLowerCase();
@@ -237,20 +237,23 @@ export default function PublicScanPage() {
             </div>
           )}
 
-          {!loading && !overview && (polling || scanStatus) && (
-            <div className="status-panel">
-              <div className="status-indicator">
-                <CheckCircle2 size={18} /> Scan in progress
-              </div>
-              <p className="status-heading">Preparing your public preview</p>
-              <p className="status-copy">We are generating a redacted view for {domain || inputDomain}.</p>
-              <div className="progress-bar">
-                <div className="progress-track">
-                  <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
+          {showScanningState && (
+            <div className="status-panel scanning-panel">
+              <div className="scanning-visual" aria-hidden="true">
+                <div className="scan-ring">
+                  <div className="scan-core" />
+                  <div className="scan-orb orb-one" />
+                  <div className="scan-orb orb-two" />
                 </div>
-                <p className="progress-meta">
-                  {scanStatus?.progress != null ? `${Number(scanStatus.progress)}% complete` : 'Checking status...'}
-                </p>
+              </div>
+              <p className="status-heading">Scanning your domain</p>
+              <p className="status-copy">
+                We are checking DNS, headers, and security signals for {domain || inputDomain}. This will feel quick and responsive.
+              </p>
+              <div className="scanning-steps">
+                <span className="step-pill">Analyzing DNS</span>
+                <span className="step-pill">Reviewing security posture</span>
+                <span className="step-pill">Preparing the public summary</span>
               </div>
             </div>
           )}
@@ -268,33 +271,39 @@ export default function PublicScanPage() {
                     </div>
                   </div>
                   <div className="pp-heading-copy">
-                    <h2 className="section-title">Your public scan result is ready!</h2>
+                    <h2 className="section-title">Your domain scan result is ready!</h2>
                     <p className="section-sub">To get the detailed report, enter your email below and we'll send it to you.</p>
                     <p className="pp-privacy">We respect your privacy. No spam, ever.</p>
                   </div>
                 </div>
 
-                <div className="public-preview-form-center">
-                  <form onSubmit={handleSendReport} className="public-preview-inline-form centered">
-                    <input
-                      ref={emailInputRef}
-                      type="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="you@example.com"
-                      className="pp-input"
-                      disabled={reportSending || reportSent}
-                    />
-                    <button type="submit" disabled={reportSending || !email.trim() || reportSent} className="pp-send-btn gradient">
-                      {reportSending ? 'Sending...' : reportSent ? 'Sent' : 'Send Report'}
-                    </button>
-                  </form>
-                </div>
+                <form onSubmit={handleSendReport} className="public-preview-inline-form centered">
+                  <input
+                    ref={emailInputRef}
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className="pp-input"
+                    disabled={reportSending || reportSent}
+                  />
+                  <button type="submit" disabled={reportSending || !email.trim() || reportSent} className="pp-send-btn gradient">
+                    {reportSending ? 'Sending...' : reportSent ? 'Sent' : 'Send Report'}
+                  </button>
+                </form>
               </section>
 
               {toastVisible && (
-                <div className="pp-toast">
-                  <div className="pp-toast-message">{toastMessage || 'Report sent successfully.'}</div>
+                <div className="pp-toast" role="status" aria-live="polite">
+                  <div className="pp-toast-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none">
+                      <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                  <div className="pp-toast-content">
+                    <div className="pp-toast-title">Report sent successfully</div>
+                    <div className="pp-toast-message">{toastMessage || 'Your report is on its way.'}</div>
+                  </div>
                   <div className="pp-toast-actions">
                     <button className="pp-back-btn" onClick={handleBack}>Back to homepage</button>
                     <button className="pp-toast-dismiss" onClick={() => setToastVisible(false)}>Dismiss</button>
@@ -392,50 +401,43 @@ export default function PublicScanPage() {
                       <p className="label">Full report locked</p>
                       <p className="summary-copy">Only a partial public view is shown. Sign in or request a full report to see the complete scan.</p>
                     </div>
-                  </div>
-                  <div className="public-preview-card mt-6">
-                    <p className="label">Send report to your mail</p>
-                    {!reportSent ? (
-                      <>
-                        <form onSubmit={handleSendReport} className="mt-4 space-y-3">
-                          <input
-                            type="email"
-                            value={email}
-                            onChange={(event) => setEmail(event.target.value)}
-                            placeholder="you@example.com"
-                            className="scan-input"
-                          />
-                          <button
-                            type="submit"
-                            disabled={reportSending || !email.trim()}
-                            className="scan-button"
-                          >
-                            {reportSending ? 'Sending...' : 'Send report'}
+                    {/* <div className="send-report-section">
+                      <p className="label">Send report to your mail</p>
+                      {!reportSent ? (
+                        <>
+                          <form onSubmit={handleSendReport} className="mt-4 space-y-3">
+                            <input
+                              type="email"
+                              value={email}
+                              onChange={(event) => setEmail(event.target.value)}
+                              placeholder="you@example.com"
+                              className="scan-input"
+                            />
+                            <button
+                              type="submit"
+                              disabled={reportSending || !email.trim()}
+                              className="scan-button"
+                            >
+                              {reportSending ? 'Sending...' : 'Send report'}
+                            </button>
+                          </form>
+                          {reportMessage ? (
+                            <p className={`mt-3 text-sm ${reportMessage.toLowerCase().includes('success') ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {reportMessage}
+                            </p>
+                          ) : (
+                            <p className="mt-3 text-sm text-slate-500">Enter an email to receive the full report by mail.</p>
+                          )}
+                        </>
+                      ) : (
+                        <div className="mt-4 space-y-3">
+                          <p className="mt-3 text-sm text-emerald-600">Mail sent successfully. Click below to return to the homepage.</p>
+                          <button type="button" className="scan-button" onClick={handleBack}>
+                            Back to homepage
                           </button>
-                        </form>
-                        {reportMessage ? (
-                          <p className={`mt-3 text-sm ${reportMessage.toLowerCase().includes('success') ? 'text-emerald-600' : 'text-rose-600'}`}>
-                            {reportMessage}
-                          </p>
-                        ) : (
-                          <p className="mt-3 text-sm text-slate-500">Enter an email to receive the full report by mail.</p>
-                        )}
-                      </>
-                    ) : (
-                      <div className="mt-4 space-y-3">
-                        <p className="mt-3 text-sm text-emerald-600">Mail sent successfully. Click below to return to the homepage.</p>
-                        <button type="button" className="scan-button" onClick={handleBack}>
-                          Back to homepage
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  <div className="status-panel mt-6">
-                    <p className="status-heading">Scan progress</p>
-                    <div className="progress-track">
-                      <div className="progress-fill" style={{ width: '100%' }} />
-                    </div>
-                    <p className="progress-meta" style={{ marginTop: '0.75rem' }}>Completed</p>
+                        </div>
+                      )}
+                    </div> */}
                   </div>
                 </aside>
               </div>

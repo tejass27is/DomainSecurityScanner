@@ -19,29 +19,35 @@ redis_client = RedisClient()
 
 
 def _score_grade(score: int) -> str:
-    """Grade label matching the frontend report (ScanDetails getScoreGrade)."""
+    """Grade label matching the public frontend overview thresholds."""
     if score >= 80:
         return "Optimal"
     if score >= 60:
         return "Fair"
     if score >= 40:
         return "Moderate"
-    return "At Risk"
+    return "Needs help"
 
 
 def _build_report_data(row: ScanSummary):
     """Build the shared (categories, ip_reps, score, grade_label) used by the PDF report."""
     categories = []
+    categories_payload = {}
     if row.app_security:
         categories.append({"name": "Application Security", "findings": _normalize_findings(row.app_security)})
+        categories_payload["Application Security"] = row.app_security
     if row.network_security:
         categories.append({"name": "Network Security", "findings": _normalize_findings(row.network_security)})
+        categories_payload["Network Security"] = row.network_security
     if row.tls_security:
         categories.append({"name": "TLS Security", "findings": _normalize_findings(row.tls_security)})
+        categories_payload["TLS Security"] = row.tls_security
     if row.dns_security:
         categories.append({"name": "DNS Security", "findings": _normalize_findings(row.dns_security)})
+        categories_payload["DNS Security"] = row.dns_security
     if row.mail_security:
         categories.append({"name": "Mail Security", "findings": _normalize_findings(row.mail_security)})
+        categories_payload["Mail Security"] = row.mail_security
 
     ip_reps = []
     if isinstance(row.ips, list):
@@ -50,7 +56,9 @@ def _build_report_data(row: ScanSummary):
     # IP Reputation always appears (mirrors the logged-in report), even when empty
     categories.append({"name": "IP Reputation", "isIpRep": True, "findings": ip_reps})
 
-    score = row.domain_score or 0
+    criticality = row.domain_criticality or get_criticality_from_domain_keywords(row.domain)
+    breakdown = calculate_weighted_score(categories_payload, criticality)
+    score = round(float(breakdown.total_score), 2)
     return categories, ip_reps, score, _score_grade(score)
 
 PUBLIC_USER_EMAIL = "public@shieldstat.local"
@@ -266,7 +274,10 @@ async def public_scan_status(
             print(f"[SCAN STATUS] key={progress_key}, raw_cached={repr(cached)}, type={type(cached).__name__}")
             if cached is not None:
                 try:
-                    cached_str = str(cached) if cached else "None"
+                    if isinstance(cached, bytes):
+                        cached_str = cached.decode('utf-8', errors='ignore')
+                    else:
+                        cached_str = str(cached)
                     progress_int = int(cached_str)
                     progress = min(max(progress_int, 0), 100)
                     print(f"[SCAN STATUS] ✓ Parsed progress: {cached_str} -> {progress}")

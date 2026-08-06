@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.base import Base, engine
 from app.api.admin.service import create_public_report_request
-from app.api.public.routes import _clear_existing_public_scan_results
+from app.api.public.routes import _build_report_data, _clear_existing_public_scan_results
 from app.db.models import ScanSummary
 
 
@@ -55,3 +55,25 @@ def test_clear_existing_public_scan_results_removes_stale_summary():
         assert db.query(ScanSummary).filter(ScanSummary.domain == "example.com").first() is None
     finally:
         db.close()
+
+
+def test_build_report_data_uses_weighted_score_instead_of_stale_domain_score():
+    row = ScanSummary(
+        domain="example.com",
+        org_id="org-1",
+        domain_score=64,
+        severity="high",
+        domain_criticality="medium",
+        app_security={
+            "Missing HSTS header": [
+                {"subdomain": "www.example.com", "severity": "critical"},
+            ]
+        },
+    )
+
+    categories, ip_reps, score, grade_label = _build_report_data(row)
+
+    assert score == 75.0
+    assert grade_label == "Fair"
+    assert categories[0]["name"] == "Application Security"
+    assert ip_reps == []
