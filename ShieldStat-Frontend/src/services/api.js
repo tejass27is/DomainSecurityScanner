@@ -1,6 +1,19 @@
-const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:8000";
 const requestCache = new Map();
 const CACHE_TTL_MS = 30000;
+
+function loopbackVariants(endpoint) {
+  const urls = [`${API_BASE}${endpoint}`];
+  if (/\/\/localhost(?=:|$)/i.test(API_BASE)) {
+    urls.push(`${API_BASE.replace(/\/\/localhost/i, "//127.0.0.1")}${endpoint}`);
+  } else if (/\/\/127\.0\.0\.1(?=:|$)/.test(API_BASE)) {
+    urls.push(`${API_BASE.replace(/\/\/127\.0\.0\.1/i, "//localhost")}${endpoint}`);
+  }
+  return urls;
+}
+
+
+const LOOPBACK_TIMEOUT_MS = import.meta.env.DEV ? 180000 : 0;
 const OPTIONAL_ENRICHMENTS_ENABLED =
   import.meta.env.PROD || import.meta.env.VITE_ENABLE_OPTIONAL_ENRICHMENTS === "true";
 
@@ -14,12 +27,12 @@ async function getPublicIp() {
   }
 }
 
-async function request(endpoint, { method = "GET", body, token, signal, publicIp, allowFailure = false } = {}) {
+async function request(endpoint, { method = "GET", body, token, signal, publicIp, allowFailure = false, skipCache = false } = {}) {
   const headers = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   if (publicIp) headers["X-Public-IP"] = publicIp;
 
-  const cacheKey = method === "GET" ? `${method}:${endpoint}:${token || "anonymous"}` : null;
+  const cacheKey = method === "GET" && !skipCache ? `${method}:${endpoint}:${token || "anonymous"}` : null;
   if (cacheKey) {
     const cached = requestCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
@@ -589,5 +602,110 @@ export function reportIssue({ domain, subdomain, rule, severity, issueType, mess
       message,
       org_id: orgId,
     },
+  });
+}
+
+// ─── VAPT Report Import ───────────────────────────────────────────────────────
+
+export async function uploadVaptReport(file, token) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const urls = loopbackVariants("/vapt/upload");
+
+  for (const url of urls) {
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: formData,
+        // Don't hang forever if a proxied connection wedges mid-upload (dev only).
+        signal: LOOPBACK_TIMEOUT_MS ? AbortSignal.timeout(LOOPBACK_TIMEOUT_MS) : undefined,
+      });
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        // Deliberately NOT retried: the server may already have received the
+        // full body and be importing it — retrying could create a duplicate.
+        throw new Error(`Upload timed out — the server took too long to respond at ${url}.`);
+      }
+      // fetch only rejects here on a network-level failure (server unreachable,
+      // CORS preflight blocked, mixed content, or a proxy dropping the upload).
+      // Try the other loopback address before giving up. Note: in the rare case
+      // the server stored the import but the response was dropped, a retry could
+      // create a duplicate import — the backend dedupe by file hash would close
+      // that window if it ever becomes a problem.
+      continue;
+    }
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      const detail = data?.detail;
+      throw new Error(
+        detail
+          ? `Import failed: ${detail}`
+          : `Import failed (HTTP ${res.status}) — the server rejected the file.`,
+      );
+    }
+    return res.json();
+  }
+
+  throw new Error(
+    `Network error: could not reach the import server at ${urls.join(" or ")}. ` +
+    "Check that the backend is running and that this site's origin is allowed " +
+    "by the backend CORS settings. If the backend runs in Docker, restart " +
+    "Docker Desktop if the connection keeps getting dropped.",
+  );
+}
+
+export function getVaptImports(token) {
+  // skipCache so a freshly uploaded import always shows up immediately.
+  return request("/vapt/imports", { token, skipCache: true });
+}
+
+export function getVaptImport(importId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}`, { token });
+}
+
+export async function downloadVaptReport(importId, token) {
+  const urls = loopbackVariants(`/vapt/imports/${encodeURIComponent(importId)}/report`);
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+  for (const url of urls) {
+    let res;
+    try {
+      res = await fetch(url, { headers, signal: LOOPBACK_TIMEOUT_MS ? AbortSignal.timeout(90000) : undefined });
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        throw new Error(`Report download timed out at ${url}.`);
+      }
+      continue;
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.detail || `Failed to download report (${res.status})`);
+    }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = `vapt-report-${importId.slice(0, 8)}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(blobUrl);
+    return;
+  }
+
+  throw new Error(
+    `Network error: could not reach the report server at ${urls.join(" or ")}. ` +
+    "Check that the backend is running and CORS allows this site.",
+  );
+}
+
+export function deleteVaptImport(importId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}`, {
+    method: "DELETE",
+    token,
   });
 }

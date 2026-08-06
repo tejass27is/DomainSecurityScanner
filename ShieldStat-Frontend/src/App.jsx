@@ -24,6 +24,9 @@ const MalwareScanHistory = lazy(() => import("./pages/MalwareScanHistory"));
 const MalwareDashboard = lazy(() => import("./pages/MalwareDashboard"));
 const Profile = lazy(() => import("./pages/Profile"));
 const AdminReports = lazy(() => import("./pages/AdminReports"));
+const VaptUpload = lazy(() => import("./pages/VaptUpload"));
+const VaptReports = lazy(() => import("./pages/VaptReports"));
+const VaptReport = lazy(() => import("./pages/VaptReport"));
 
 function App() {
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -88,6 +91,9 @@ function App() {
         <Route path="malware-dashboard" element={<MalwareDashboard />} />
         <Route path="assessment" element={<Assessment />} />
         <Route path="assessment/:sectionId" element={<Assessment />} />
+        <Route path="vapt" element={<VaptUpload />} />
+        <Route path="vapt/reports" element={<VaptReports />} />
+        <Route path="vapt/reports/:importId" element={<VaptReport />} />
         <Route path="profile" element={<Profile />} />
       </Route>
 

@@ -18,6 +18,7 @@ from app.api.public.routes import router as public_router
 from app.db.base import SessionLocal
 from app.api.fix.routes import router as fix_router
 from app.api.report_issue.routes import router as report_issue_router
+from app.api.vapt.routes import router as vapt_router
 from app.api.admin.service import seed_default_subscription_plans, delete_expired_unclaimed_promo_codes
 import threading
 import time
@@ -111,6 +112,7 @@ app.include_router(webhook_scanner_router)
 app.include_router(malware_router)
 app.include_router(public_router)
 app.include_router(report_issue_router)
+app.include_router(vapt_router)
 
 if __name__ == "__main__":
     import uvicorn

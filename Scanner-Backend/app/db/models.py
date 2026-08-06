@@ -328,6 +328,40 @@ class ResolvedFinding(Base):
         Index("idx_resolved_org", "org_id"),
         Index("idx_resolved_domain", "domain"),
     )
+class VaptImport(Base):
+    """A normalized VAPT (Vulnerability Assessment & Penetration Testing) report
+    imported from a Nessus / CSV / XLSX export file.
+
+    The full normalized report (findings, aggregate summaries) is stored as JSON
+    so the raw payload never needs to be re-parsed.
+    """
+
+    __tablename__ = "vapt_imports"
+
+    import_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
+    file_name = Column(String(255), nullable=False)
+    file_format = Column(String(20), nullable=False, default="xml")  # xml | csv | xlsx
+    source_tool = Column(String(50), nullable=False, default="generic")  # nessus | openvas | qualys | generic
+    # Kept for compatibility with tables created by earlier schema versions
+    # (which shipped a NOT NULL `status` column). Imports are stored fully
+    # normalized, so the value is always "completed" at insert time.
+    status = Column(String(20), nullable=False, default="completed", server_default="'completed'")
+    total_findings = Column(Integer, nullable=False, default=0)
+    unique_hosts = Column(Integer, nullable=False, default=0)
+    risk_score = Column(Integer, nullable=False, default=0)  # 0-100 risk index
+    severity = Column(String(20), nullable=False, default="none")
+    severity_distribution = Column(JSON, nullable=True)
+    category_distribution = Column(JSON, nullable=True)
+    summary = Column(JSON, nullable=True)  # also carries excluded_info_findings + raw_findings_parsed
+    findings = Column(JSON, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_vapt_org_created", "org_id", "created_at"),
+    )
+
+
 class ReportedIssue(Base):
     __tablename__ = "reported_issues"
 
