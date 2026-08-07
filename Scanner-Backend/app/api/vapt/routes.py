@@ -89,6 +89,7 @@ def _to_list_item(record: VaptImport, uploader_email: str | None = None) -> dict
         "severity_distribution": record.severity_distribution or {},
         "uploaded_by": str(record.uploaded_by) if record.uploaded_by else None,
         "uploaded_by_email": uploader_email,
+        "status": record.status,
         "created_at": record.created_at,
     }
 
@@ -280,14 +281,6 @@ def update_vapt_finding_status(
     if normalized_status not in VALID_VAPT_FINDING_STATUSES:
         raise HTTPException(status_code=400, detail="Unsupported status value.")
 
-    # Clients can only solve findings (mark them solved or reopen to pending);
-    # ignore / false_positive triage is reserved for platform roles.
-    if current_user.role == "user" and normalized_status not in {"pending", "solved"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Clients can only mark findings as pending or solved.",
-        )
-
     comment = (payload.comment or "").strip()
     if normalized_status in {"ignore", "false_positive"} and not comment:
         raise HTTPException(
@@ -317,6 +310,33 @@ def update_vapt_finding_status(
     db.commit()
     db.refresh(record)
     return {"success": True, "finding": updated_finding}
+
+
+@router.post("/imports/{import_id}/submit")
+def submit_vapt_import(
+    import_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Submit a VAPT report to the SOC analyst after findings are updated."""
+    if not current_user.org_id:
+        raise HTTPException(
+            status_code=400,
+            detail="User not associated with an organization.",
+        )
+    record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    findings = record.findings or []
+    pending_findings = [f for f in findings if (f.get("status") or "pending").strip().lower() == "pending"]
+    if pending_findings:
+        raise HTTPException(
+            status_code=400,
+            detail="All findings must be marked solved, ignore, or false positive before submitting.",
+        )
+    record.status = "submitted"
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {"success": True, "status": record.status}
 
 
 @router.delete("/imports/{import_id}")

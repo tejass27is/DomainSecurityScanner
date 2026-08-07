@@ -337,7 +337,7 @@ export default function SocAnalystVaptReports() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50/70 text-left dark:border-slate-800 dark:bg-slate-800/50">
-                    {["File", "Format", "Risk", "Severity", "Findings", "Hosts", "Uploaded By", "Organization", "Imported", ""].map((h) => (
+                    {["File", "Format", "Risk", "Severity", "Findings", "Hosts", "Uploaded By", "Organization", "Status", "Imported", ""].map((h) => (
                       <th key={h} className="px-6 py-3.5 text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                         {h}
                       </th>
@@ -399,6 +399,15 @@ export default function SocAnalystVaptReports() {
                           <span className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
                             <Globe size={13} className="text-slate-400" />
                             {item.org_domain || "—"}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold ${
+                            item.status === "submitted"
+                              ? "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
+                              : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                          }`}>
+                            {item.status ? item.status.replace("_", " ") : "published"}
                           </span>
                         </td>
                         <td className="px-6 py-4 text-xs text-slate-500 dark:text-slate-400">{fmtDate(item.created_at)}</td>

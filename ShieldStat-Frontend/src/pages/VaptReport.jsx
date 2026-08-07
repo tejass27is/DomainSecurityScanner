@@ -5,7 +5,7 @@ import {
   Globe, Layers, Server, Info, FileText, Lock, Activity, ExternalLink,
   ShieldAlert, Bug, FilterX, Database, Wrench,
 } from "lucide-react";
-import { getVaptImport, getVaptImportAdmin, downloadVaptReport, downloadVaptReportAdmin, updateVaptFindingStatus } from "../services/api";
+import { getVaptImport, getVaptImportAdmin, downloadVaptReport, downloadVaptReportAdmin, updateVaptFindingStatus, submitVaptImport } from "../services/api";
 import {
   SEVERITY_META,
   SEVERITY_ORDER,
@@ -24,6 +24,7 @@ const STATUS_LABEL = {
   solved: "Solved",
   ignore: "Ignored",
   false_positive: "False positive",
+  submitted: "Submitted",
 };
 
 const STATUS_BADGE = {
@@ -70,6 +71,18 @@ function RiskGauge({ score }) {
           {progress}
         </span>
         <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Risk index</span>
+      {toast?.text && (
+        <div
+          role="status"
+          className={`fixed right-4 top-4 z-[100] max-w-sm rounded-xl border px-4 py-3 text-sm font-medium shadow-lg ${
+            toast.type === "error"
+              ? "border-red-200 bg-red-50 text-red-800"
+              : "border-emerald-200 bg-emerald-50 text-emerald-800"
+          }`}
+        >
+          {toast.text}
+        </div>
+      )}
       </div>
     </div>
   );
@@ -192,9 +205,13 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
             >
               <option value="pending">Pending</option>
               <option value="solved">Solved</option>
+              <option value="ignore">Ignore</option>
+              <option value="false_positive">False positive</option>
             </select>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              Mark findings as <b>Solved</b> once your team has addressed them.
+              {status === "ignore" || status === "false_positive"
+                ? "A comment is required when ignoring or marking a finding false positive."
+                : "Add a note for this finding if you want; it is optional."}
             </p>
           </div>
         )}
@@ -284,6 +301,9 @@ export default function VaptReport() {
   const [draftChanges, setDraftChanges] = useState({});
   const [bulkSaving, setBulkSaving] = useState(false);
   const [bulkSaveError, setBulkSaveError] = useState("");
+  const [submitStatus, setSubmitStatus] = useState("");
+  const [submitError, setSubmitError] = useState("");
+  const [toast, setToast] = useState(null);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -346,9 +366,9 @@ export default function VaptReport() {
   }, [record?.findings]);
 
   const handleSaveAll = useCallback(async () => {
-    if (!record) return;
+    if (!record) return true;
     const entries = Object.entries(draftChanges);
-    if (entries.length === 0) return;
+    if (entries.length === 0) return true;
 
     setBulkSaving(true);
     setBulkSaveError("");
@@ -372,8 +392,10 @@ export default function VaptReport() {
       }
       setRecord(updatedRecord);
       setDraftChanges({});
+      return true;
     } catch (err) {
       setBulkSaveError(err?.message || "Failed to save changes.");
+      return false;
     } finally {
       setBulkSaving(false);
     }
@@ -434,6 +456,49 @@ export default function VaptReport() {
     return (status === "ignore" || status === "false_positive") && !(draft.comment || "").trim();
   }), [draftChanges]);
 
+  const hasPendingFindings = useMemo(() => {
+    if (!record) return false;
+    return (record.findings || []).some((finding) => {
+      const draft = draftChanges[String(finding.id)];
+      const status = (draft?.status ?? finding.status ?? "pending").toLowerCase();
+      return status === "pending";
+    });
+  }, [record, draftChanges]);
+
+  const handleSubmitReport = useCallback(async () => {
+    if (!record) return;
+    if (hasInvalidDraft) {
+      setSubmitError("Please add required comments for Ignore / False positive before submitting.");
+      return;
+    }
+    if (hasPendingFindings) {
+      setSubmitError("All findings must be marked Solved, Ignore, or False positive before submitting.");
+      return;
+    }
+
+    setSubmitStatus("loading");
+    setSubmitError("");
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) throw new Error("Authentication required.");
+      const saved = await handleSaveAll();
+      if (!saved) throw new Error("Unable to save status updates before submitting.");
+      await submitVaptImport(record.import_id, token);
+      setSubmitStatus("submitted");
+      setRecord((prev) => prev ? { ...prev, status: "submitted" } : prev);
+      setToast({ text: "Report submitted successfully, contact SOC team for next scan.", type: "success" });
+    } catch (err) {
+      setSubmitError(err?.message || "Failed to submit report.");
+      setSubmitStatus("");
+    }
+  }, [record, handleSaveAll, hasInvalidDraft, hasPendingFindings]);
+
+  useEffect(() => {
+    if (!toast?.text) return;
+    const id = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(id);
+  }, [toast]);
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center text-slate-900 dark:text-slate-100">
@@ -491,27 +556,17 @@ export default function VaptReport() {
                   {formatLabel(record)}
                 </span>
               </div>
-              <h1 className="max-w-2xl truncate text-2xl font-extrabold tracking-tight sm:text-3xl" title={record.file_name}>
-                {record.file_name}
-              </h1>
-              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                {formatSource(record.source_tool)} · imported {fmtDate(record.created_at)}
-              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="max-w-2xl truncate text-2xl font-extrabold tracking-tight sm:text-3xl" title={record.file_name}>
+                  {record.file_name}
+                </h1>
+                {record.status === "submitted" && (
+                  <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-semibold text-sky-700 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                    Submitted to SOC
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
-          <button
-            type="button"
-            onClick={handleDownloadPdf}
-            className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95"
-          >
-            <Download size={16} /> Download PDF Report
-          </button>
-        </div>
-
-        {/* ── Hero: gauge + counts ── */}
-        <div className="relative mb-6 overflow-hidden rounded-[28px] border border-purple-100 bg-[radial-gradient(circle_at_top_left,_rgba(168,85,247,0.14),_transparent_40%),linear-gradient(135deg,#faf5ff_0%,#ffffff_55%,#f3e8ff_100%)] p-6 shadow-[0_24px_60px_rgba(128,0,128,0.08)] dark:border-purple-900/50 dark:bg-[radial-gradient(circle_at_top_left,_rgba(168,85,247,0.18),_transparent_40%),linear-gradient(135deg,#170f24_0%,#1e1b2e_55%,#221733_100%)] sm:p-8">
-          <div className="flex flex-col items-center gap-8 lg:flex-row lg:items-center">
-            <RiskGauge score={record.risk_score} />
 
             <div className="min-w-0 flex-1">
               <div className="mb-3 flex items-center gap-2">
@@ -540,6 +595,23 @@ export default function VaptReport() {
                 <ShieldAlert size={13} />
                 Informational findings are excluded automatically so the report focuses on real vulnerabilities.
               </p>
+              {!isPlatformView && record.status !== "submitted" && (
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleSubmitReport}
+                    disabled={submitStatus === "loading" || hasInvalidDraft || bulkSaving || hasPendingFindings}
+                    className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {submitStatus === "loading" ? "Submitting…" : "Submit to SOC Analyst"}
+                  </button>
+                  {hasPendingFindings && (
+                    <p className="text-sm text-amber-600 dark:text-amber-400">
+                      Finish triaging all findings before submitting.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -669,6 +741,34 @@ export default function VaptReport() {
             <Search size={26} className="mb-3 text-slate-400" />
             <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">No findings match your filters</p>
             <p className="mt-1 text-xs text-slate-400">Try a different search term or clear the severity / category filters.</p>
+            {!isPlatformView && record.status !== "submitted" && (
+              <div className="mt-6 flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left dark:border-slate-800 dark:bg-slate-950/70">
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Submit this report to SOC once all findings are triaged.</p>
+                <button
+                  type="button"
+                  onClick={handleSubmitReport}
+                  disabled={submitStatus === "loading" || hasInvalidDraft || bulkSaving || hasPendingFindings}
+                  className="w-full rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {submitStatus === "loading" ? "Submitting…" : "Submit to SOC Analyst"}
+                </button>
+                {hasPendingFindings && (
+                  <div className="text-sm text-amber-600 dark:text-amber-400">
+                    All findings must be marked Solved, Ignore, or False positive before submitting.
+                  </div>
+                )}
+                {submitError && (
+                  <div className="text-sm text-red-600 dark:text-red-400">
+                    {submitError}
+                  </div>
+                )}
+                {hasInvalidDraft && (
+                  <div className="text-sm text-amber-600 dark:text-amber-400">
+                    Some rows require comments for Ignore / False positive before saving.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -731,8 +831,28 @@ export default function VaptReport() {
                       >
                         {bulkSaving ? "Saving changes…" : "Save changes"}
                       </button>
+                      {!isPlatformView && record.status !== "submitted" && (
+                        <button
+                          type="button"
+                          onClick={handleSubmitReport}
+                          disabled={submitStatus === "loading" || hasInvalidDraft || bulkSaving || hasPendingFindings}
+                          className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {submitStatus === "loading" ? "Submitting…" : "Submit to SOC Analyst"}
+                        </button>
+                      )}
                     </div>
                   </div>
+                  {hasPendingFindings && (
+                    <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
+                      All findings must be marked Solved, Ignore, or False positive before submitting.
+                    </div>
+                  )}
+                  {submitError && (
+                    <div className="mt-2 text-sm text-red-600 dark:text-red-400">
+                      {submitError}
+                    </div>
+                  )}
                   {hasInvalidDraft && (
                     <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
                       Some rows require comments for Ignore / False positive before saving.

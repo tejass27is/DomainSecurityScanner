@@ -20,6 +20,7 @@ class VaptImportListItem(BaseModel):
     # Uploader attribution (NULL for imports predating the column).
     uploaded_by: Optional[str] = None
     uploaded_by_email: Optional[str] = None
+    status: Optional[str] = None
 
 
 class VaptImportDetail(VaptImportListItem):

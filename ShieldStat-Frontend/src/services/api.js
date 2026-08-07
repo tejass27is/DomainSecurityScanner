@@ -741,6 +741,13 @@ export function updateVaptFindingStatus(importId, findingId, { status, comment }
   });
 }
 
+export function submitVaptImport(importId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/submit`, {
+    method: "POST",
+    token,
+  });
+}
+
 export function deleteVaptImport(importId, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}`, {
     method: "DELETE",
