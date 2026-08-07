@@ -447,6 +447,7 @@ def get_users_by_org(db: Session) -> dict:
             unassigned_users.append(user)
 
     admin_only = [u for u in unassigned_users if u.role == "admin"]
+    soc_analyst_only = [u for u in unassigned_users if u.role == "soc_analyst"]
 
     return {
         "organizations": [
@@ -464,6 +465,10 @@ def get_users_by_org(db: Session) -> dict:
         "admin": [
             _serialize_user(user, blocked_emails)
             for user in admin_only
+        ],
+        "soc_analysts": [
+            _serialize_user(user, blocked_emails)
+            for user in soc_analyst_only
         ],
     }
 
@@ -827,9 +832,15 @@ def provision_admin_account(email: str, current_admin: User, db: Session, ip_add
         role="admin",
         org_id=None,
         email_verified=True,
+        must_change_password=True,
     )
     db.add(new_admin)
+    # Commit the new user before attempting external SMTP delivery so a
+    # transient email failure doesn't prevent account creation.
+    db.commit()
+    db.refresh(new_admin)
 
+    email_error = None
     try:
         send_new_admin_credentials_email(
             to_email=normalized,
@@ -837,13 +848,8 @@ def provision_admin_account(email: str, current_admin: User, db: Session, ip_add
             invited_by_email=current_admin.email,
         )
     except Exception as email_err:
-        db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to send credentials email to {normalized}: {str(email_err)}",
-        )
-
-    db.commit()
+        # Record the error but do not roll back the created account.
+        email_error = str(email_err)
 
     _record_audit_log(
         db,
@@ -851,10 +857,17 @@ def provision_admin_account(email: str, current_admin: User, db: Session, ip_add
         action="ADMIN_CREATED",
         target_type="admin",
         target_id=normalized,
-        details={"email": normalized, "invited_by": current_admin.email},
+        details={"email": normalized, "invited_by": current_admin.email, "email_error": email_error},
         ip_address=ip_address,
         public_ip=public_ip,
     )
+
+    if email_error:
+        return {
+            "message": "Admin account created but failed to send credentials email",
+            "email": normalized,
+            "warning": email_error,
+        }
 
     return {
         "message": "Admin account created and credentials sent by email",
@@ -905,6 +918,100 @@ def delete_admin(email: str, current_admin: User, db: Session, ip_address: str |
 
     return {
         "message": "Admin account deleted successfully",
+        "email": normalized,
+    }
+
+
+def provision_soc_analyst_account(email: str, current_admin: User, db: Session, ip_address: str | None = None, public_ip: str | None = None) -> dict:
+    """Create a SOC analyst account (read-only platform VAPT viewer) and email credentials."""
+    normalized = _normalize_email(email)
+
+    if normalized == current_admin.email.lower():
+        raise HTTPException(status_code=400, detail="Cannot provision a SOC analyst account for your own email")
+
+    if db.query(Blacklist).filter(Blacklist.email == normalized).first():
+        raise HTTPException(status_code=400, detail="This email is blocked")
+
+    if db.query(User).filter(User.email == normalized).first():
+        raise HTTPException(status_code=400, detail="A user with this email already exists")
+
+    plain_password = secrets.token_urlsafe(12)
+    new_analyst = User(
+        user_id=str(uuid.uuid4()),
+        email=normalized,
+        password=hashPassword(plain_password),
+        role="soc_analyst",
+        org_id=None,
+        email_verified=True,
+        must_change_password=True,
+    )
+    db.add(new_analyst)
+    # Commit first to persist account even if email delivery fails.
+    db.commit()
+    db.refresh(new_analyst)
+
+    email_error = None
+    try:
+        send_new_admin_credentials_email(
+            to_email=normalized,
+            plain_password=plain_password,
+            invited_by_email=current_admin.email,
+            role_label="SOC Analyst",
+        )
+    except Exception as email_err:
+        email_error = str(email_err)
+
+    _record_audit_log(
+        db,
+        admin=current_admin,
+        action="SOC_ANALYST_CREATED",
+        target_type="soc_analyst",
+        target_id=normalized,
+        details={"email": normalized, "invited_by": current_admin.email, "email_error": email_error},
+        ip_address=ip_address,
+        public_ip=public_ip,
+    )
+
+    if email_error:
+        return {
+            "message": "SOC analyst account created but failed to send credentials email",
+            "email": normalized,
+            "warning": email_error,
+        }
+
+    return {
+        "message": "SOC analyst account created and credentials sent by email",
+        "email": normalized,
+    }
+
+
+def delete_soc_analyst(email: str, current_admin: User, db: Session, ip_address: str | None = None, public_ip: str | None = None) -> dict:
+    """Delete a SOC analyst account by email."""
+    normalized = _normalize_email(email)
+
+    if normalized == current_admin.email.lower():
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    analyst = db.query(User).filter(User.email == normalized, User.role == "soc_analyst").first()
+    if not analyst:
+        raise HTTPException(status_code=404, detail="SOC analyst account not found")
+
+    db.delete(analyst)
+    db.commit()
+
+    _record_audit_log(
+        db,
+        admin=current_admin,
+        action="SOC_ANALYST_DELETED",
+        target_type="soc_analyst",
+        target_id=normalized,
+        details={"email": normalized, "deleted_by": current_admin.email},
+        ip_address=ip_address,
+        public_ip=public_ip,
+    )
+
+    return {
+        "message": "SOC analyst account deleted successfully",
         "email": normalized,
     }
 

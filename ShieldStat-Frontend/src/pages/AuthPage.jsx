@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Eye, EyeOff, Loader2, ArrowLeft, Shield, Globe, Lock, TrendingUp, CheckCircle2 } from "lucide-react";
 import { useGoogleReCaptcha } from "react-google-recaptcha-v3";
-import { loginUser, registerUser, forgotPassword, resetPasswordWithOtp, setupTotp, verifyTotp, resetTotp } from "../services/api";
+import { loginUser, registerUser, forgotPassword, resetPassword, resetPasswordWithOtp, setupTotp, verifyTotp, resetTotp } from "../services/api";
 import QRCode from "react-qr-code";
 // @ts-ignore
 import isecurify_logo from "../assets/isecurify_logo.png";
@@ -124,7 +124,13 @@ function AuthPage() {
             localStorage.setItem("token", data.token);
             localStorage.setItem("user", JSON.stringify(data.user));
 
-            if (data.user?.role === "admin" || data.user?.role === "marketing") {
+            if (data.user?.must_change_password) {
+               setView("change-password");
+               setSuccess("");
+               return;
+            }
+
+            if (data.user?.role === "admin" || data.user?.role === "marketing" || data.user?.role === "soc_analyst") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -140,6 +146,57 @@ function AuthPage() {
       }
    };
 
+
+   // ─── First-login forced password change (provisioned accounts) ────────────
+   const handleFirstLoginPasswordChange = async (e) => {
+      e.preventDefault();
+      setError("");
+      setSuccess("");
+
+      if (!password || !newPassword || !confirmPassword) {
+         setError("Please fill all the fields");
+         return;
+      }
+      const passwordError = validateStrongPassword(newPassword);
+      if (passwordError) {
+         setError(passwordError);
+         return;
+      }
+      if (newPassword !== confirmPassword) {
+         setError("Passwords do not match");
+         return;
+      }
+
+      setLoading(true);
+      try {
+         const token = localStorage.getItem("token");
+         if (!token) throw new Error("Authentication required.");
+
+         await resetPassword(password, newPassword, token);
+
+         const storedUser = JSON.parse(localStorage.getItem("user") || "null");
+         if (storedUser) {
+            localStorage.setItem("user", JSON.stringify({ ...storedUser, must_change_password: false }));
+         }
+         setPassword("");
+         setNewPassword("");
+         setConfirmPassword("");
+         setSuccess("Password updated successfully. Taking you to your dashboard…");
+
+         setTimeout(() => {
+            const user = JSON.parse(localStorage.getItem("user") || "null");
+            if (user?.role === "admin" || user?.role === "marketing" || user?.role === "soc_analyst") {
+               navigate("/admin");
+            } else {
+               navigate("/scan-dashboard");
+            }
+         }, 800);
+      } catch (err) {
+         setError(err.message);
+      } finally {
+         setLoading(false);
+      }
+   };
 
    // ─── Register handler ─────────────────────────────────────────────────────
    const handleRegister = async (e) => {
@@ -217,7 +274,13 @@ function AuthPage() {
             localStorage.setItem("token", data.token);
             localStorage.setItem("user", JSON.stringify(data.user));
 
-            if (data.user?.role === "admin" || data.user?.role === "marketing") {
+            if (data.user?.must_change_password) {
+               setView("change-password");
+               setSuccess("");
+               return;
+            }
+
+            if (data.user?.role === "admin" || data.user?.role === "marketing" || data.user?.role === "soc_analyst") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -251,7 +314,13 @@ function AuthPage() {
             localStorage.setItem("token", data.token);
             localStorage.setItem("user", JSON.stringify(data.user));
 
-            if (data.user?.role === "admin" || data.user?.role === "marketing") {
+            if (data.user?.must_change_password) {
+               setView("change-password");
+               setSuccess("");
+               return;
+            }
+
+            if (data.user?.role === "admin" || data.user?.role === "marketing" || data.user?.role === "soc_analyst") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -363,7 +432,13 @@ function AuthPage() {
             localStorage.setItem("token", data.token);
             localStorage.setItem("user", JSON.stringify(data.user));
 
-            if (data.user?.role === "admin" || data.user?.role === "marketing") {
+            if (data.user?.must_change_password) {
+               setView("change-password");
+               setSuccess("");
+               return;
+            }
+
+            if (data.user?.role === "admin" || data.user?.role === "marketing" || data.user?.role === "soc_analyst") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -399,6 +474,7 @@ function AuthPage() {
       "totp-setup": { heading: "Set Up Authenticator", sub: "Scan the QR code and enter a code from your app." },
       "totp-verify": { heading: "Verify Authenticator", sub: "Enter the code from your authenticator app to sign in." },
       "totp-reset": { heading: "Lost Authenticator App", sub: "Reset your authenticator with an email OTP." },
+      "change-password": { heading: "Set a New Password", sub: "You're using a temporary password — create your own before continuing." },
    };
 
    const { heading, sub } = titles[view];
@@ -617,6 +693,68 @@ function AuthPage() {
                            <a href="https://policies.google.com/privacy" className="text-purple-600 dark:text-purple-400 hover:underline">Privacy Policy</a> and{" "}
                            <a href="https://policies.google.com/terms" className="text-purple-600 dark:text-purple-400 hover:underline">Terms of Service</a> apply.
                         </p>
+                     </form>
+                  )}
+
+                  {/* ================= FIRST-LOGIN PASSWORD CHANGE ================= */}
+                  {view === "change-password" && (
+                     <form className="mx-auto max-w-lg space-y-6 max-[480px]:space-y-4" onSubmit={handleFirstLoginPasswordChange}>
+                        <div className="rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-700 dark:text-amber-300 font-medium">
+                           Your administrator issued a temporary password. Set your own password to continue.
+                        </div>
+
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              Current (Temporary) Password
+                           </label>
+                           <input
+                              id="change-password-current"
+                              type="password"
+                              placeholder="Temporary password from the email"
+                              value={password}
+                              onChange={(e) => setPassword(e.target.value)}
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
+                           />
+                        </div>
+
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              New Password
+                           </label>
+                           <input
+                              id="change-password-new"
+                              type="password"
+                              placeholder="At least 8 chars, 1 uppercase, 1 number, 1 special"
+                              value={newPassword}
+                              onChange={(e) => setNewPassword(e.target.value)}
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
+                           />
+                           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{PASSWORD_POLICY_MESSAGE}</p>
+                        </div>
+
+                        <div>
+                           <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                              Confirm New Password
+                           </label>
+                           <input
+                              id="change-password-confirm"
+                              type="password"
+                              placeholder="Re-enter the new password"
+                              value={confirmPassword}
+                              onChange={(e) => setConfirmPassword(e.target.value)}
+                              className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
+                           />
+                        </div>
+
+                        <button
+                           id="change-password-submit"
+                           type="submit"
+                           disabled={loading}
+                           className="w-full py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg font-bold transition disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg hover:shadow-xl"
+                        >
+                           {loading && <Loader2 size={20} className="animate-spin" />}
+                           {loading ? "Updating…" : "Update Password & Continue"}
+                        </button>
                      </form>
                   )}
 

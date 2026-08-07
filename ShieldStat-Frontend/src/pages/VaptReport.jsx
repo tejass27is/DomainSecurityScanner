@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Download, Search, ChevronDown, AlertCircle,
   Globe, Layers, Server, Info, FileText, Lock, Activity, ExternalLink,
   ShieldAlert, Bug, FilterX, Database, Wrench,
 } from "lucide-react";
-import { getVaptImport, downloadVaptReport, updateVaptFindingStatus } from "../services/api";
+import { getVaptImport, getVaptImportAdmin, downloadVaptReport, downloadVaptReportAdmin, updateVaptFindingStatus } from "../services/api";
 import {
   SEVERITY_META,
   SEVERITY_ORDER,
@@ -16,6 +16,22 @@ import {
   formatSource,
   formatLabel,
 } from "../utils/vaptReport";
+
+// ─── Finding workflow status labels/badges (read-only mode) ──────────────────
+
+const STATUS_LABEL = {
+  pending: "Pending",
+  solved: "Solved",
+  ignore: "Ignored",
+  false_positive: "False positive",
+};
+
+const STATUS_BADGE = {
+  pending: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900",
+  solved: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900",
+  ignore: "bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700",
+  false_positive: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-400 dark:border-purple-900",
+};
 
 // ─── Animated risk gauge ──────────────────────────────────────────────────────
 
@@ -115,10 +131,9 @@ function ExpandableText({ text = "", maxLength = 160 }) {
   );
 }
 
-function FindingTableRow({ finding, onDraftChange }) {
+function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
   const [status, setStatus] = useState(finding.status || "pending");
   const [comment, setComment] = useState(finding.comment || "");
-  const meta = severityMeta(finding.severity_label);
   const cves = (finding.cves || []).filter(Boolean);
   const references = (finding.references || []).filter((r) =>
     r.startsWith("http://") || r.startsWith("https://"),
@@ -132,13 +147,14 @@ function FindingTableRow({ finding, onDraftChange }) {
   }, [finding.status, finding.comment]);
 
   useEffect(() => {
+    if (readOnly) return;
     onDraftChange?.(finding.id, {
       status,
       comment,
       originalStatus: finding.status || "pending",
       originalComment: finding.comment || "",
     });
-  }, [finding.id, finding.status, finding.comment, onDraftChange, status, comment]);
+  }, [finding.id, finding.status, finding.comment, onDraftChange, status, comment, readOnly]);
 
   return (
     <tr className="border-t border-slate-200 align-top text-sm text-slate-700 dark:border-slate-800 dark:text-slate-300">
@@ -162,21 +178,26 @@ function FindingTableRow({ finding, onDraftChange }) {
         <SeverityBadge severity={finding.severity_label} />
       </td>
       <td className="min-w-[160px] px-3 py-3">
-        <div className="flex flex-col gap-2">
-          <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-            className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-          >
-            <option value="pending">Pending</option>
-            <option value="solved">Solved</option>
-            <option value="ignore">Ignore</option>
-            <option value="false_positive">False positive</option>
-          </select>
-          {(status === "ignore" || status === "false_positive") && !comment.trim() && (
-            <p className="text-[11px] text-amber-600 dark:text-amber-400">Comment required</p>
-          )}
-        </div>
+        {readOnly ? (
+          <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_BADGE[status] || STATUS_BADGE.pending}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${status === "solved" ? "bg-emerald-500" : status === "ignore" || status === "false_positive" ? "bg-purple-500" : "bg-amber-500"}`} />
+            {STATUS_LABEL[status] || status}
+          </span>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+            >
+              <option value="pending">Pending</option>
+              <option value="solved">Solved</option>
+            </select>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Mark findings as <b>Solved</b> once your team has addressed them.
+            </p>
+          </div>
+        )}
       </td>
       <td className="min-w-[180px] px-3 py-3">
         <div className="space-y-1 text-[12px]">
@@ -212,19 +233,20 @@ function FindingTableRow({ finding, onDraftChange }) {
         <ExpandableText text={evidence || ""} maxLength={120} />
       </td>
       <td className="min-w-[240px] px-3 py-3">
-        <div className="space-y-2">
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            rows={3}
-            placeholder="Add a comment (required for Ignore / False positive)"
-            className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-          />
-          <p className="text-[11px] text-slate-500 dark:text-slate-400">Optional unless the selected status is Ignore or False positive.</p>
-          {(status === "ignore" || status === "false_positive") && !comment.trim() && (
-            <p className="text-[11px] text-amber-600 dark:text-amber-400">Comment is required for Ignore / False positive.</p>
-          )}
-        </div>
+        {readOnly ? (
+          <p className="whitespace-pre-wrap text-[12px] text-slate-600 dark:text-slate-300">{comment || "—"}</p>
+        ) : (
+          <div className="space-y-2">
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              rows={3}
+              placeholder="Add a note about how the finding was resolved (optional)"
+              className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+            />
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">Add a note about how the finding was resolved (optional).</p>
+          </div>
+        )}
       </td>
     </tr>
   );
@@ -246,6 +268,11 @@ function Section({ icon, title, children }) {
 export default function VaptReport() {
   const { importId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Platform-wide library views (admin/SOC routes) are read-only and use the
+  // /admin/vapt/imports API; org-scoped views can edit their own findings.
+  const isPlatformView = location.pathname.startsWith("/admin/vapt-reports");
+  const libraryPath = isPlatformView ? "/admin/vapt-reports" : "/vapt/reports";
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -269,7 +296,9 @@ export default function VaptReport() {
       setLoading(true);
       setError("");
       try {
-        const data = await getVaptImport(importId, token);
+        const data = isPlatformView
+          ? await getVaptImportAdmin(importId, token)
+          : await getVaptImport(importId, token);
         if (!cancelled) setRecord(data);
       } catch (err) {
         if (!cancelled) setError(err?.message || "Failed to load the report.");
@@ -278,17 +307,21 @@ export default function VaptReport() {
       }
     })();
     return () => { cancelled = true; };
-  }, [importId, navigate]);
+  }, [importId, isPlatformView, navigate]);
 
   const handleDownloadPdf = useCallback(async () => {
     const token = localStorage.getItem("token");
     if (!token || !record) return;
     try {
-      await downloadVaptReport(record.import_id, token);
+      if (isPlatformView) {
+        await downloadVaptReportAdmin(record.import_id, token);
+      } else {
+        await downloadVaptReport(record.import_id, token);
+      }
     } catch (err) {
       setError(err?.message || "Failed to download the report.");
     }
-  }, [record]);
+  }, [isPlatformView, record]);
 
   const handleDraftChange = useCallback((findingId, changes) => {
     const key = String(findingId);
@@ -423,7 +456,7 @@ export default function VaptReport() {
           </div>
           <h2 className="text-lg font-bold">Report unavailable</h2>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">{error || "This import could not be found."}</p>
-          <Link to="/vapt/reports" className="mt-5 inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+          <Link to={libraryPath} className="mt-5 inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
             <ArrowLeft size={15} /> Back to library
           </Link>
         </div>
@@ -443,7 +476,7 @@ export default function VaptReport() {
         <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <Link
-              to="/vapt/reports"
+              to={libraryPath}
               className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:hover:border-purple-700 dark:hover:text-purple-400"
               title="Back to library"
             >
@@ -669,34 +702,43 @@ export default function VaptReport() {
                       key={f.id}
                       finding={f}
                       onDraftChange={handleDraftChange}
+                      readOnly={isPlatformView}
                     />
                   ))}
                 </tbody>
               </table>
             </div>
             <div className="rounded-b-2xl border-t border-slate-200 bg-slate-50 px-4 py-4 dark:border-slate-800 dark:bg-slate-950/70">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="text-sm text-slate-600 dark:text-slate-300">
-                  {Object.keys(draftChanges).length > 0
-                    ? `${Object.keys(draftChanges).length} pending change${Object.keys(draftChanges).length > 1 ? "s" : ""}`
-                    : "No unsaved changes."}
-                </div>
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  {bulkSaveError && <div className="text-sm text-red-600 dark:text-red-400">{bulkSaveError}</div>}
-                  <button
-                    type="button"
-                    onClick={handleSaveAll}
-                    disabled={bulkSaving || Object.keys(draftChanges).length === 0 || hasInvalidDraft}
-                    className="rounded-xl bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {bulkSaving ? "Saving changes…" : "Save changes"}
-                  </button>
-                </div>
-              </div>
-              {hasInvalidDraft && (
-                <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
-                  Some rows require comments for Ignore / False positive before saving.
-                </div>
+              {isPlatformView ? (
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  Read-only view — this library cannot be modified.
+                </p>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm text-slate-600 dark:text-slate-300">
+                      {Object.keys(draftChanges).length > 0
+                        ? `${Object.keys(draftChanges).length} pending change${Object.keys(draftChanges).length > 1 ? "s" : ""}`
+                        : "No unsaved changes."}
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      {bulkSaveError && <div className="text-sm text-red-600 dark:text-red-400">{bulkSaveError}</div>}
+                      <button
+                        type="button"
+                        onClick={handleSaveAll}
+                        disabled={bulkSaving || Object.keys(draftChanges).length === 0 || hasInvalidDraft}
+                        className="rounded-xl bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {bulkSaving ? "Saving changes…" : "Save changes"}
+                      </button>
+                    </div>
+                  </div>
+                  {hasInvalidDraft && (
+                    <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
+                      Some rows require comments for Ignore / False positive before saving.
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>

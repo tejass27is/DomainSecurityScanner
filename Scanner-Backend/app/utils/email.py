@@ -1,5 +1,6 @@
 import os
 import smtplib
+import ssl
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -13,6 +14,68 @@ except (TypeError, ValueError):
 SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 FRONTEND_URL = os.getenv("FRONTEND_URL")
+
+# How long to wait for the SMTP server before failing (seconds).
+SMTP_TIMEOUT_SECONDS = int(os.getenv("SMTP_TIMEOUT_SECONDS") or 20)
+# Brand shown in the From address, email subjects and bodies.
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME") or "Domain Scanner"
+# Lifetime of OTP codes (shown in OTP emails; must match the backend policy).
+OTP_EXPIRY_MINUTES = int(os.getenv("OTP_EXPIRY_MINUTES") or 10)
+
+
+def _smtp_send(msg: MIMEMultipart) -> None:
+    """Deliver an email via the configured SMTP server.
+
+    Port 465 uses implicit TLS (SMTP_SSL); all other ports use STARTTLS.
+    Fails fast with a clear error when SMTP is not configured, so callers
+    can surface exactly what is wrong.
+    """
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
+    if not SMTP_SERVER or not SMTP_PORT:
+        raise ValueError("SMTP_SERVER and SMTP_PORT must be strictly configured in .env to dispatch emails.")
+
+    server = None
+    try:
+        context = ssl.create_default_context()
+        # Use implicit TLS for port 465, otherwise use STARTTLS with a secure context.
+        if SMTP_PORT == 465:
+            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS, context=context)
+            server.ehlo()
+        else:
+            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS)
+            server.ehlo()
+            # Upgrade to TLS
+            server.starttls(context=context)
+            server.ehlo()
+
+        server.login(SMTP_USER, SMTP_PASSWORD)
+
+        msg["From"] = f"{EMAIL_FROM_NAME} <{SMTP_USER}>"
+        # Templates hardcode the default brand name; swap in the configured one
+        # across headers, subjects and bodies in one pass.
+        raw_message = msg.as_string().replace("Domain Scanner", EMAIL_FROM_NAME)
+
+        # Support multiple recipients in the To header (comma-separated)
+        to_field = msg.get("To", "") or ""
+        to_addrs = [addr.strip() for addr in to_field.split(",") if addr.strip()]
+
+        # Prefer send_message where available to preserve headers, but fall back
+        # to sendmail for older servers. Use envelope sender as SMTP_USER.
+        try:
+            if to_addrs:
+                server.send_message(msg, from_addr=SMTP_USER, to_addrs=to_addrs)
+            else:
+                server.sendmail(SMTP_USER, msg.get("To"), raw_message)
+        except Exception as send_err:
+            # Normalize error for callers
+            raise OSError(f"SMTP send failed: {send_err}")
+    finally:
+        if server:
+            try:
+                server.quit()
+            except Exception:
+                pass
 
 
 def send_invite_email(to_email: str, plain_password: str, sender_email: str):
@@ -80,7 +143,6 @@ def send_invite_email(to_email: str, plain_password: str, sender_email: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"Invitation from {sender_email} to join Domain Scanner"
-    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
     msg["To"] = to_email
 
     part1 = MIMEText(f"You've been invited by {sender_email} to join Domain Scanner. Email: {to_email}, Password: {plain_password}. Link: {login_link}", "plain")
@@ -89,13 +151,7 @@ def send_invite_email(to_email: str, plain_password: str, sender_email: str):
     msg.attach(part1)
     msg.attach(part2)
 
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
-    finally:
-        server.quit()
+    _smtp_send(msg)
 
     return True
 
@@ -139,7 +195,6 @@ def send_personal_email_invitation_email(to_email: str, invite_link: str, invite
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Your approved Domain Scanner signup invitation"
-    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
     msg["To"] = to_email
 
     part1 = MIMEText(f"Your personal-email signup invitation is ready. Continue here: {invite_link}", "plain")
@@ -147,22 +202,15 @@ def send_personal_email_invitation_email(to_email: str, invite_link: str, invite
     msg.attach(part1)
     msg.attach(part2)
 
-    server = None
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
-    finally:
-        if server:
-            server.quit()
+    _smtp_send(msg)
 
     return True
 
 
-def send_new_admin_credentials_email(to_email: str, plain_password: str, invited_by_email: str):
+def send_new_admin_credentials_email(to_email: str, plain_password: str, invited_by_email: str, role_label: str = "administrator"):
+    """Send provisioned-account credentials (admin, SOC analyst, ...) by email."""
     if not FRONTEND_URL:
-        raise ValueError("FRONTEND_URL must be set to send admin welcome emails.")
+        raise ValueError("FRONTEND_URL must be set to send account welcome emails.")
 
     login_link = f"{FRONTEND_URL.rstrip('/')}/auth"
 
@@ -192,11 +240,11 @@ def send_new_admin_credentials_email(to_email: str, plain_password: str, invited
     <body>
         <div class="container">
             <div class="header">
-                <h1>Domain Scanner — Admin access</h1>
+                <h1>Domain Scanner — {role_label} access</h1>
             </div>
             <div class="body">
                 <p>Hello,</p>
-                <p><strong>{invited_by_email}</strong> has created an administrator account for you on Domain Scanner.</p>
+                <p><strong>{invited_by_email}</strong> has created your {role_label} account on Domain Scanner.</p>
                 <p>Use the credentials below to sign in:</p>
                 <div class="credentials">
                     <p><strong>Email:</strong> {to_email}</p>
@@ -225,12 +273,11 @@ def send_new_admin_credentials_email(to_email: str, plain_password: str, invited
         raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Your Domain Scanner administrator account"
-    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
+    msg["Subject"] = f"Your Domain Scanner {role_label} account"
     msg["To"] = to_email
 
     part1 = MIMEText(
-        f"You have been granted admin access on Domain Scanner by {invited_by_email}. "
+        f"You have been granted {role_label} access on Domain Scanner by {invited_by_email}. "
         f"Email: {to_email}  Password: {plain_password}  Sign in: {login_link}",
         "plain",
     )
@@ -238,15 +285,7 @@ def send_new_admin_credentials_email(to_email: str, plain_password: str, invited
     msg.attach(part1)
     msg.attach(part2)
 
-    server = None
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
-    finally:
-        if server:
-            server.quit()
+    _smtp_send(msg)
 
     return True
 
@@ -257,7 +296,6 @@ def send_scan_report_email(to_email: str, domain: str, pdf_bytes: bytes):
 
     msg = MIMEMultipart()
     msg["Subject"] = f"Your Domain Scanner report for {domain}"
-    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
     msg["To"] = to_email
 
     msg.attach(MIMEText(f"Hello,\n\nYour requested security scan report for {domain} is attached below.\n\nRegards,\niSecurify", "plain"))
@@ -267,15 +305,7 @@ def send_scan_report_email(to_email: str, domain: str, pdf_bytes: bytes):
     pdf_part["Content-Disposition"] = 'attachment; filename="%s"' % attachment_name
     msg.attach(pdf_part)
 
-    server = None
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
-    finally:
-        if server:
-            server.quit()
+    _smtp_send(msg)
 
     return True
 
@@ -330,22 +360,13 @@ def send_registration_verification_email(to_email: str, verify_url: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Verify your email — Domain Scanner"
-    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
     msg["To"] = to_email
 
     plain = f"Verify your Domain Scanner account by opening this link: {verify_url}"
     msg.attach(MIMEText(plain, "plain"))
     msg.attach(MIMEText(html_content, "html"))
 
-    server = None
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
-    finally:
-        if server:
-            server.quit()
+    _smtp_send(msg)
 
     return True
 
@@ -356,17 +377,16 @@ def send_login_otp_email(to_email: str, otp: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Your Domain Scanner login OTP"
-    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
     msg["To"] = to_email
 
-    plain_text = f"Your Domain Scanner login OTP is {otp}. It expires in 10 minutes."
+    plain_text = f"Your Domain Scanner login OTP is {otp}. It expires in {OTP_EXPIRY_MINUTES} minutes."
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <body style="font-family: Arial, sans-serif; color: #222;">
         <p>Your one-time login password for Domain Scanner is:</p>
         <p style="font-size: 28px; font-weight: 700; letter-spacing: 2px;">{otp}</p>
-        <p>This OTP expires in 10 minutes.</p>
+        <p>This OTP expires in {OTP_EXPIRY_MINUTES} minutes.</p>
         <p>If you did not try to sign in, you can ignore this email.</p>
     </body>
     </html>
@@ -375,15 +395,7 @@ def send_login_otp_email(to_email: str, otp: str):
     msg.attach(MIMEText(plain_text, "plain"))
     msg.attach(MIMEText(html_content, "html"))
 
-    server = None
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
-    finally:
-        if server:
-            server.quit()
+    _smtp_send(msg)
 
     return True
 
@@ -394,17 +406,16 @@ def send_password_reset_otp_email(to_email: str, otp: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Domain Scanner password reset OTP"
-    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
     msg["To"] = to_email
 
-    plain_text = f"Your Domain Scanner OTP is {otp}. It expires in 10 minutes."
+    plain_text = f"Your Domain Scanner OTP is {otp}. It expires in {OTP_EXPIRY_MINUTES} minutes."
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <body style="font-family: Arial, sans-serif; color: #222;">
         <p>Your one-time password for Domain Scanner is:</p>
         <p style="font-size: 28px; font-weight: 700; letter-spacing: 2px;">{otp}</p>
-        <p>This OTP expires in 10 minutes.</p>
+        <p>This OTP expires in {OTP_EXPIRY_MINUTES} minutes.</p>
         <p>If you did not request a password reset, you can ignore this email.</p>
     </body>
     </html>
@@ -413,15 +424,7 @@ def send_password_reset_otp_email(to_email: str, otp: str):
     msg.attach(MIMEText(plain_text, "plain"))
     msg.attach(MIMEText(html_content, "html"))
 
-    server = None
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
-    finally:
-        if server:
-            server.quit()
+    _smtp_send(msg)
 
     return True
 
@@ -432,7 +435,6 @@ def send_account_locked_email(to_email: str, locked_until_iso: str, attempts: in
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Security alert: Your Domain Scanner account was locked"
-    msg["From"] = f"Domain Scanner <{SMTP_USER}>"
     msg["To"] = to_email
 
     support_link = FRONTEND_URL.rstrip('/') if FRONTEND_URL else ""
@@ -461,14 +463,6 @@ def send_account_locked_email(to_email: str, locked_until_iso: str, attempts: in
     msg.attach(MIMEText(plain_text, "plain"))
     msg.attach(MIMEText(html_content, "html"))
 
-    server = None
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
-    finally:
-        if server:
-            server.quit()
+    _smtp_send(msg)
 
     return True

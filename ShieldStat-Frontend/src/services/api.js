@@ -392,6 +392,25 @@ export async function deleteAdmin(email, token) {
   });
 }
 
+export async function createSocAnalyst(email, token) {
+  const publicIp = await getPublicIp();
+  return request("/admin/create-soc-analyst", {
+    method: "POST",
+    body: { email },
+    token,
+    publicIp,
+  });
+}
+
+export async function deleteSocAnalyst(email, token) {
+  const publicIp = await getPublicIp();
+  return request(`/admin/soc-analyst/${encodeURIComponent(email)}`, {
+    method: "DELETE",
+    token,
+    publicIp,
+  });
+}
+
 export async function blockUserByEmail(email, token) {
   const publicIp = await getPublicIp();
   return request("/admin/blacklist/block", {
@@ -611,9 +630,12 @@ export function reportIssue({ domain, subdomain, rule, severity, issueType, mess
 
 // ─── VAPT Report Import ───────────────────────────────────────────────────────
 
-export async function uploadVaptReport(file, token) {
+export async function uploadVaptReport(file, token, orgId = null) {
   const formData = new FormData();
   formData.append("file", file);
+  if (orgId) {
+    formData.append("org_id", orgId);
+  }
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const urls = loopbackVariants("/vapt/upload");
 
@@ -671,8 +693,8 @@ export function getVaptImport(importId, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}`, { token, skipCache: true });
 }
 
-export async function downloadVaptReport(importId, token) {
-  const urls = loopbackVariants(`/vapt/imports/${encodeURIComponent(importId)}/report`);
+async function _downloadVaptPdf(basePath, importId, token) {
+  const urls = loopbackVariants(`${basePath}/${encodeURIComponent(importId)}/report`);
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
   for (const url of urls) {
@@ -707,6 +729,10 @@ export async function downloadVaptReport(importId, token) {
   );
 }
 
+export function downloadVaptReport(importId, token) {
+  return _downloadVaptPdf("/vapt/imports", importId, token);
+}
+
 export function updateVaptFindingStatus(importId, findingId, { status, comment }, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/findings/${encodeURIComponent(findingId)}`, {
     method: "PATCH",
@@ -720,4 +746,22 @@ export function deleteVaptImport(importId, token) {
     method: "DELETE",
     token,
   });
+}
+
+// ─── Platform-wide VAPT view (admins + SOC analysts, read-only) ─────────────
+
+export function getAllVaptImports(token) {
+  return request("/admin/vapt/imports", { token, skipCache: true });
+}
+
+export function getVaptImportAdmin(importId, token) {
+  return request(`/admin/vapt/imports/${encodeURIComponent(importId)}`, { token, skipCache: true });
+}
+
+export function downloadVaptReportAdmin(importId, token) {
+  return _downloadVaptPdf("/admin/vapt/imports", importId, token);
+}
+
+export function getVaptOrganizations(token) {
+  return request("/admin/vapt/organizations", { token, skipCache: true });
 }

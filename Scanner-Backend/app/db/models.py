@@ -49,6 +49,11 @@ class User(Base):
     # False → setup not yet confirmed (secret might exist but not verified)
     # True  → user successfully verified a code at least once; TOTP is active
 
+    # TRUE when the account was provisioned with a temporary password (e.g. an
+    # admin/SOC analyst created by a platform admin). The user must replace it
+    # on first login before they can use the platform.
+    must_change_password = Column(Boolean, nullable=False, server_default="false")
+
 class Invitation(Base):
     __tablename__ = "invitations"
 
@@ -340,6 +345,9 @@ class VaptImport(Base):
 
     import_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
+    # The platform user who uploaded this report (NULL for imports created by
+    # earlier schema versions that predate this column).
+    uploaded_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     file_name = Column(String(255), nullable=False)
     file_format = Column(String(20), nullable=False, default="xml")  # xml | csv | xlsx
     source_tool = Column(String(50), nullable=False, default="generic")  # nessus | openvas | qualys | generic

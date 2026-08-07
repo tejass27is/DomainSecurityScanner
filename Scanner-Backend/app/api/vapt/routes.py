@@ -8,7 +8,7 @@ requesting user's organization — users only ever see their own imports.
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -25,9 +25,9 @@ from app.api.vapt.schemas import (
     VaptImportListItem,
     VaptUploadResponse,
 )
-from app.core.middleware import protect
+from app.core.middleware import protect, require_admin_or_soc_analyst
 from app.db.base import get_db
-from app.db.models import User, VaptImport
+from app.db.models import Organization, User, VaptImport
 
 router = APIRouter(prefix="/vapt", tags=["VAPT"])
 VALID_VAPT_FINDING_STATUSES = {"pending", "solved", "ignore", "false_positive"}
@@ -47,7 +47,7 @@ async def _read_upload(file: UploadFile) -> bytes:
         if total > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
-                detail="File exceeds the 25 MB size limit.",
+                detail=f"File exceeds the {MAX_FILE_SIZE // (1024 * 1024)} MB size limit.",
             )
         chunks.append(chunk)
     return b"".join(chunks)
@@ -67,7 +67,16 @@ def _get_org_import_or_404(db: Session, import_id: str, org_id: str) -> VaptImpo
     return record
 
 
-def _to_list_item(record: VaptImport) -> dict:
+def _uploader_email_map(db: Session, records: list[VaptImport]) -> dict[str, str]:
+    """Map user_id → email for every uploader referenced by the given imports."""
+    user_ids = {str(r.uploaded_by) for r in records if r.uploaded_by}
+    if not user_ids:
+        return {}
+    users = db.query(User).filter(User.user_id.in_(user_ids)).all()
+    return {u.user_id: u.email for u in users}
+
+
+def _to_list_item(record: VaptImport, uploader_email: str | None = None) -> dict:
     return {
         "import_id": str(record.import_id),
         "file_name": record.file_name,
@@ -78,13 +87,15 @@ def _to_list_item(record: VaptImport) -> dict:
         "risk_score": record.risk_score,
         "severity": record.severity,
         "severity_distribution": record.severity_distribution or {},
+        "uploaded_by": str(record.uploaded_by) if record.uploaded_by else None,
+        "uploaded_by_email": uploader_email,
         "created_at": record.created_at,
     }
 
 
-def _to_detail(record: VaptImport) -> dict:
+def _to_detail(record: VaptImport, uploader_email: str | None = None) -> dict:
     return {
-        **_to_list_item(record),
+        **_to_list_item(record, uploader_email=uploader_email),
         "category_distribution": record.category_distribution or {},
         "summary": record.summary or {},
         "findings": record.findings or [],
@@ -105,15 +116,25 @@ def _normalize_finding_status(status: str) -> str:
 @router.post("/upload", response_model=VaptUploadResponse)
 async def upload_vapt_report(
     file: UploadFile = File(...),
+    org_id: str | None = Form(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_admin_or_soc_analyst),
 ):
-    """Upload a .nessus / .xml / .csv / .xlsx export — parses, scores, stores."""
-    if not current_user.org_id:
+    """Upload a .nessus / .xml / .csv / .xlsx export — parses, scores, stores.
+
+    Only admins and SOC analysts upload reports. The report is published to the
+    selected organization (``org_id`` form field) so the client org can consume
+    it read-only.
+    """
+    if not org_id:
         raise HTTPException(
             status_code=400,
-            detail="User not associated with an organization.",
+            detail="Please select the organization this report belongs to.",
         )
+    org = db.query(Organization).filter(Organization.org_id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    target_org_id = org.org_id
 
     filename = file.filename or "unnamed"
     ext = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
@@ -122,7 +143,7 @@ async def upload_vapt_report(
             status_code=400,
             detail=(
                 f"Unsupported file type '{ext}'. Upload a .nessus, .xml, .csv, "
-                ".xls or .xlsx export (max 25 MB)."
+                f".xls or .xlsx export (max {MAX_FILE_SIZE // (1024 * 1024)} MB)."
             ),
         )
 
@@ -146,7 +167,8 @@ async def upload_vapt_report(
         )
 
     record = VaptImport(
-        org_id=current_user.org_id,
+        org_id=target_org_id,
+        uploaded_by=current_user.user_id,
         file_name=filename,
         file_format=file_format,
         source_tool=source_tool,
@@ -162,7 +184,7 @@ async def upload_vapt_report(
     db.add(record)
     db.commit()
     db.refresh(record)
-    return _to_detail(record)
+    return _to_detail(record, uploader_email=current_user.email)
 
 
 @router.get("/imports", response_model=list[VaptImportListItem])
@@ -182,7 +204,11 @@ def list_vapt_imports(
         .order_by(VaptImport.created_at.desc())
         .all()
     )
-    return [_to_list_item(r) for r in records]
+    emails = _uploader_email_map(db, records)
+    return [
+        _to_list_item(r, uploader_email=emails.get(str(r.uploaded_by)) if r.uploaded_by else None)
+        for r in records
+    ]
 
 
 @router.get("/imports/{import_id}", response_model=VaptImportDetail)
@@ -198,7 +224,8 @@ def get_vapt_import(
             detail="User not associated with an organization.",
         )
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
-    return _to_detail(record)
+    emails = _uploader_email_map(db, [record])
+    return _to_detail(record, uploader_email=emails.get(str(record.uploaded_by)) if record.uploaded_by else None)
 
 
 @router.get("/imports/{import_id}/report")
@@ -253,6 +280,14 @@ def update_vapt_finding_status(
     if normalized_status not in VALID_VAPT_FINDING_STATUSES:
         raise HTTPException(status_code=400, detail="Unsupported status value.")
 
+    # Clients can only solve findings (mark them solved or reopen to pending);
+    # ignore / false_positive triage is reserved for platform roles.
+    if current_user.role == "user" and normalized_status not in {"pending", "solved"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Clients can only mark findings as pending or solved.",
+        )
+
     comment = (payload.comment or "").strip()
     if normalized_status in {"ignore", "false_positive"} and not comment:
         raise HTTPException(
@@ -288,15 +323,16 @@ def update_vapt_finding_status(
 def delete_vapt_import(
     import_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
 ):
-    """Delete an import."""
-    if not current_user.org_id:
-        raise HTTPException(
-            status_code=400,
-            detail="User not associated with an organization.",
-        )
-    record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    """Delete an import. Platform-level — only admins and SOC analysts."""
+    try:
+        parsed_uuid = uuid.UUID(import_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="VAPT import not found.")
+    record = db.query(VaptImport).filter(VaptImport.import_id == parsed_uuid).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="VAPT import not found.")
     db.delete(record)
     db.commit()
     return {"success": True, "import_id": import_id}

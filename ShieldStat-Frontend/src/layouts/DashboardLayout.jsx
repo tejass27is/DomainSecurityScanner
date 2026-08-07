@@ -6,6 +6,22 @@ import Navbar from "../components/Navbar";
 function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
+  // SOC analysts land in the admin layout, but when they use the upload page
+  // (/vapt) they get this layout — show a matching nav instead of client items.
+  let currentUser = null;
+  try {
+    currentUser = JSON.parse(localStorage.getItem("user") || "null");
+  } catch {
+    currentUser = null;
+  }
+  const isSocAnalyst = currentUser?.role === "soc_analyst";
+  const navItems = isSocAnalyst
+    ? [
+        { to: "/vapt", label: "Upload Report", icon: "upload_file" },
+        { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
+      ]
+    : undefined;
+
   return (
     <div className="flex min-h-screen overflow-x-hidden bg-slate-100 dark:bg-slate-950">
       <button
@@ -21,6 +37,7 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
         onClose={() => setIsSidebarOpen(false)}
         isDarkMode={isDarkMode}
         onToggleDarkMode={onToggleDarkMode}
+        navItems={navItems}
       />
 
       <div className={`relative flex min-w-0 flex-1 flex-col transition-all duration-200 ${isSidebarOpen ? 'lg:ml-72' : 'lg:ml-16'}`}>

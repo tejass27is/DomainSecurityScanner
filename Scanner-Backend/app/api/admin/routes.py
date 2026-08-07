@@ -1,7 +1,17 @@
-from fastapi import APIRouter, Depends, Request
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.admin.schemas import AssignPromoCodeRequest, BlacklistEmailRequest, CreateAdminRequest, GeneratePromoCodeRequest, PersonalEmailApprovalRequest
+from app.api.admin.schemas import (
+    AssignPromoCodeRequest,
+    BlacklistEmailRequest,
+    CreateAdminRequest,
+    CreateSocAnalystRequest,
+    GeneratePromoCodeRequest,
+    PersonalEmailApprovalRequest,
+)
 from app.api.admin.service import (
     assign_promo_code_to_user,
     block_email,
@@ -9,6 +19,7 @@ from app.api.admin.service import (
     create_subscription_plan,
     delete_admin,
     delete_promo_code,
+    delete_soc_analyst,
     disable_promo_code,
     delete_subscription_plan,
     generate_promo_code,
@@ -23,13 +34,16 @@ from app.api.admin.service import (
     get_total_scans,
     get_users_by_org,
     provision_admin_account,
+    provision_soc_analyst_account,
     revoke_personal_email_invitation,
     unblock_email,
     update_subscription_plan,
 )
-from app.core.middleware import require_admin, require_admin_or_marketing
+from app.api.vapt.report_generator import generate_vapt_report_pdf
+from app.api.vapt.routes import _to_detail, _to_list_item, _uploader_email_map
+from app.core.middleware import require_admin, require_admin_or_marketing, require_admin_or_soc_analyst
 from app.db.base import get_db
-from app.db.models import User
+from app.db.models import Organization, User, VaptImport
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -171,6 +185,145 @@ def delete_admin_account(
 ):
     """Delete an admin account by email. Cannot delete the default admin or yourself."""
     return delete_admin(email, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
+@router.post("/create-soc-analyst")
+def create_soc_analyst(
+    req: CreateSocAnalystRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Provision a SOC analyst account (read-only platform VAPT viewer)."""
+    return provision_soc_analyst_account(
+        req.email,
+        current_admin,
+        db,
+        ip_address=get_request_ip(request),
+        public_ip=get_public_ip(request),
+    )
+
+
+@router.delete("/soc-analyst/{email}")
+def delete_soc_analyst_account(
+    email: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Delete a SOC analyst account by email."""
+    return delete_soc_analyst(
+        email,
+        current_admin,
+        db,
+        ip_address=get_request_ip(request),
+        public_ip=get_public_ip(request),
+    )
+
+
+# ─── Platform-wide VAPT view (admins + SOC analysts, read-only) ──────────────
+
+def _platform_import_or_404(db: Session, import_id: str) -> VaptImport:
+    try:
+        parsed_uuid = uuid.UUID(import_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="VAPT import not found.")
+    record = db.query(VaptImport).filter(VaptImport.import_id == parsed_uuid).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="VAPT import not found.")
+    return record
+
+
+def _org_domain_map(db: Session, records: list[VaptImport]) -> dict[str, str | None]:
+    """Map org_id → human-readable domain list (org.domain is a JSON array)."""
+    org_ids = {r.org_id for r in records if r.org_id}
+    if not org_ids:
+        return {}
+    orgs = db.query(Organization).filter(Organization.org_id.in_(org_ids)).all()
+    result: dict[str, str | None] = {}
+    for org in orgs:
+        value = org.domain
+        if isinstance(value, list):
+            value = ", ".join(str(d) for d in value if d)
+        elif not isinstance(value, str):
+            value = str(value) if value is not None else None
+        result[org.org_id] = value or None
+    return result
+
+
+@router.get("/vapt/imports")
+def list_all_vapt_imports(
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Every VAPT import across all organizations (with uploader + org)."""
+    records = db.query(VaptImport).order_by(VaptImport.created_at.desc()).all()
+    emails = _uploader_email_map(db, records)
+    org_domains = _org_domain_map(db, records)
+    items = []
+    for r in records:
+        item = _to_list_item(r, uploader_email=emails.get(str(r.uploaded_by)) if r.uploaded_by else None)
+        item["org_domain"] = org_domains.get(r.org_id)
+        items.append(item)
+    return items
+
+
+@router.get("/vapt/imports/{import_id}")
+def get_all_vapt_import(
+    import_id: str,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Full detail of any VAPT import on the platform."""
+    record = _platform_import_or_404(db, import_id)
+    emails = _uploader_email_map(db, [record])
+    item = _to_detail(record, uploader_email=emails.get(str(record.uploaded_by)) if record.uploaded_by else None)
+    item["org_domain"] = _org_domain_map(db, [record]).get(record.org_id)
+    return item
+
+
+@router.get("/vapt/imports/{import_id}/report")
+def download_all_vapt_report(
+    import_id: str,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Download the PDF report for any VAPT import on the platform."""
+    record = _platform_import_or_404(db, import_id)
+    try:
+        pdf_bytes = generate_vapt_report_pdf(record)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate the PDF report: {exc}",
+        )
+    safe_name = "".join(c for c in record.file_name if c.isalnum() or c in "._-") or "vapt-report"
+    safe_name = safe_name.replace(" ", "-")
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="vapt-report-{safe_name}.pdf"'
+        },
+    )
+
+
+@router.get("/vapt/organizations")
+def list_vapt_organizations(
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Organizations a SOC analyst can publish an uploaded report to."""
+    orgs = db.query(Organization).order_by(Organization.domain.asc()).all()
+    result = []
+    for org in orgs:
+        value = org.domain
+        if isinstance(value, list):
+            value = ", ".join(str(d) for d in value if d)
+        elif not isinstance(value, str):
+            value = str(value) if value is not None else None
+        result.append({"org_id": org.org_id, "domain": value or None})
+    return result
 
 
 @router.post("/blacklist/block")

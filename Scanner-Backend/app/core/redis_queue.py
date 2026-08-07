@@ -14,10 +14,12 @@ class RedisClient:
         configured_host = host or os.getenv("REDIS_HOST")
         self.host = configured_host or "localhost"
         port = port if port is not None else int(os.getenv("REDIS_PORT", "6379"))
+        password = os.getenv("REDIS_PASSWORD") or None
 
         self.redis = redis.Redis(
             host=self.host,
             port=port,
+            password=password,
             db=db,
             decode_responses=decode_responses,
             socket_connect_timeout=2,
@@ -32,6 +34,7 @@ class RedisClient:
         return redis.Redis(
             host=host,
             port=self.port,
+            password=os.getenv("REDIS_PASSWORD") or None,
             db=self.db,
             decode_responses=self.decode_responses,
         )

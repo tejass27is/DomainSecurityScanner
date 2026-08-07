@@ -1,13 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Database, FileText, Globe, Layers, Download, Eye,
-  AlertCircle, Server, Activity, FileSpreadsheet, FileDigit,
+  Database, FileText, Globe, Layers, Download, Eye, FileUp,
+  AlertCircle, Server, Activity, FileSpreadsheet, FileDigit, ShieldCheck,
+  Building2,
 } from "lucide-react";
-import {
-  getVaptImports,
-  downloadVaptReport,
-} from "../services/api";
+import { getAllVaptImports, downloadVaptReportAdmin } from "../services/api";
 import {
   severityMeta,
   riskTone,
@@ -56,13 +54,14 @@ function PeriodChip({ active, onClick, children }) {
   );
 }
 
-export default function VaptReports() {
+export default function SocAnalystVaptReports() {
   const navigate = useNavigate();
   const [imports, setImports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  // Default = current year when the org has reports in it, else its newest year;
-  // month narrows within the selected year. "all" shows every year.
+  const [search, setSearch] = useState("");
+  // Client first, then year (current year by default), then optional month.
+  const [clientFilter, setClientFilter] = useState("");
   const [yearFilter, setYearFilter] = useState(null);
   const [monthFilter, setMonthFilter] = useState(null);
 
@@ -75,10 +74,10 @@ export default function VaptReports() {
     setLoading(true);
     setError("");
     try {
-      const data = await getVaptImports(token);
+      const data = await getAllVaptImports(token);
       setImports(Array.isArray(data) ? data : []);
     } catch (err) {
-      setError(err?.message || "Failed to load imports.");
+      setError(err?.message || "Failed to load VAPT reports.");
     } finally {
       setLoading(false);
     }
@@ -92,22 +91,68 @@ export default function VaptReports() {
     const token = localStorage.getItem("token");
     if (!token) return;
     try {
-      await downloadVaptReport(importId, token);
+      await downloadVaptReportAdmin(importId, token);
     } catch (err) {
       setError(err?.message || "Failed to download the report.");
     }
   }, []);
 
-  const availableYears = getAvailableYears(imports);
-  const defaultYear = availableYears.includes(CURRENT_YEAR)
-    ? CURRENT_YEAR
-    : availableYears[0] ?? null;
-  const effectiveYear = yearFilter === "all" ? null : (yearFilter ?? defaultYear);
-  const availableMonths = getAvailableMonths(imports, effectiveYear);
-  const filteredImports = filterImportsByPeriod(imports, {
-    year: effectiveYear,
-    month: monthFilter,
-  });
+  // Distinct clients (organizations) with report counts; newest activity tracked.
+  const clientOptions = useMemo(() => {
+    const map = new Map();
+    for (const item of imports) {
+      const name = item.org_domain || "Unknown organization";
+      const entry = map.get(name) || { name, latest: null, count: 0 };
+      entry.count += 1;
+      const ts = Date.parse(item.created_at);
+      if (Number.isFinite(ts) && (entry.latest == null || ts > entry.latest)) {
+        entry.latest = ts;
+      }
+      map.set(name, entry);
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [imports]);
+
+  // Default client = the one with the most recently uploaded report.
+  const mostRecentClient = clientOptions.reduce(
+    (best, c) => (best == null || c.latest > best.latest ? c : best),
+    null,
+  );
+  const effectiveClient = clientFilter || mostRecentClient?.name || null;
+
+  const clientImports = effectiveClient
+    ? imports.filter((i) => (i.org_domain || "Unknown organization") === effectiveClient)
+    : imports;
+
+  // Default year = current year when the client has reports in it, else newest.
+  const availableYears = getAvailableYears(clientImports);
+  const defaultYear =
+    availableYears.includes(CURRENT_YEAR) ? CURRENT_YEAR : availableYears[0] ?? null;
+  const effectiveYear = yearFilter ?? defaultYear;
+  const availableMonths = getAvailableMonths(clientImports, effectiveYear);
+
+  const periodScoped =
+    effectiveYear != null
+      ? filterImportsByPeriod(clientImports, { year: effectiveYear, month: monthFilter })
+      : clientImports;
+
+  const query = search.trim().toLowerCase();
+  const filteredImports = query
+    ? periodScoped.filter((i) =>
+        [
+          i.file_name,
+          i.uploaded_by_email,
+          i.org_domain,
+          i.source_tool,
+        ].join(" ").toLowerCase().includes(query),
+      )
+    : periodScoped;
+
+  const handleClientChange = (value) => {
+    setClientFilter(value);
+    setYearFilter(null);
+    setMonthFilter(null);
+  };
 
   const handleYearClick = (year) => {
     setYearFilter(year);
@@ -126,14 +171,27 @@ export default function VaptReports() {
             <div className="mb-2 flex items-center gap-2">
               <span className="material-symbols-outlined text-purple-600 dark:text-purple-400">fact_check</span>
               <span className="text-[11px] font-black uppercase tracking-[0.28em] text-purple-700 dark:text-purple-400">
-                VAPT Report Import
+                SOC Analyst
               </span>
             </div>
-            <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Report Library</h1>
+            <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">VAPT Report Library</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-              VAPT assessments published to your organization by your security team. View, solve
-              findings and download PDFs.
+              Upload completed assessments, publish them to client organizations, and browse every
+              VAPT report on the platform.
             </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigate("/vapt")}
+              className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95"
+            >
+              <FileUp size={15} /> Upload Report
+            </button>
+            <span className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400">
+              <ShieldCheck size={15} />
+              Library view is read-only
+            </span>
           </div>
         </div>
 
@@ -145,7 +203,7 @@ export default function VaptReports() {
             </div>
             <div>
               <p className="text-2xl font-extrabold leading-none">{filteredImports.length}</p>
-              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Imports</p>
+              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Reports</p>
             </div>
           </div>
           <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -168,30 +226,45 @@ export default function VaptReports() {
           </div>
         </div>
 
-        {error && (
-          <div className="mb-6 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
-            <AlertCircle size={18} className="mt-0.5 shrink-0" />
-            <span>{error}</span>
-            <button type="button" onClick={() => setError("")} className="ml-auto text-xs font-bold underline">Dismiss</button>
-          </div>
-        )}
-
-        {/* ── Year / month filter ── */}
+        {/* ── Client → year → month filter ── */}
         {imports.length > 0 && (
           <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="mr-1 text-[11px] font-black uppercase tracking-wider text-slate-400">Year</span>
-              <PeriodChip active={yearFilter === "all"} onClick={() => handleYearClick("all")}>All</PeriodChip>
-              {availableYears.map((year) => (
-                <PeriodChip
-                  key={year}
-                  active={yearFilter === year || (yearFilter == null && effectiveYear === year)}
-                  onClick={() => handleYearClick(year)}
-                >
-                  {year}
-                </PeriodChip>
-              ))}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Building2 size={15} className="shrink-0 text-purple-600 dark:text-purple-400" />
+                <label htmlFor="soc-client-filter" className="text-[11px] font-black uppercase tracking-wider text-slate-400">
+                  Client
+                </label>
+              </div>
+              <select
+                id="soc-client-filter"
+                value={effectiveClient || ""}
+                onChange={(e) => handleClientChange(e.target.value)}
+                className="min-w-[220px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              >
+                {clientOptions.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name} · {c.count} report{c.count === 1 ? "" : "s"}
+                  </option>
+                ))}
+              </select>
             </div>
+
+            {clientImports.length > 0 && availableYears.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+                <span className="mr-1 text-[11px] font-black uppercase tracking-wider text-slate-400">Year</span>
+                {availableYears.map((year) => (
+                  <PeriodChip
+                    key={year}
+                    active={effectiveYear === year}
+                    onClick={() => handleYearClick(year)}
+                  >
+                    {year}
+                  </PeriodChip>
+                ))}
+              </div>
+            )}
+
             {effectiveYear != null && availableMonths.length > 0 && (
               <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
                 <span className="mr-1 text-[11px] font-black uppercase tracking-wider text-slate-400">Month</span>
@@ -210,6 +283,28 @@ export default function VaptReports() {
           </div>
         )}
 
+        {/* ── Search ── */}
+        <div className="mb-6">
+          <div className="relative max-w-md">
+            <SearchIcon />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search file, user…"
+              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-800 shadow-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+            />
+          </div>
+        </div>
+
+        {error && (
+          <div className="mb-6 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
+            <AlertCircle size={18} className="mt-0.5 shrink-0" />
+            <span>{error}</span>
+            <button type="button" onClick={() => setError("")} className="ml-auto text-xs font-bold underline">Dismiss</button>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex min-h-[40vh] items-center justify-center">
             <div className="flex flex-col items-center gap-3">
@@ -219,28 +314,21 @@ export default function VaptReports() {
               <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Loading report library…</p>
             </div>
           </div>
-        ) : imports.length === 0 ? (
-          <div className="flex min-h-[50vh] flex-col items-center justify-center rounded-3xl border border-dashed border-slate-300 bg-white/60 p-12 text-center dark:border-slate-700 dark:bg-slate-900/40">
-            <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-slate-100 text-slate-400 dark:bg-slate-800">
-              <Database size={28} />
-            </div>
-            <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200">No published reports yet</h2>
-            <p className="mt-2 max-w-sm text-sm leading-6 text-slate-500 dark:text-slate-400">
-              Reports uploaded by your security team will appear here with risk scores, findings
-              and downloadable PDFs.
-            </p>
-          </div>
         ) : filteredImports.length === 0 ? (
           <div className="flex min-h-[50vh] flex-col items-center justify-center rounded-3xl border border-dashed border-slate-300 bg-white/60 p-12 text-center dark:border-slate-700 dark:bg-slate-900/40">
             <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-slate-100 text-slate-400 dark:bg-slate-800">
               <Database size={28} />
             </div>
             <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200">
-              No reports in {effectiveYear}
-              {monthFilter != null ? ` / ${MONTH_LABELS_SHORT[monthFilter - 1]}` : ""}
+              {query
+                ? "No matching reports"
+                : `No reports for ${effectiveClient} in ${effectiveYear}`
+                }
             </h2>
             <p className="mt-2 max-w-sm text-sm leading-6 text-slate-500 dark:text-slate-400">
-              Pick a different year or month above to see those reports.
+              {query
+                ? "Try a different file or user name."
+                : "Pick another year above or choose a different client to see their reports."}
             </p>
           </div>
         ) : (
@@ -249,7 +337,7 @@ export default function VaptReports() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50/70 text-left dark:border-slate-800 dark:bg-slate-800/50">
-                    {["File", "Format", "Risk", "Severity", "Findings", "Hosts", "Imported", ""].map((h) => (
+                    {["File", "Format", "Risk", "Severity", "Findings", "Hosts", "Uploaded By", "Organization", "Imported", ""].map((h) => (
                       <th key={h} className="px-6 py-3.5 text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                         {h}
                       </th>
@@ -268,11 +356,11 @@ export default function VaptReports() {
                               <FormatIcon size={17} />
                             </div>
                             <div className="min-w-0">
-                              <p className="max-w-[280px] truncate font-bold text-slate-800 dark:text-slate-200" title={item.file_name}>
+                              <p className="max-w-[260px] truncate font-bold text-slate-800 dark:text-slate-200" title={item.file_name}>
                                 {item.file_name}
                               </p>
                               <p className="text-xs text-slate-500 dark:text-slate-400">
-                                {item.file_format.toUpperCase()} export · {formatLabel(item)}
+                                {formatLabel(item)} · {item.source_tool || "generic"}
                               </p>
                             </div>
                           </div>
@@ -295,13 +383,31 @@ export default function VaptReports() {
                         <td className="px-6 py-4 text-slate-600 dark:text-slate-300">
                           <span className="inline-flex items-center gap-1.5"><Server size={13} className="text-slate-400" />{item.unique_hosts}</span>
                         </td>
+                        <td className="px-6 py-4">
+                          {item.uploaded_by_email ? (
+                            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-50 text-[10px] font-black text-indigo-600 uppercase dark:bg-indigo-950/40 dark:text-indigo-400">
+                                {item.uploaded_by_email.slice(0, 2)}
+                              </span>
+                              {item.uploaded_by_email}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
+                            <Globe size={13} className="text-slate-400" />
+                            {item.org_domain || "—"}
+                          </span>
+                        </td>
                         <td className="px-6 py-4 text-xs text-slate-500 dark:text-slate-400">{fmtDate(item.created_at)}</td>
                         <td className="px-6 py-4">
                           <div className="flex items-center justify-end gap-1.5">
                             <button
                               type="button"
                               title="View report"
-                              onClick={() => navigate(`/vapt/reports/${item.import_id}`)}
+                              onClick={() => navigate(`/admin/vapt-reports/${item.import_id}`)}
                               className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-purple-300 hover:bg-purple-50 hover:text-purple-700 dark:border-slate-700 dark:text-slate-400 dark:hover:border-purple-700 dark:hover:bg-purple-950/30 dark:hover:text-purple-400"
                             >
                               <Eye size={15} />
@@ -325,7 +431,20 @@ export default function VaptReports() {
           </div>
         )}
       </div>
-
     </div>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg
+      className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2}
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 10.5a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z" />
+    </svg>
   );
 }

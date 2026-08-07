@@ -55,3 +55,9 @@ def require_admin_or_marketing(current_user = Depends(protect)):
     if current_user.role not in ("admin", "marketing"):
         raise HTTPException(status_code=403, detail="Only an admin or marketing team member can perform this action")
     return current_user
+
+def require_admin_or_soc_analyst(current_user = Depends(protect)):
+    """Allow platform admins and SOC analysts through (SOC analysts are read-only)."""
+    if current_user.role not in ("admin", "soc_analyst"):
+        raise HTTPException(status_code=403, detail="Only an admin or SOC analyst can perform this action")
+    return current_user

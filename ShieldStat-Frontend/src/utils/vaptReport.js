@@ -128,7 +128,9 @@ export function formatLabel(item) {
 }
 
 export const ALLOWED_EXTENSIONS = [".nessus", ".xml", ".csv", ".xlsx", ".xls"];
-export const MAX_FILE_SIZE = 25 * 1024 * 1024;
+// Max upload size in MB — configurable via VITE_VAPT_MAX_FILE_SIZE_MB.
+export const VAPT_MAX_FILE_SIZE_MB = Number(import.meta.env.VITE_VAPT_MAX_FILE_SIZE_MB) || 25;
+export const MAX_FILE_SIZE = VAPT_MAX_FILE_SIZE_MB * 1024 * 1024;
 
 export function validateVaptFile(file) {
   const lower = (file?.name || "").toLowerCase();
@@ -137,7 +139,7 @@ export function validateVaptFile(file) {
     return `Unsupported file type "${ext}". Upload a .nessus, .xml, .csv, .xls or .xlsx export.`;
   }
   if (file.size > MAX_FILE_SIZE) {
-    return "File exceeds the 25 MB size limit.";
+    return `File exceeds the ${VAPT_MAX_FILE_SIZE_MB} MB size limit.`;
   }
   return null;
 }

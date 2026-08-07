@@ -22,6 +22,7 @@ Every parser returns a list of *raw* findings with a common shape::
 
 import csv
 import io
+import os
 import re
 from pathlib import Path
 
@@ -30,7 +31,9 @@ try:
 except ImportError:
     import xml.etree.ElementTree as SafeET
 
-MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
+# Max upload size in MB (configurable via VAPT_MAX_FILE_SIZE_MB).
+VAPT_MAX_FILE_SIZE_MB = int(os.getenv("VAPT_MAX_FILE_SIZE_MB", "25"))
+MAX_FILE_SIZE = VAPT_MAX_FILE_SIZE_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = {".nessus", ".xml", ".csv", ".xlsx", ".xls"}
 
 SEVERITY_LABELS = {0: "info", 1: "low", 2: "medium", 3: "high", 4: "critical"}
@@ -565,10 +568,10 @@ def parse_upload(content: bytes, filename: str) -> tuple[list[dict], str, str]:
     if ext not in ALLOWED_EXTENSIONS:
         raise ValueError(
             f"Unsupported file type '{ext}'. Upload a .nessus, .xml, .csv or "
-            ".xlsx export (max 25 MB)."
+            f".xlsx export (max {VAPT_MAX_FILE_SIZE_MB} MB)."
         )
     if len(content) > MAX_FILE_SIZE:
-        raise ValueError("File exceeds the 25 MB size limit.")
+        raise ValueError(f"File exceeds the {VAPT_MAX_FILE_SIZE_MB} MB size limit.")
 
     if ext in (".nessus", ".xml"):
         raw = parse_nessus_xml(content)

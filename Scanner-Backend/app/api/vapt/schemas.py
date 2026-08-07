@@ -17,6 +17,9 @@ class VaptImportListItem(BaseModel):
     severity: str
     severity_distribution: dict[str, int]
     created_at: Optional[datetime] = None
+    # Uploader attribution (NULL for imports predating the column).
+    uploaded_by: Optional[str] = None
+    uploaded_by_email: Optional[str] = None
 
 
 class VaptImportDetail(VaptImportListItem):
