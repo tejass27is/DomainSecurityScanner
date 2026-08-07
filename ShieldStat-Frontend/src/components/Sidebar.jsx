@@ -17,7 +17,7 @@ function Sidebar({
     { to: "/assessment", label: "Assessment", icon: "security" },
     { to: "/scan", label: "Audit Domain", icon: "radar" },
     { to: "/malware", label: "Malware Scan", icon: "bug_report" },
-    { to: "/vapt/reports", label: "VAPT Reports", icon: "fact_check" },
+    { to: "/vapt/reports", label: "VAPT", icon: "fact_check" },
   ],
 }) {
   const location = useLocation();
