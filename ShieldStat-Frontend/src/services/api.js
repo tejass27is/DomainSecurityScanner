@@ -63,6 +63,10 @@ async function request(endpoint, { method = "GET", body, token, signal, publicIp
     throw new Error(message);
   }
 
+  if (method !== "GET") {
+    requestCache.clear();
+  }
+
   if (cacheKey) {
     requestCache.set(cacheKey, { value: data, timestamp: Date.now() });
   }
@@ -664,7 +668,7 @@ export function getVaptImports(token) {
 }
 
 export function getVaptImport(importId, token) {
-  return request(`/vapt/imports/${encodeURIComponent(importId)}`, { token });
+  return request(`/vapt/imports/${encodeURIComponent(importId)}`, { token, skipCache: true });
 }
 
 export async function downloadVaptReport(importId, token) {
@@ -701,6 +705,14 @@ export async function downloadVaptReport(importId, token) {
     `Network error: could not reach the report server at ${urls.join(" or ")}. ` +
     "Check that the backend is running and CORS allows this site.",
   );
+}
+
+export function updateVaptFindingStatus(importId, findingId, { status, comment }, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/findings/${encodeURIComponent(findingId)}`, {
+    method: "PATCH",
+    body: { status, comment },
+    token,
+  });
 }
 
 export function deleteVaptImport(importId, token) {

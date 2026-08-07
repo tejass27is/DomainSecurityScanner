@@ -5,7 +5,7 @@ import {
   Globe, Layers, Server, Info, FileText, Lock, Activity, ExternalLink,
   ShieldAlert, Bug, FilterX, Database, Wrench,
 } from "lucide-react";
-import { getVaptImport, downloadVaptReport } from "../services/api";
+import { getVaptImport, downloadVaptReport, updateVaptFindingStatus } from "../services/api";
 import {
   SEVERITY_META,
   SEVERITY_ORDER,
@@ -87,127 +87,146 @@ function CategoryChip({ category, active, onClick }) {
   );
 }
 
-function FindingCard({ finding, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
+function ExpandableText({ text = "", maxLength = 160 }) {
+  const [expanded, setExpanded] = useState(false);
+  const trimmed = (text || "").trim();
+  if (!trimmed) {
+    return <span className="text-slate-400">—</span>;
+  }
+
+  const shouldTruncate = trimmed.length > maxLength;
+  const displayText = !shouldTruncate || expanded
+    ? trimmed
+    : `${trimmed.slice(0, maxLength).trimEnd()}…`;
+
+  return (
+    <div className="space-y-2">
+      <p className="whitespace-pre-wrap break-words text-[12px] text-slate-600 dark:text-slate-300">{displayText}</p>
+      {shouldTruncate && (
+        <button
+          type="button"
+          onClick={() => setExpanded((prev) => !prev)}
+          className="text-[11px] font-semibold text-purple-600 underline-offset-2 transition hover:text-purple-700 dark:text-purple-300 dark:hover:text-purple-200"
+        >
+          {expanded ? "Show less" : "Read more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function FindingTableRow({ finding, onDraftChange }) {
+  const [status, setStatus] = useState(finding.status || "pending");
+  const [comment, setComment] = useState(finding.comment || "");
   const meta = severityMeta(finding.severity_label);
-  const cves = finding.cves || [];
+  const cves = (finding.cves || []).filter(Boolean);
   const references = (finding.references || []).filter((r) =>
     r.startsWith("http://") || r.startsWith("https://"),
   );
-  const hosts = finding.affected_hosts || [];
+  const hosts = (finding.affected_hosts || []).filter(Boolean);
   const evidence = (finding.evidence || "").trim();
 
+  useEffect(() => {
+    setStatus(finding.status || "pending");
+    setComment(finding.comment || "");
+  }, [finding.status, finding.comment]);
+
+  useEffect(() => {
+    onDraftChange?.(finding.id, {
+      status,
+      comment,
+      originalStatus: finding.status || "pending",
+      originalComment: finding.comment || "",
+    });
+  }, [finding.id, finding.status, finding.comment, onDraftChange, status, comment]);
+
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-start gap-4 p-5 text-left transition-colors hover:bg-slate-50/60 dark:hover:bg-slate-800/40"
-      >
-        <div className="mt-0.5 flex h-8 w-14 shrink-0 items-center justify-center rounded-lg text-xs font-black text-white" style={{ backgroundColor: meta.gauge }}>
-          {finding.id}
+    <tr className="border-t border-slate-200 align-top text-sm text-slate-700 dark:border-slate-800 dark:text-slate-300">
+      <td className="sticky left-0 z-10 min-w-[220px] bg-white px-3 py-3 dark:bg-slate-900">
+        <div className="font-semibold text-slate-900 dark:text-slate-100">{finding.title || "Untitled finding"}</div>
+        <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{finding.category || "Application"}</div>
+      </td>
+      <td className="min-w-[140px] px-3 py-3">
+        <div className="flex flex-wrap gap-1.5">
+          {cves.length > 0 ? cves.map((cve) => (
+            <a key={cve} href={`https://nvd.nist.gov/vuln/detail/${cve}`} target="_blank" rel="noreferrer noopener" className="rounded-md border border-purple-200 bg-purple-50 px-2 py-1 font-mono text-[11px] font-semibold text-purple-700 dark:border-purple-900 dark:bg-purple-950/40 dark:text-purple-400">
+              {cve}
+            </a>
+          )) : <span className="text-slate-400">—</span>}
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">{finding.title}</h3>
-            <SeverityBadge severity={finding.severity_label} />
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
-            {finding.cvss_score != null && (
-              <span className="inline-flex items-center gap-1 font-mono">
-                <Activity size={12} /> CVSS {fmtCvss(finding.cvss_score)}
-              </span>
-            )}
-            {finding.port != null && (
-              <span className="inline-flex items-center gap-1">
-                <Server size={12} /> Port {finding.port}{finding.service ? ` · ${finding.service}` : ""}
-              </span>
-            )}
-            <span className="inline-flex items-center gap-1">
-              <Globe size={12} />
-              {finding.host_count > 1 ? `${finding.host_count} hosts` : hosts[0] || "—"}
-            </span>
-            {finding.category && (
-              <span className="inline-flex items-center gap-1">
-                <Layers size={12} /> {finding.category}
-              </span>
-            )}
-          </div>
-        </div>
-        <div className={`mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-all duration-300 ${open ? "rotate-180 bg-purple-600 text-white" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>
-          <ChevronDown size={17} />
-        </div>
-      </button>
-
-      {open && (
-        <div className="border-t border-slate-100 px-5 pb-5 pt-4 dark:border-slate-800">
-          {/* Affected hosts */}
-          {hosts.length > 0 && (
-            <div className="mb-4">
-              <p className="mb-2 flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">
-                <Globe size={12} /> Affected hosts ({hosts.length})
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {hosts.map((h) => (
-                  <span key={h} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[11px] text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                    {h}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <Section icon={<FileText size={12} />} title="Description">
-            {finding.description || finding.synopsis || "No description available."}
-          </Section>
-
-          {finding.solution && (
-            <Section icon={<Wrench size={12} />} title="Solution">
-              {finding.solution}
-            </Section>
-          )}
-
-          {(cves.length > 0 || references.length > 0) && (
-            <Section icon={<ExternalLink size={12} />} title="Resources">
-              {cves.length > 0 && (
-                <div className="mb-2 flex flex-wrap gap-1.5">
-                  {cves.map((cve) => (
-                    <a
-                      key={cve}
-                      href={`https://nvd.nist.gov/vuln/detail/${cve}`}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-2 py-1 font-mono text-[11px] font-bold text-purple-700 transition hover:bg-purple-100 dark:border-purple-900 dark:bg-purple-950/40 dark:text-purple-400"
-                    >
-                      {cve} <ExternalLink size={10} />
-                    </a>
-                  ))}
-                </div>
-              )}
-              {references.length > 0 && (
-                <ul className="space-y-1">
-                  {references.map((r) => (
-                    <li key={r}>
-                      <a href={r} target="_blank" rel="noreferrer noopener" className="break-all text-xs text-purple-600 underline-offset-2 hover:underline dark:text-purple-400">
-                        {r}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Section>
-          )}
-
-          {evidence && (
-            <Section icon={<Bug size={12} />} title="Proof of Concept">
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-950 p-4 font-mono text-[11px] leading-relaxed text-slate-100 dark:border-slate-700">
-                {evidence}
-              </pre>
-            </Section>
+      </td>
+      <td className="min-w-[110px] px-3 py-3">
+        <div className="font-mono text-[12px]">{finding.cvss_score != null ? fmtCvss(finding.cvss_score) : "—"}</div>
+      </td>
+      <td className="min-w-[120px] px-3 py-3">
+        <SeverityBadge severity={finding.severity_label} />
+      </td>
+      <td className="min-w-[160px] px-3 py-3">
+        <div className="flex flex-col gap-2">
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+          >
+            <option value="pending">Pending</option>
+            <option value="solved">Solved</option>
+            <option value="ignore">Ignore</option>
+            <option value="false_positive">False positive</option>
+          </select>
+          {(status === "ignore" || status === "false_positive") && !comment.trim() && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">Comment required</p>
           )}
         </div>
-      )}
-    </div>
+      </td>
+      <td className="min-w-[180px] px-3 py-3">
+        <div className="space-y-1 text-[12px]">
+          <div>{hosts.length > 0 ? hosts.join(", ") : finding.host || "—"}</div>
+          {finding.hostname && <div className="text-slate-500 dark:text-slate-400">{finding.hostname}</div>}
+        </div>
+      </td>
+      <td className="min-w-[120px] px-3 py-3 text-[12px]">{finding.mac_address || "—"}</td>
+      <td className="min-w-[140px] px-3 py-3 text-[12px]">{finding.hostname || finding.host || "—"}</td>
+      <td className="min-w-[160px] px-3 py-3 text-[12px]">{finding.operating_system || finding.os || "—"}</td>
+      <td className="min-w-[90px] px-3 py-3 text-[12px]">{finding.protocol || "—"}</td>
+      <td className="min-w-[80px] px-3 py-3 text-[12px]">{finding.port != null ? finding.port : "—"}</td>
+      <td className="min-w-[240px] px-3 py-3">
+        <ExpandableText text={finding.description || finding.synopsis || "No description available."} maxLength={140} />
+      </td>
+      <td className="min-w-[220px] px-3 py-3 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+        <ExpandableText text={finding.synopsis || ""} maxLength={120} />
+      </td>
+      <td className="min-w-[220px] px-3 py-3 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+        <ExpandableText text={finding.description || ""} maxLength={120} />
+      </td>
+      <td className="min-w-[220px] px-3 py-3 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+        <ExpandableText text={finding.solution || ""} maxLength={120} />
+      </td>
+      <td className="min-w-[180px] px-3 py-3">
+        <div className="space-y-1">
+          {references.length > 0 ? references.map((r) => (
+            <a key={r} href={r} target="_blank" rel="noreferrer noopener" className="block break-all text-[11px] text-purple-600 underline-offset-2 hover:underline dark:text-purple-400">{r}</a>
+          )) : <span className="text-[12px] text-slate-400">—</span>}
+        </div>
+      </td>
+      <td className="min-w-[220px] px-3 py-3 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+        <ExpandableText text={evidence || ""} maxLength={120} />
+      </td>
+      <td className="min-w-[240px] px-3 py-3">
+        <div className="space-y-2">
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            rows={3}
+            placeholder="Add a comment (required for Ignore / False positive)"
+            className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+          />
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">Optional unless the selected status is Ignore or False positive.</p>
+          {(status === "ignore" || status === "false_positive") && !comment.trim() && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">Comment is required for Ignore / False positive.</p>
+          )}
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -231,8 +250,13 @@ export default function VaptReport() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  const [ipFilter, setIpFilter] = useState("");
   const [sevFilter, setSevFilter] = useState(null);
+  const [statusFilter, setStatusFilter] = useState(null);
   const [catFilter, setCatFilter] = useState(null);
+  const [draftChanges, setDraftChanges] = useState({});
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkSaveError, setBulkSaveError] = useState("");
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -266,6 +290,62 @@ export default function VaptReport() {
     }
   }, [record]);
 
+  const handleDraftChange = useCallback((findingId, changes) => {
+    const key = String(findingId);
+    setDraftChanges((prev) => {
+      const original = record?.findings?.find((f) => String(f.id) === key) || {};
+      const baseStatus = original.status || "pending";
+      const baseComment = original.comment || "";
+      const next = {
+        status: changes.status ?? baseStatus,
+        comment: changes.comment ?? baseComment,
+      };
+      if (next.status === baseStatus && next.comment === baseComment) {
+        const copy = { ...prev };
+        delete copy[key];
+        return copy;
+      }
+      return {
+        ...prev,
+        [key]: next,
+      };
+    });
+  }, [record?.findings]);
+
+  const handleSaveAll = useCallback(async () => {
+    if (!record) return;
+    const entries = Object.entries(draftChanges);
+    if (entries.length === 0) return;
+
+    setBulkSaving(true);
+    setBulkSaveError("");
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) throw new Error("Authentication required.");
+      let updatedRecord = record;
+      for (const [findingId, draft] of entries) {
+        const key = String(findingId);
+        const normalizedStatus = draft.status === "solve" ? "solved" : draft.status;
+        const trimmedComment = (draft.comment || "").trim();
+        await updateVaptFindingStatus(updatedRecord.import_id, findingId, { status: normalizedStatus, comment: trimmedComment }, token)
+          .then((response) => {
+            updatedRecord = {
+              ...updatedRecord,
+              findings: (updatedRecord.findings || []).map((finding) => (
+                String(finding.id) === key ? { ...finding, ...response.finding } : finding
+              )),
+            };
+          });
+      }
+      setRecord(updatedRecord);
+      setDraftChanges({});
+    } catch (err) {
+      setBulkSaveError(err?.message || "Failed to save changes.");
+    } finally {
+      setBulkSaving(false);
+    }
+  }, [draftChanges, record]);
+
   const categories = useMemo(() => {
     if (!record) return [];
     return Object.entries(record.category_distribution || {})
@@ -273,12 +353,38 @@ export default function VaptReport() {
       .sort((a, b) => b.count - a.count);
   }, [record]);
 
+  const statusCounts = useMemo(() => {
+    const counts = {
+      all: 0,
+      pending: 0,
+      solved: 0,
+      ignore: 0,
+      false_positive: 0,
+    };
+    const findings = record?.findings || [];
+    counts.all = findings.length;
+    findings.forEach((f) => {
+      const status = (f.status || "pending").toLowerCase();
+      if (counts[status] != null) {
+        counts[status] += 1;
+      }
+    });
+    return counts;
+  }, [record]);
+
   const filteredFindings = useMemo(() => {
     if (!record) return [];
     const q = search.trim().toLowerCase();
+    const ipValue = ipFilter.trim().toLowerCase();
     return (record.findings || []).filter((f) => {
       if (sevFilter && (f.severity_label || "").toLowerCase() !== sevFilter) return false;
       if (catFilter && (f.category || "").toLowerCase() !== catFilter.toLowerCase()) return false;
+      if (statusFilter && (f.status || "pending").toLowerCase() !== statusFilter) return false;
+      if (ipValue) {
+        const hosts = (f.affected_hosts || []).join(" ").toLowerCase();
+        const hostField = (f.host || "").toLowerCase();
+        if (!hosts.includes(ipValue) && !hostField.includes(ipValue)) return false;
+      }
       if (!q) return true;
       const hay = [
         f.title, f.description, f.solution, f.evidence,
@@ -288,7 +394,12 @@ export default function VaptReport() {
       ].join(" ").toLowerCase();
       return hay.includes(q);
     });
-  }, [record, search, sevFilter, catFilter]);
+  }, [record, search, ipFilter, sevFilter, statusFilter, catFilter]);
+
+  const hasInvalidDraft = useMemo(() => Object.values(draftChanges).some((draft) => {
+    const status = (draft.status || "").toLowerCase();
+    return (status === "ignore" || status === "false_positive") && !(draft.comment || "").trim();
+  }), [draftChanges]);
 
   if (loading) {
     return (
@@ -462,6 +573,16 @@ export default function VaptReport() {
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
               />
             </div>
+            <div className="mt-4">
+              <label className="mb-2 block text-xs font-bold uppercase tracking-[0.24em] text-slate-400 dark:text-slate-500">Filter by IP / host</label>
+              <input
+                type="text"
+                value={ipFilter}
+                onChange={(e) => setIpFilter(e.target.value)}
+                placeholder="Enter IP or hostname"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              />
+            </div>
             <div className="mt-4 space-y-2 text-xs text-slate-500 dark:text-slate-400">
               <p className="flex items-center gap-2">
                 <span className={`h-1.5 w-1.5 rounded-full ${riskMeta.dot}`} />
@@ -472,15 +593,40 @@ export default function VaptReport() {
                 Each finding may cover multiple hosts (consolidated).
               </p>
             </div>
-            {(sevFilter || catFilter || search) && (
+            {(sevFilter || catFilter || statusFilter || search || ipFilter) && (
               <button
                 type="button"
-                onClick={() => { setSevFilter(null); setCatFilter(null); setSearch(""); }}
+                onClick={() => { setSevFilter(null); setCatFilter(null); setStatusFilter(null); setSearch(""); setIpFilter(""); }}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-purple-700 dark:hover:text-purple-400"
               >
                 <FilterX size={12} /> Clear filters
               </button>
             )}
+          </div>
+        </div>
+
+        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <p className="mb-3 text-xs font-black uppercase tracking-wider text-slate-400">Status summary</p>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { key: "all", label: "All", count: statusCounts.all },
+              { key: "pending", label: "Pending", count: statusCounts.pending },
+              { key: "solved", label: "Solved", count: statusCounts.solved },
+              { key: "ignore", label: "Ignored", count: statusCounts.ignore },
+              { key: "false_positive", label: "False positive", count: statusCounts.false_positive },
+            ].map((status) => {
+              const active = statusFilter === status.key || (status.key === "all" && !statusFilter);
+              return (
+                <button
+                  key={status.key}
+                  type="button"
+                  onClick={() => setStatusFilter(status.key === "all" ? null : status.key)}
+                  className={`rounded-full border px-3 py-2 text-xs font-semibold transition ${active ? "border-purple-600 bg-purple-600 text-white" : "border-slate-200 bg-white text-slate-600 hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-purple-700 dark:hover:text-purple-400"}`}
+                >
+                  {status.label} ({status.count})
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -492,10 +638,67 @@ export default function VaptReport() {
             <p className="mt-1 text-xs text-slate-400">Try a different search term or clear the severity / category filters.</p>
           </div>
         ) : (
-          <div className="grid gap-4 lg:grid-cols-2">
-            {filteredFindings.map((f, i) => (
-              <FindingCard key={f.id} finding={f} defaultOpen={i === 0 && filteredFindings.length === 1} />
-            ))}
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            {/* Single scroll surface: both axes on one element, sticky header row, sticky first column. */}
+            <div className="max-h-[70vh] overflow-auto rounded-t-2xl [scrollbar-gutter:stable]">
+              <table className="w-full min-w-[1700px] border-collapse text-left">
+                <thead className="text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  <tr>
+                    <th className="sticky top-0 left-0 z-30 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Name</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">CVE</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">CVSS Base Score</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Risk</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Status</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Host</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">MAC Address</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Hostname</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Operating System</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Protocol</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Port</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Description</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Synopsis</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Solution</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">See Also</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Plugin Output</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Comment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredFindings.map((f) => (
+                    <FindingTableRow
+                      key={f.id}
+                      finding={f}
+                      onDraftChange={handleDraftChange}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="rounded-b-2xl border-t border-slate-200 bg-slate-50 px-4 py-4 dark:border-slate-800 dark:bg-slate-950/70">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-slate-600 dark:text-slate-300">
+                  {Object.keys(draftChanges).length > 0
+                    ? `${Object.keys(draftChanges).length} pending change${Object.keys(draftChanges).length > 1 ? "s" : ""}`
+                    : "No unsaved changes."}
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  {bulkSaveError && <div className="text-sm text-red-600 dark:text-red-400">{bulkSaveError}</div>}
+                  <button
+                    type="button"
+                    onClick={handleSaveAll}
+                    disabled={bulkSaving || Object.keys(draftChanges).length === 0 || hasInvalidDraft}
+                    className="rounded-xl bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {bulkSaving ? "Saving changes…" : "Save changes"}
+                  </button>
+                </div>
+              </div>
+              {hasInvalidDraft && (
+                <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
+                  Some rows require comments for Ignore / False positive before saving.
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

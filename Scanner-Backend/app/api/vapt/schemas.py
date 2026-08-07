@@ -29,3 +29,8 @@ class VaptImportDetail(VaptImportListItem):
 
 class VaptUploadResponse(VaptImportDetail):
     """Returned after a successful upload — a preview of the normalized report."""
+
+
+class VaptFindingStatusUpdate(BaseModel):
+    status: str
+    comment: Optional[str] = None

@@ -25,10 +25,13 @@ import io
 import re
 from pathlib import Path
 
-from defusedxml import ElementTree as SafeET
+try:
+    from defusedxml import ElementTree as SafeET
+except ImportError:
+    import xml.etree.ElementTree as SafeET
 
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
-ALLOWED_EXTENSIONS = {".nessus", ".xml", ".csv", ".xlsx"}
+ALLOWED_EXTENSIONS = {".nessus", ".xml", ".csv", ".xlsx", ".xls"}
 
 SEVERITY_LABELS = {0: "info", 1: "low", 2: "medium", 3: "high", 4: "critical"}
 SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -146,6 +149,41 @@ def _host_os(host_el) -> str:
     return fallback
 
 
+def _strip_tag_name(tag_name: str) -> str:
+    if not tag_name:
+        return ""
+    return tag_name.split("}")[-1].strip().lower()
+
+
+def _tag_text(tag_el) -> str:
+    if tag_el is None:
+        return ""
+    return (tag_el.get("value") or tag_el.text or "").strip()
+
+
+def _tag_name(tag_el) -> str:
+    name = tag_el.get("name") or tag_el.findtext("name") or ""
+    return str(name).strip().lower()
+
+
+def _host_mac(host_el) -> str:
+    """Extract Nessus host MAC address metadata from a ReportHost element."""
+    allowed_keys = {"mac address", "mac", "macaddress", "mac addr", "mac_addr", "mac-address"}
+    candidate_tags = {"tag", "property"}
+
+    for element in host_el.iter():
+        if _strip_tag_name(element.tag) not in candidate_tags:
+            continue
+        name = _tag_name(element)
+        value = _tag_text(element)
+        if not value:
+            continue
+        if name in allowed_keys or "mac" in name:
+            return value
+
+    return ""
+
+
 def parse_nessus_xml(content: bytes) -> list[dict]:
     """Parse a Nessus v2 XML export (`.nessus` / `.xml`) into raw findings."""
     try:
@@ -192,6 +230,7 @@ def parse_nessus_xml(content: bytes) -> list[dict]:
                 "solution": _clean_text(item.findtext("solution")),
                 "references": _split_refs(item.findtext("see_also")),
                 "cves": cves,
+                "mac_address": _host_mac(host_el),
                 "evidence": _clean_text(item.findtext("plugin_output")),
             })
     return raw
@@ -237,6 +276,12 @@ HEADER_ALIASES: dict[str, list[str]] = {
                       "group"],
     "os": ["os", "operating system", "os name", "os version", "platform",
            "operating system (os)", "host os", "os family"],
+    "status": ["status", "finding status", "state", "resolution"],
+    "mac_address": ["mac address", "mac", "macaddress", "mac addr"],
+    "hostname": ["hostname", "host name", "device name"],
+    "operating_system": ["operating system", "os", "os name", "os version",
+                         "platform", "host os", "operating system (os)", "os family"],
+    "comment": ["remarks", "remark", "comment", "comments", "notes", "note"],
 }
 
 
@@ -323,9 +368,23 @@ def _raw_from_cells(row: list, col_map: dict[str, int], source_tool: str) -> dic
         if r and r.startswith(("http://", "https://", "www."))
     ]
 
+    raw_status = (_cell(row, col_map, "status") or "pending").strip().lower()
+    status_map = {
+        "solve": "solved",
+        "solved": "solved",
+        "resolved": "solved",
+        "ignore": "ignore",
+        "false positive": "false_positive",
+        "false-positive": "false_positive",
+        "false_positive": "false_positive",
+        "pending": "pending",
+    }
+    normalized_status = status_map.get(raw_status, raw_status.replace(" ", "_"))
+    comment = _cell(row, col_map, "comment") or ""
+
     return {
-        "host": _cell(row, col_map, "host") or "",
-        "os": _cell(row, col_map, "os") or "",
+        "host": _cell(row, col_map, "host") or _cell(row, col_map, "hostname") or "",
+        "os": _cell(row, col_map, "operating_system") or _cell(row, col_map, "os") or "",
         "port": _int_or_none(_cell(row, col_map, "port")),
         "protocol": _cell(row, col_map, "protocol") or "",
         "service": _cell(row, col_map, "service") or "",
@@ -343,6 +402,12 @@ def _raw_from_cells(row: list, col_map: dict[str, int], source_tool: str) -> dic
         "references": refs,
         "cves": cves,
         "evidence": _cell(row, col_map, "evidence") or "",
+        "status": normalized_status or "pending",
+        "comment": comment,
+        "mac_address": _cell(row, col_map, "mac_address") or "",
+        "hostname": _cell(row, col_map, "hostname") or "",
+        "operating_system": _cell(row, col_map, "operating_system") or _cell(row, col_map, "os") or "",
+        "remarks": comment,
     }
 
 
@@ -382,6 +447,58 @@ def parse_csv(content: bytes) -> tuple[list[dict], str]:
             continue
         raw.append(_raw_from_cells(row, col_map, source_tool))
     return raw, source_tool
+
+
+# ─── Excel (.xls) ────────────────────────────────────────────────────────────
+
+def parse_xls(content: bytes) -> tuple[list[dict], str]:
+    """Parse an .xls export with flexible column detection."""
+    try:
+        import xlrd
+    except ImportError as exc:  # pragma: no cover
+        raise ValueError("Excel (.xls) support requires 'xlrd'.") from exc
+
+    try:
+        wb = xlrd.open_workbook(file_contents=content)
+    except Exception as exc:
+        raise ValueError(f"Could not read the .xls file: {exc}")
+
+    try:
+        sheet = wb.sheet_by_index(0)
+        if sheet.nrows > 200_000:
+            raise ValueError("Worksheet has too many rows to import (limit 200,000).")
+        if sheet.ncols > 1_000:
+            raise ValueError("Worksheet has too many columns to import (limit 1,000).")
+
+        rows = []
+        for row_idx in range(sheet.nrows):
+            row = sheet.row_values(row_idx)
+            rows.append(["" if v is None else str(v).strip() for v in row])
+
+        header_idx = next(
+            (i for i, r in enumerate(rows) if any(c for c in r)),
+            0,
+        )
+        headers = rows[header_idx]
+        data_rows = rows[header_idx + 1:]
+
+        source_tool = detect_source_tool(headers)
+        col_map = _build_header_map(headers)
+        if "title" not in col_map and "host" not in col_map:
+            raise ValueError(
+                "Could not recognize the worksheet columns — expected a Nessus / "
+                "OpenVAS / Qualys export (e.g. columns like 'Plugin Name', 'Host', "
+                "'Severity')."
+            )
+
+        raw = []
+        for row in data_rows:
+            if not any(c for c in row):
+                continue
+            raw.append(_raw_from_cells(row, col_map, source_tool))
+        return raw, source_tool
+    finally:
+        wb.release_resources()
 
 
 # ─── Excel (.xlsx) ────────────────────────────────────────────────────────────
@@ -460,6 +577,10 @@ def parse_upload(content: bytes, filename: str) -> tuple[list[dict], str, str]:
     if ext == ".csv":
         raw, source_tool = parse_csv(content)
         return raw, source_tool, "csv"
+
+    if ext == ".xls":
+        raw, source_tool = parse_xls(content)
+        return raw, source_tool, "xls"
 
     raw, source_tool = parse_xlsx(content)
     return raw, source_tool, "xlsx"

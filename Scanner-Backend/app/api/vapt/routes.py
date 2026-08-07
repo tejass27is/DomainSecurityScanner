@@ -20,6 +20,7 @@ from app.api.vapt.parser import (
 from app.api.vapt.normalizer import normalize_import
 from app.api.vapt.report_generator import generate_vapt_report_pdf
 from app.api.vapt.schemas import (
+    VaptFindingStatusUpdate,
     VaptImportDetail,
     VaptImportListItem,
     VaptUploadResponse,
@@ -29,6 +30,7 @@ from app.db.base import get_db
 from app.db.models import User, VaptImport
 
 router = APIRouter(prefix="/vapt", tags=["VAPT"])
+VALID_VAPT_FINDING_STATUSES = {"pending", "solved", "ignore", "false_positive"}
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -89,6 +91,15 @@ def _to_detail(record: VaptImport) -> dict:
     }
 
 
+def _normalize_finding_status(status: str) -> str:
+    value = (status or "").strip().lower()
+    if value in {"solve", "solved", "resolved"}:
+        return "solved"
+    if value in {"false positive", "false-positive", "false_positive"}:
+        return "false_positive"
+    return value
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @router.post("/upload", response_model=VaptUploadResponse)
@@ -110,8 +121,8 @@ async def upload_vapt_report(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Unsupported file type '{ext}'. Upload a .nessus, .xml, .csv "
-                "or .xlsx export (max 25 MB)."
+                f"Unsupported file type '{ext}'. Upload a .nessus, .xml, .csv, "
+                ".xls or .xlsx export (max 25 MB)."
             ),
         )
 
@@ -221,6 +232,56 @@ def download_vapt_report(
             "Content-Disposition": f'attachment; filename="vapt-report-{safe_name}.pdf"'
         },
     )
+
+
+@router.patch("/imports/{import_id}/findings/{finding_id}")
+def update_vapt_finding_status(
+    import_id: str,
+    finding_id: str,
+    payload: VaptFindingStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Update the workflow status and comment for one imported finding."""
+    if not current_user.org_id:
+        raise HTTPException(
+            status_code=400,
+            detail="User not associated with an organization.",
+        )
+    record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    normalized_status = _normalize_finding_status(payload.status)
+    if normalized_status not in VALID_VAPT_FINDING_STATUSES:
+        raise HTTPException(status_code=400, detail="Unsupported status value.")
+
+    comment = (payload.comment or "").strip()
+    if normalized_status in {"ignore", "false_positive"} and not comment:
+        raise HTTPException(
+            status_code=400,
+            detail="A comment is required when the status is ignore or false positive.",
+        )
+
+    findings = record.findings or []
+    updated_finding = None
+    updated_findings = []
+    for finding in findings:
+        if str(finding.get("id")) == finding_id:
+            updated_finding = {
+                **finding,
+                "status": normalized_status,
+                "comment": comment,
+            }
+            updated_findings.append(updated_finding)
+        else:
+            updated_findings.append(finding)
+
+    if updated_finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found in this import.")
+
+    record.findings = updated_findings
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {"success": True, "finding": updated_finding}
 
 
 @router.delete("/imports/{import_id}")

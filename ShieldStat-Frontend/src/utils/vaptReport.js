@@ -127,14 +127,14 @@ export function formatLabel(item) {
   return (item?.file_format || "—").toUpperCase();
 }
 
-export const ALLOWED_EXTENSIONS = [".nessus", ".xml", ".csv", ".xlsx"];
+export const ALLOWED_EXTENSIONS = [".nessus", ".xml", ".csv", ".xlsx", ".xls"];
 export const MAX_FILE_SIZE = 25 * 1024 * 1024;
 
 export function validateVaptFile(file) {
   const lower = (file?.name || "").toLowerCase();
   const ext = `.${lower.split(".").pop()}`;
   if (!ALLOWED_EXTENSIONS.includes(ext)) {
-    return `Unsupported file type "${ext}". Upload a .nessus, .xml, .csv or .xlsx export.`;
+    return `Unsupported file type "${ext}". Upload a .nessus, .xml, .csv, .xls or .xlsx export.`;
   }
   if (file.size > MAX_FILE_SIZE) {
     return "File exceeds the 25 MB size limit.";

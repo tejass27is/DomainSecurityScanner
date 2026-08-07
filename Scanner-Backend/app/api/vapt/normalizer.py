@@ -97,12 +97,21 @@ def filter_real_issues(raw_findings: list[dict]) -> list[dict]:
 # ─── Consolidation ────────────────────────────────────────────────────────────
 
 def _consolidation_key(finding: dict) -> tuple:
-    """Group key — same plugin (or title) + port + protocol across hosts."""
-    if finding.get("plugin_id"):
-        base = str(finding["plugin_id"]).strip().lower()
-    else:
-        base = re_normalize_title(str(finding.get("title") or "")).lower()
-    return (base, finding.get("port"), (finding.get("protocol") or "").lower())
+    """Group key — preserve each distinct finding row while still allowing host grouping.
+
+    The previous implementation merged everything with the same plugin/port/protocol,
+    which caused many distinct Nessus/XLSX entries to disappear from the report.
+    We now use a more specific key so each parsed row stays visible and only truly
+    identical findings are grouped.
+    """
+    title = re_normalize_title(str(finding.get("title") or "")).lower()
+    plugin_id = str(finding.get("plugin_id") or "").strip().lower()
+    description = re_normalize_title(str(finding.get("description") or "")).lower()
+    host = re_normalize_title(str(finding.get("host") or "")).lower()
+    protocol = (finding.get("protocol") or "").lower()
+    port = finding.get("port")
+    cve = ",".join(finding.get("cves") or [])
+    return (plugin_id or title, port, protocol, host, description, cve)
 
 
 def re_normalize_title(title: str) -> str:
@@ -145,6 +154,12 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
                 "affected_hosts": [],
                 "host_outputs": [],
                 "evidence": "",
+                "status": (finding.get("status") or "pending").strip() or "pending",
+                "comment": (finding.get("comment") or "").strip(),
+                "mac_address": (finding.get("mac_address") or "").strip(),
+                "hostname": (finding.get("hostname") or "").strip(),
+                "operating_system": (finding.get("operating_system") or "").strip(),
+                "remarks": (finding.get("remarks") or "").strip(),
             }
             order.append(key)
 
@@ -165,6 +180,19 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
             host_output = {"host": host, "output": evidence}
             if host_output not in entry["host_outputs"]:
                 entry["host_outputs"].append(host_output)
+
+        if not entry.get("status") or entry.get("status") == "pending":
+            entry["status"] = (finding.get("status") or "pending").strip() or "pending"
+        if not entry.get("comment") and (finding.get("comment") or "").strip():
+            entry["comment"] = (finding.get("comment") or "").strip()
+        if not entry.get("mac_address") and (finding.get("mac_address") or "").strip():
+            entry["mac_address"] = (finding.get("mac_address") or "").strip()
+        if not entry.get("hostname") and (finding.get("hostname") or "").strip():
+            entry["hostname"] = (finding.get("hostname") or "").strip()
+        if not entry.get("operating_system") and (finding.get("operating_system") or "").strip():
+            entry["operating_system"] = (finding.get("operating_system") or "").strip()
+        if not entry.get("remarks") and (finding.get("remarks") or "").strip():
+            entry["remarks"] = (finding.get("remarks") or "").strip()
 
         # Prefer the most detailed description/solution we've seen.
         if len(entry["description"]) < len(finding.get("description") or ""):
