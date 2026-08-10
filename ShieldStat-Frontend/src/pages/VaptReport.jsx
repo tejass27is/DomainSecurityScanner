@@ -5,7 +5,9 @@ import {
   Globe, Layers, Server, Info, FileText, Lock, Activity, ExternalLink,
   ShieldAlert, Bug, FilterX, Database, Wrench,
 } from "lucide-react";
-import { getVaptImport, getVaptImportAdmin, downloadVaptReport, downloadVaptReportAdmin, updateVaptFindingStatus, submitVaptImport } from "../services/api";
+import { getVaptImport, getVaptImportAdmin, downloadVaptReport, downloadVaptReportAdmin, updateVaptFindingStatus, submitVaptImport, postVaptRescanSchedule, postVaptRescanScheduleAdmin, deleteVaptImport, deleteVaptImportAdmin } from "../services/api";
+import { getVaptRescanSchedules, postAdminApproveReschedule, postAdminRequestNewDate } from "../services/api";
+import RescanModal from "../components/RescanModal";
 import {
   SEVERITY_META,
   SEVERITY_ORDER,
@@ -21,17 +23,25 @@ import {
 
 const STATUS_LABEL = {
   pending: "Pending",
+  scheduled: "Scheduled",
+  requested: "Proposed by SOC",
   solved: "Solved",
   ignore: "Ignored",
   false_positive: "False positive",
   submitted: "Submitted",
+  approved: "Approved",
+  rescheduled: "New date requested",
 };
 
 const STATUS_BADGE = {
   pending: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900",
+  scheduled: "bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700",
+  requested: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-400 dark:border-sky-900",
   solved: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900",
   ignore: "bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700",
   false_positive: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-400 dark:border-purple-900",
+  approved: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900",
+  rescheduled: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-400 dark:border-sky-900",
 };
 
 // ─── Animated risk gauge ──────────────────────────────────────────────────────
@@ -71,18 +81,7 @@ function RiskGauge({ score }) {
           {progress}
         </span>
         <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Risk index</span>
-      {toast?.text && (
-        <div
-          role="status"
-          className={`fixed right-4 top-4 z-[100] max-w-sm rounded-xl border px-4 py-3 text-sm font-medium shadow-lg ${
-            toast.type === "error"
-              ? "border-red-200 bg-red-50 text-red-800"
-              : "border-emerald-200 bg-emerald-50 text-emerald-800"
-          }`}
-        >
-          {toast.text}
-        </div>
-      )}
+
       </div>
     </div>
   );
@@ -190,31 +189,48 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
       <td className="min-w-[120px] px-3 py-3">
         <SeverityBadge severity={finding.severity_label} />
       </td>
-      <td className="min-w-[160px] px-3 py-3">
-        {readOnly ? (
-          <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_BADGE[status] || STATUS_BADGE.pending}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${status === "solved" ? "bg-emerald-500" : status === "ignore" || status === "false_positive" ? "bg-purple-500" : "bg-amber-500"}`} />
-            {STATUS_LABEL[status] || status}
-          </span>
-        ) : (
-          <div className="flex flex-col gap-2">
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-            >
-              <option value="pending">Pending</option>
-              <option value="solved">Solved</option>
-              <option value="ignore">Ignore</option>
-              <option value="false_positive">False positive</option>
-            </select>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              {status === "ignore" || status === "false_positive"
-                ? "A comment is required when ignoring or marking a finding false positive."
-                : "Add a note for this finding if you want; it is optional."}
-            </p>
-          </div>
-        )}
+      <td className="min-w-[300px] px-3 py-3 align-top">
+        <div className="space-y-3">
+          {readOnly ? (
+            <div className="space-y-2">
+              <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_BADGE[status] || STATUS_BADGE.pending}`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${status === "solved" ? "bg-emerald-500" : status === "ignore" || status === "false_positive" ? "bg-purple-500" : "bg-amber-500"}`} />
+                {STATUS_LABEL[status] || status}
+              </span>
+              <p className="whitespace-pre-wrap text-[12px] text-slate-600 dark:text-slate-300">{comment || "—"}</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-col gap-2">
+                <select
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value)}
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                >
+                  <option value="pending">Pending</option>
+                  <option value="solved">Solved</option>
+                  <option value="ignore">Ignore</option>
+                  <option value="false_positive">False positive</option>
+                </select>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {status === "ignore" || status === "false_positive"
+                    ? "A comment is required when ignoring or marking a finding false positive."
+                    : "Add a note for this finding if you want; it is optional."}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <textarea
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  rows={3}
+                  placeholder="Add a note about how the finding was resolved (optional)"
+                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                />
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">Add a note about how the finding was resolved (optional).</p>
+              </div>
+            </div>
+          )}
+        </div>
       </td>
       <td className="min-w-[180px] px-3 py-3">
         <div className="space-y-1 text-[12px]">
@@ -249,22 +265,6 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
       <td className="min-w-[220px] px-3 py-3 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
         <ExpandableText text={evidence || ""} maxLength={120} />
       </td>
-      <td className="min-w-[240px] px-3 py-3">
-        {readOnly ? (
-          <p className="whitespace-pre-wrap text-[12px] text-slate-600 dark:text-slate-300">{comment || "—"}</p>
-        ) : (
-          <div className="space-y-2">
-            <textarea
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              rows={3}
-              placeholder="Add a note about how the finding was resolved (optional)"
-              className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-            />
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">Add a note about how the finding was resolved (optional).</p>
-          </div>
-        )}
-      </td>
     </tr>
   );
 }
@@ -276,6 +276,125 @@ function Section({ icon, title, children }) {
         {icon} {title}
       </p>
       <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{children}</p>
+    </div>
+  );
+}
+
+// ─── Rescan requests panel (platform / admin view) ────────────────────────────
+
+function RescanRequestsPanel({
+  schedules,
+  loading,
+  onApprove,
+  onToggleNewDate,
+  onUpdateDraft,
+  onSubmitNewDate,
+  drafts,
+  actionLoading,
+  actionError,
+}) {
+  if (loading) {
+    return (
+      <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+        Loading rescan requests…
+      </div>
+    );
+  }
+  if (!schedules || schedules.length === 0) return null;
+
+  return (
+    <div className="mb-6 rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <div className="border-b border-slate-100 px-5 py-4 dark:border-slate-800">
+        <p className="text-xs font-black uppercase tracking-wider text-slate-400">Rescan requests</p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+          <thead className="text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            <tr>
+              <th className="px-4 py-3">Requested date</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Note</th>
+              <th className="px-4 py-3">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {schedules.map((s) => {
+              const draft = drafts[s.id] || {};
+              const isActionable = ["scheduled", "requested"].includes((s.status || "scheduled").toLowerCase());
+              return (
+                <tr key={s.id} className="border-t border-slate-100 align-top dark:border-slate-800">
+                  <td className="px-4 py-3 font-mono text-[12px]">{fmtDate(s.scheduled_at || s.requested_date || s.proposed_date)}</td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_BADGE[s.status] || STATUS_BADGE.pending}`}>
+                      {STATUS_LABEL[s.status] || s.status || "Pending"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-[12px] text-slate-600 dark:text-slate-300">{s.note || "—"}</td>
+                  <td className="px-4 py-3">
+                    {isActionable ? (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => onApprove(s.id)}
+                            disabled={actionLoading[s.id]}
+                            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                          >
+                            {actionLoading[s.id] ? "Working…" : "Approve"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onToggleNewDate(s.id)}
+                            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:text-slate-300"
+                          >
+                            Request new date
+                          </button>
+                        </div>
+                        {draft.open && (
+                          <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/60">
+                            <div className="grid gap-2 sm:grid-cols-[160px_1fr]">
+                              <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Proposed date</label>
+                              <input
+                                type="datetime-local"
+                                value={draft.date || ""}
+                                onChange={(e) => onUpdateDraft(s.id, "date", e.target.value)}
+                                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-purple-400 dark:border-slate-600 dark:bg-slate-900"
+                              />
+                            </div>
+                            <div className="grid gap-2 sm:grid-cols-[160px_1fr]">
+                              <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Note</label>
+                              <input
+                                type="text"
+                                placeholder="Optional explanation"
+                                value={draft.note || ""}
+                                onChange={(e) => onUpdateDraft(s.id, "note", e.target.value)}
+                                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-purple-400 dark:border-slate-600 dark:bg-slate-900"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => onSubmitNewDate(s.id)}
+                              disabled={!draft.date || actionLoading[s.id]}
+                              className="w-full rounded-md bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-purple-700 disabled:opacity-60 sm:w-auto"
+                            >
+                              Submit
+                            </button>
+                          </div>
+                        )}
+                        {actionError[s.id] && (
+                          <p className="text-xs text-red-600 dark:text-red-400">{actionError[s.id]}</p>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-400">No action needed</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -304,6 +423,16 @@ export default function VaptReport() {
   const [submitStatus, setSubmitStatus] = useState("");
   const [submitError, setSubmitError] = useState("");
   const [toast, setToast] = useState(null);
+  const [showRescanModal, setShowRescanModal] = useState(false);
+  const [rescanSchedules, setRescanSchedules] = useState([]);
+  const [rescanLoading, setRescanLoading] = useState(false);
+  // Rescan request row actions (platform/admin view)
+  const [rescanActionLoading, setRescanActionLoading] = useState({});
+  const [rescanActionError, setRescanActionError] = useState({});
+  const [newDateDraft, setNewDateDraft] = useState({}); // { [scheduleId]: { date, note, open } }
+  // Toggle to temporarily bypass the client-side requirement that all findings
+  // must be triaged before submitting the report. Set to `true` to disable.
+  const SKIP_REQUIRE_ALL_TRIAGED = true;
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -320,6 +449,18 @@ export default function VaptReport() {
           ? await getVaptImportAdmin(importId, token)
           : await getVaptImport(importId, token);
         if (!cancelled) setRecord(data);
+        // load any existing rescan schedules for the import
+        if (!cancelled) {
+          try {
+            setRescanLoading(true);
+            const schedules = await getVaptRescanSchedules(importId, token);
+            setRescanSchedules(Array.isArray(schedules) ? schedules : []);
+          } catch (err) {
+            // ignore; separate admin UI surfaces errors
+          } finally {
+            setRescanLoading(false);
+          }
+        }
       } catch (err) {
         if (!cancelled) setError(err?.message || "Failed to load the report.");
       } finally {
@@ -401,6 +542,68 @@ export default function VaptReport() {
     }
   }, [draftChanges, record]);
 
+  // ── Rescan request row actions ──
+  const handleApproveReschedule = useCallback(async (scheduleId) => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
+    setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
+    try {
+      await postAdminApproveReschedule(scheduleId, token);
+      setRescanSchedules((prev) =>
+        prev.map((s) =>
+          String(s.id) === String(scheduleId)
+            ? { ...s, status: "approved" }
+            : s
+        )
+      );
+      setToast({ text: "Rescan approved", type: "success" });
+    } catch (err) {
+      setRescanActionError((p) => ({ ...p, [scheduleId]: err?.message || "Failed to approve." }));
+    } finally {
+      setRescanActionLoading((p) => ({ ...p, [scheduleId]: false }));
+    }
+  }, []);
+
+  const toggleNewDateForm = useCallback((scheduleId) => {
+    setNewDateDraft((prev) => ({
+      ...prev,
+      [scheduleId]: { date: "", note: "", ...prev[scheduleId], open: !prev[scheduleId]?.open },
+    }));
+  }, []);
+
+  const updateNewDateDraft = useCallback((scheduleId, field, value) => {
+    setNewDateDraft((prev) => ({
+      ...prev,
+      [scheduleId]: { ...prev[scheduleId], [field]: value },
+    }));
+  }, []);
+
+  const handleRequestNewDate = useCallback(async (scheduleId) => {
+    const token = localStorage.getItem("token");
+    const draft = newDateDraft[scheduleId];
+    if (!token || !draft?.date) return;
+    setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
+    setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
+    try {
+      const proposedAt = new Date(draft.date).toISOString();
+      const updated = await postAdminRequestNewDate(scheduleId, { proposed_at: proposedAt, note: draft.note || "" }, token);
+      setRescanSchedules((prev) =>
+        prev.map((s) =>
+          String(s.id) === String(scheduleId)
+            ? { ...s, status: "requested", scheduled_at: updated.proposed_at }
+            : s
+        )
+      );
+      setNewDateDraft((prev) => ({ ...prev, [scheduleId]: { date: "", note: "", open: false } }));
+      setToast({ text: "New date requested", type: "success" });
+    } catch (err) {
+      setRescanActionError((p) => ({ ...p, [scheduleId]: err?.message || "Failed to request new date." }));
+    } finally {
+      setRescanActionLoading((p) => ({ ...p, [scheduleId]: false }));
+    }
+  }, [newDateDraft]);
+
   const categories = useMemo(() => {
     if (!record) return [];
     return Object.entries(record.category_distribution || {})
@@ -467,11 +670,11 @@ export default function VaptReport() {
 
   const handleSubmitReport = useCallback(async () => {
     if (!record) return;
-    if (hasInvalidDraft) {
+    if (!SKIP_REQUIRE_ALL_TRIAGED && hasInvalidDraft) {
       setSubmitError("Please add required comments for Ignore / False positive before submitting.");
       return;
     }
-    if (hasPendingFindings) {
+    if (!SKIP_REQUIRE_ALL_TRIAGED && hasPendingFindings) {
       setSubmitError("All findings must be marked Solved, Ignore, or False positive before submitting.");
       return;
     }
@@ -503,12 +706,12 @@ export default function VaptReport() {
     return (
       <div className="flex min-h-screen items-center justify-center text-slate-900 dark:text-slate-100">
         <div className="flex flex-col items-center gap-3">
-          <span className="material-symbols-outlined animate-spin text-4xl text-purple-600" style={{ animationDuration: "1.6s" }}>
-            progress_activity
-          </span>
-          <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Loading report…</p>
+            <span className="material-symbols-outlined animate-spin text-4xl text-purple-600" style={{ animationDuration: "1.6s" }}>
+              progress_activity
+            </span>
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Loading report…</p>
+          </div>
         </div>
-      </div>
     );
   }
 
@@ -537,84 +740,191 @@ export default function VaptReport() {
   return (
     <div className="min-h-screen text-slate-900 dark:text-slate-100">
       <div className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6 lg:px-10">
-        {/* ── Header ── */}
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <Link
-              to={libraryPath}
-              className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:hover:border-purple-700 dark:hover:text-purple-400"
-              title="Back to library"
-            >
-              <ArrowLeft size={18} />
-            </Link>
-            <div>
-              <div className="mb-1 flex items-center gap-2">
-                <span className="text-[11px] font-black uppercase tracking-[0.28em] text-purple-700 dark:text-purple-400">
-                  VAPT Report
-                </span>
-                <span className="rounded-md border border-slate-200 px-2.5 py-1 text-[10px] font-bold text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                  {formatLabel(record)}
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="max-w-2xl truncate text-2xl font-extrabold tracking-tight sm:text-3xl" title={record.file_name}>
+        {toast?.text && (
+          <div
+            role="status"
+            className={`fixed right-4 top-4 z-[100] max-w-sm rounded-xl border px-4 py-3 text-sm font-medium shadow-lg ${
+              toast.type === "error"
+                ? "border-red-200 bg-red-50 text-red-800"
+                : "border-emerald-200 bg-emerald-50 text-emerald-800"
+            }`}
+          >
+            {toast.text}
+          </div>
+        )}
+
+        {/* ── Header ──
+             Split into two independent rows: (1) identity + page-level actions,
+             (2) stat cards. Prevents the title block and the action buttons
+             from fighting for space / overlapping on narrow screens. */}
+        <div className="mb-6 space-y-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <Link
+                to={libraryPath}
+                className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:hover:border-purple-700 dark:hover:text-purple-400"
+                title="Back to library"
+              >
+                <ArrowLeft size={18} />
+              </Link>
+              <div className="min-w-0">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-black uppercase tracking-[0.28em] text-purple-700 dark:text-purple-400">
+                    VAPT Report
+                  </span>
+                  <span className="rounded-md border border-slate-200 px-2.5 py-1 text-[10px] font-bold text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                    {formatLabel(record)}
+                  </span>
+                  {record.status === "submitted" && (
+                    <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-semibold text-sky-700 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                      Submitted to SOC
+                    </span>
+                  )}
+                </div>
+                <h1
+                  className="max-w-[70vw] truncate text-2xl font-extrabold tracking-tight sm:max-w-xl sm:text-3xl"
+                  title={record.file_name}
+                >
                   {record.file_name}
                 </h1>
-                {record.status === "submitted" && (
-                  <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-semibold text-sky-700 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
-                    Submitted to SOC
-                  </span>
-                )}
               </div>
             </div>
 
-            <div className="min-w-0 flex-1">
-              <div className="mb-3 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: riskMeta.gauge }} />
-                <span className={`text-xs font-black uppercase tracking-[0.24em] ${riskMeta.text}`}>
-                  Overall severity — {severityMeta(record.severity).label}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                {[
-                  { label: "Real findings", value: totalReal, icon: <Layers size={16} />, color: "bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400" },
-                  { label: "Unique hosts", value: record.unique_hosts ?? 0, icon: <Globe size={16} />, color: "bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-400" },
-                  { label: "Raw entries parsed", value: summary.raw_findings_parsed ?? 0, icon: <Database size={16} />, color: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" },
-                  { label: "Info excluded", value: summary.excluded_info_findings ?? 0, icon: <Info size={16} />, color: "bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400" },
-                ].map(({ label, value, icon, color }) => (
-                  <div key={label} className="rounded-2xl border border-white/70 bg-white/70 p-4 backdrop-blur dark:border-slate-700/60 dark:bg-slate-900/60">
-                    <div className={`mb-2 inline-flex h-9 w-9 items-center justify-center rounded-xl ${color}`}>
-                      {icon}
-                    </div>
-                    <p className="text-2xl font-extrabold leading-none">{value}</p>
-                    <p className="mt-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{label}</p>
-                  </div>
-                ))}
-              </div>
-              <p className="mt-4 flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                <ShieldAlert size={13} />
-                Informational findings are excluded automatically so the report focuses on real vulnerabilities.
-              </p>
-              {!isPlatformView && record.status !== "submitted" && (
-                <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={handleSubmitReport}
-                    disabled={submitStatus === "loading" || hasInvalidDraft || bulkSaving || hasPendingFindings}
-                    className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {submitStatus === "loading" ? "Submitting…" : "Submit to SOC Analyst"}
-                  </button>
-                  {hasPendingFindings && (
-                    <p className="text-sm text-amber-600 dark:text-amber-400">
-                      Finish triaging all findings before submitting.
-                    </p>
-                  )}
-                </div>
+            {/* Page-level actions — grouped on the right, wraps under the
+                title on narrow screens instead of overlapping it. */}
+            <div className="flex flex-shrink-0 flex-wrap items-center gap-2">
+              {record.status === "submitted" && !isPlatformView && (
+                <button
+                  type="button"
+                  onClick={() => setShowRescanModal(true)}
+                  className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-600 shadow-sm transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-purple-700 dark:hover:text-purple-400"
+                >
+                  Schedule verification scan
+                </button>
+              )}
+              {isPlatformView && record.status === "submitted" && (
+                <button
+                  type="button"
+                  onClick={() => setShowRescanModal(true)}
+                  className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-600 shadow-sm transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-purple-700 dark:hover:text-purple-400"
+                >
+                  Schedule next scan
+                </button>
+              )}
+              {isPlatformView && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!confirm("Delete this import permanently? This cannot be undone.")) return;
+                    try {
+                      const token = localStorage.getItem("token");
+                      const deleteFn = isPlatformView ? deleteVaptImportAdmin : deleteVaptImport;
+                      await deleteFn(record.import_id, token);
+                      setToast({ text: "Import deleted", type: "success" });
+                      navigate(libraryPath);
+                    } catch (err) {
+                      setToast({ text: err?.message || "Failed to delete import", type: "error" });
+                    }
+                  }}
+                  className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2 text-sm font-semibold text-red-700 shadow-sm transition hover:bg-red-100 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+                >
+                  Delete import
+                </button>
               )}
             </div>
           </div>
+
+          {/* Stat cards — own full-width row, no longer squeezed inside the
+              title flex container. */}
+          <div>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: riskMeta.gauge }} />
+              <span className={`text-xs font-black uppercase tracking-[0.24em] ${riskMeta.text}`}>
+                Overall severity — {severityMeta(record.severity).label}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              {[
+                { label: "Real findings", value: totalReal, icon: <Layers size={16} />, color: "bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400" },
+                { label: "Unique hosts", value: record.unique_hosts ?? 0, icon: <Globe size={16} />, color: "bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-400" },
+                { label: "Raw entries parsed", value: summary.raw_findings_parsed ?? 0, icon: <Database size={16} />, color: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" },
+                { label: "Info excluded", value: summary.excluded_info_findings ?? 0, icon: <Info size={16} />, color: "bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400" },
+              ].map(({ label, value, icon, color }) => (
+                <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <div className={`mb-2 inline-flex h-9 w-9 items-center justify-center rounded-xl ${color}`}>
+                    {icon}
+                  </div>
+                  <p className="text-2xl font-extrabold leading-none">{value}</p>
+                  <p className="mt-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{label}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Next rescan</p>
+                  <p className="mt-2 text-lg font-extrabold text-slate-900 dark:text-slate-100">
+                    {rescanSchedules.length > 0 ? new Date(rescanSchedules[0].scheduled_at).toLocaleString() : "No rescan scheduled"}
+                  </p>
+                </div>
+                {isPlatformView && record.status === "submitted" && (
+                  <button
+                    type="button"
+                    onClick={() => setShowRescanModal(true)}
+                    className="inline-flex items-center rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700"
+                  >
+                    Schedule next scan
+                  </button>
+                )}
+              </div>
+              <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">
+                {rescanSchedules.length > 0
+                  ? "SOC has scheduled the next verification scan for this report."
+                  : "No next rescan has been scheduled yet."
+                }
+              </p>
+              {rescanSchedules.length > 0 && rescanSchedules[0].note && (
+                <p className="mt-3 rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-300">Note: {rescanSchedules[0].note}</p>
+              )}
+            </div>
+            <p className="mt-4 flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+              <ShieldAlert size={13} />
+              Informational findings are excluded automatically so the report focuses on real vulnerabilities.
+            </p>
+            {!isPlatformView && record.status !== "submitted" && (
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleSubmitReport}
+                  disabled={submitStatus === "loading" || bulkSaving || (!SKIP_REQUIRE_ALL_TRIAGED && (hasInvalidDraft || hasPendingFindings))}
+                  className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {submitStatus === "loading" ? "Submitting…" : "Submit to SOC Analyst"}
+                </button>
+                {!SKIP_REQUIRE_ALL_TRIAGED && hasPendingFindings && (
+                  <p className="text-sm text-amber-600 dark:text-amber-400">
+                    Finish triaging all findings before submitting.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
         </div>
+
+        {/* ── Rescan requests (platform / admin view) ── */}
+        {isPlatformView && (
+          <RescanRequestsPanel
+            schedules={rescanSchedules}
+            loading={rescanLoading}
+            onApprove={handleApproveReschedule}
+            onToggleNewDate={toggleNewDateForm}
+            onUpdateDraft={updateNewDateDraft}
+            onSubmitNewDate={handleRequestNewDate}
+            drafts={newDateDraft}
+            actionLoading={rescanActionLoading}
+            actionError={rescanActionError}
+          />
+        )}
 
         {/* ── Filters ── */}
         <div className="mb-6 grid gap-4 lg:grid-cols-[1fr_320px]">
@@ -781,7 +1091,7 @@ export default function VaptReport() {
                     <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">CVE</th>
                     <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">CVSS Base Score</th>
                     <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Risk</th>
-                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Status</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Status / Notes</th>
                     <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Host</th>
                     <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">MAC Address</th>
                     <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Hostname</th>
@@ -793,7 +1103,7 @@ export default function VaptReport() {
                     <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Solution</th>
                     <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">See Also</th>
                     <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Plugin Output</th>
-                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Comment</th>
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Remark</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -864,6 +1174,13 @@ export default function VaptReport() {
           </div>
         )}
       </div>
+      <RescanModal
+        open={showRescanModal}
+        onClose={() => setShowRescanModal(false)}
+        importId={record?.import_id}
+        adminMode={isPlatformView}
+        onScheduled={(res) => setToast({ text: 'Rescan scheduled', type: 'success' })}
+      />
     </div>
   );
 }

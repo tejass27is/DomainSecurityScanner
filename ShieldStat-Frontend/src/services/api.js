@@ -755,6 +755,13 @@ export function deleteVaptImport(importId, token) {
   });
 }
 
+export function deleteVaptImportAdmin(importId, token) {
+  return request(`/admin/vapt/imports/${encodeURIComponent(importId)}`, {
+    method: "DELETE",
+    token,
+  });
+}
+
 // ─── Platform-wide VAPT view (admins + SOC analysts, read-only) ─────────────
 
 export function getAllVaptImports(token) {
@@ -771,4 +778,38 @@ export function downloadVaptReportAdmin(importId, token) {
 
 export function getVaptOrganizations(token) {
   return request("/admin/vapt/organizations", { token, skipCache: true });
+}
+
+// Admin: rescan requests
+export function getAdminVaptRescanRequests(token) {
+  return request(`/vapt/admin/vapt/rescan-requests`, { token });
+}
+
+export function postAdminApproveReschedule(scheduleId, token) {
+  return request(`/vapt/admin/vapt/rescan-requests/${encodeURIComponent(scheduleId)}/approve`, { method: "POST", token });
+}
+
+export function postAdminRequestNewDate(scheduleId, body, token) {
+  return request(`/vapt/admin/vapt/rescan-requests/${encodeURIComponent(scheduleId)}/request-date`, { method: "POST", body, token });
+}
+
+// VAPT rescan scheduling APIs
+export function postVaptRescanSchedule(importId, body, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule`, { method: "POST", body, token });
+}
+
+export function postVaptRescanScheduleAdmin(importId, body, token) {
+  return request(`/admin/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule`, { method: "POST", body, token });
+}
+
+export function getVaptRescanSchedules(importId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule`, { token });
+}
+
+export function deleteVaptRescanSchedule(importId, scheduleId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}`, { method: "DELETE", token });
+}
+
+export function postVaptRescanNow(importId, body, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-now`, { method: "POST", body, token });
 }

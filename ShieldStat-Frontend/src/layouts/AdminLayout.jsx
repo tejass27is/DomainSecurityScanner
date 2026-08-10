@@ -32,11 +32,12 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
   }
 
   // SOC analysts only have read-only access to the platform VAPT report library.
-  // Guard every admin path except the VAPT library and profile.
+  // Guard every admin path except the VAPT library, rescan requests page, and profile.
   if (
     isSocAnalyst &&
     location.pathname !== "/admin/vapt-reports" &&
     !location.pathname.startsWith("/admin/vapt-reports/") &&
+    location.pathname !== "/admin/rescan-requests" &&
     location.pathname !== "/admin/profile"
   ) {
     return <Navigate to="/admin/vapt-reports" replace />;

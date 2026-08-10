@@ -370,6 +370,28 @@ class VaptImport(Base):
     )
 
 
+class VaptRescanSchedule(Base):
+    __tablename__ = "vapt_rescan_schedules"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    import_id = Column(UUID(as_uuid=True), ForeignKey("vapt_imports.import_id"), nullable=False)
+    org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
+    created_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    hosts = Column(JSON, nullable=True)  # list of host strings to rescan
+    scheduled_at = Column(TIMESTAMP, nullable=False)
+    recurrence = Column(JSON, nullable=True)
+    status = Column(String(20), nullable=False, default="scheduled")
+    notified = Column(Boolean, nullable=False, server_default="false")
+    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_vapt_rescan_org", "org_id"),
+        Index("idx_vapt_rescan_scheduled", "scheduled_at"),
+        Index("idx_vapt_rescan_status", "status"),
+    )
+
+
 class ReportedIssue(Base):
     __tablename__ = "reported_issues"
 

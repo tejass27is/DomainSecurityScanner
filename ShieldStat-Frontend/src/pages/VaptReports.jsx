@@ -45,10 +45,10 @@ function PeriodChip({ active, onClick, children }) {
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-full border px-3 py-1.5 text-xs font-bold transition active:scale-95 ${
+      className={`rounded-2xl border px-4 py-2 text-xs font-semibold transition duration-150 ${
         active
-          ? "border-purple-600 bg-purple-600 text-white shadow-sm"
-          : "border-slate-200 bg-white text-slate-600 hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-purple-700 dark:hover:text-purple-400"
+          ? "border-transparent bg-gradient-to-r from-purple-600 to-sky-600 text-white shadow-lg shadow-sky-500/10"
+          : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:bg-slate-900"
       }`}
     >
       {children}
@@ -178,35 +178,50 @@ export default function VaptReports() {
 
         {/* ── Year / month filter ── */}
         {imports.length > 0 && (
-          <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="mr-1 text-[11px] font-black uppercase tracking-wider text-slate-400">Year</span>
-              <PeriodChip active={yearFilter === "all"} onClick={() => handleYearClick("all")}>All</PeriodChip>
-              {availableYears.map((year) => (
-                <PeriodChip
-                  key={year}
-                  active={yearFilter === year || (yearFilter == null && effectiveYear === year)}
-                  onClick={() => handleYearClick(year)}
-                >
-                  {year}
-                </PeriodChip>
-              ))}
-            </div>
-            {effectiveYear != null && availableMonths.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
-                <span className="mr-1 text-[11px] font-black uppercase tracking-wider text-slate-400">Month</span>
-                <PeriodChip active={monthFilter == null} onClick={() => setMonthFilter(null)}>All</PeriodChip>
-                {availableMonths.map((month) => (
-                  <PeriodChip
-                    key={month}
-                    active={monthFilter === month}
-                    onClick={() => setMonthFilter(month)}
-                  >
-                    {MONTH_LABELS_SHORT[month - 1]}
-                  </PeriodChip>
-                ))}
+          <div className="mb-6 rounded-[28px] border border-slate-200 bg-gradient-to-r from-slate-50 via-white to-slate-50 p-5 shadow-sm shadow-slate-200/50 transition dark:border-slate-800 dark:bg-slate-950/80 dark:shadow-none">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Filter by period</p>
+                <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600 dark:text-slate-400">Pick a year and month to narrow the report library. Active selections are highlighted for easy scanning.</p>
               </div>
-            )}
+              <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
+                <span>Showing:</span>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs uppercase text-slate-700 dark:bg-slate-800 dark:text-slate-200">{yearFilter === "all" ? "All years" : effectiveYear}</span>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs uppercase text-slate-700 dark:bg-slate-800 dark:text-slate-200">{monthFilter == null ? "All months" : MONTH_LABELS_SHORT[monthFilter - 1]}</span>
+              </div>
+            </div>
+            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl bg-white/90 p-4 shadow-sm dark:bg-slate-950/80">
+                <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Year</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <PeriodChip active={yearFilter === "all"} onClick={() => handleYearClick("all")}>All</PeriodChip>
+                  {availableYears.map((year) => (
+                    <PeriodChip
+                      key={year}
+                      active={yearFilter === year || (yearFilter == null && effectiveYear === year)}
+                      onClick={() => handleYearClick(year)}
+                    >
+                      {year}
+                    </PeriodChip>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-2xl bg-white/90 p-4 shadow-sm dark:bg-slate-950/80">
+                <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Month</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <PeriodChip active={monthFilter == null} onClick={() => setMonthFilter(null)}>All</PeriodChip>
+                  {availableMonths.map((month) => (
+                    <PeriodChip
+                      key={month}
+                      active={monthFilter === month}
+                      onClick={() => setMonthFilter(month)}
+                    >
+                      {MONTH_LABELS_SHORT[month - 1]}
+                    </PeriodChip>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 

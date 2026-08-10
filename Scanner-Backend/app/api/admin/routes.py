@@ -41,9 +41,14 @@ from app.api.admin.service import (
 )
 from app.api.vapt.report_generator import generate_vapt_report_pdf
 from app.api.vapt.routes import _to_detail, _to_list_item, _uploader_email_map
+from app.api.vapt import schedule_service
 from app.core.middleware import require_admin, require_admin_or_marketing, require_admin_or_soc_analyst
+from app.core.websocket_manager import ws_manager
 from app.db.base import get_db
 from app.db.models import Organization, User, VaptImport
+from app.utils.email import send_vapt_rescan_schedule_email
+from pydantic import BaseModel
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -251,6 +256,80 @@ def _org_domain_map(db: Session, records: list[VaptImport]) -> dict[str, str | N
     return result
 
 
+class AdminRescanScheduleRequest(BaseModel):
+    scheduled_at: str
+    hosts: list[str] | None = None
+    recurrence: dict | None = None
+    note: str | None = None
+
+
+@router.post("/vapt/imports/{import_id}/rescan-schedule")
+async def schedule_vapt_rescan_admin(
+    import_id: str,
+    body: AdminRescanScheduleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    record = _platform_import_or_404(db, import_id)
+
+    try:
+        scheduled_at = datetime.fromisoformat(body.scheduled_at)
+        if scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="scheduled_at must be an ISO8601 datetime")
+
+    if scheduled_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="scheduled_at must be in the future")
+
+    schedule = await schedule_service.create_schedule(
+        db,
+        record,
+        current_user,
+        scheduled_at,
+        hosts=body.hosts,
+        recurrence=body.recurrence,
+        note=body.note,
+    )
+
+    try:
+        soc_emails = [u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email]
+        requester_email = current_user.email
+        recipients = set(soc_emails) | {requester_email}
+        for email in recipients:
+            try:
+                send_vapt_rescan_schedule_email(
+                    to_email=email,
+                    scheduled_by_email=requester_email,
+                    import_id=str(record.import_id),
+                    file_name=record.file_name,
+                    scheduled_at_iso=scheduled_at.isoformat(),
+                    hosts=body.hosts or [],
+                    schedule_id=str(schedule.id),
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        await ws_manager.send(
+            record.org_id,
+            {
+                "event": "vapt_rescan_scheduled",
+                "org_id": record.org_id,
+                "import_id": str(record.import_id),
+                "schedule_id": str(schedule.id),
+                "scheduled_at": scheduled_at.isoformat(),
+                "hosts": body.hosts or [],
+            },
+        )
+    except Exception:
+        pass
+
+    return {"success": True, "schedule_id": str(schedule.id)}
+
+
 @router.get("/vapt/imports")
 def list_all_vapt_imports(
     db: Session = Depends(get_db),
@@ -280,6 +359,19 @@ def get_all_vapt_import(
     item = _to_detail(record, uploader_email=emails.get(str(record.uploaded_by)) if record.uploaded_by else None)
     item["org_domain"] = _org_domain_map(db, [record]).get(record.org_id)
     return item
+
+
+@router.delete("/vapt/imports/{import_id}")
+def delete_vapt_import_admin(
+    import_id: str,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Delete any VAPT import from the platform."""
+    record = _platform_import_or_404(db, import_id)
+    db.delete(record)
+    db.commit()
+    return {"success": True, "import_id": import_id}
 
 
 @router.get("/vapt/imports/{import_id}/report")

@@ -5,7 +5,7 @@ import {
   AlertCircle, Server, Activity, FileSpreadsheet, FileDigit, ShieldCheck,
   Building2,
 } from "lucide-react";
-import { getAllVaptImports, downloadVaptReportAdmin } from "../services/api";
+import { getAllVaptImports, downloadVaptReportAdmin, getAdminVaptRescanRequests } from "../services/api";
 import {
   severityMeta,
   riskTone,
@@ -43,10 +43,10 @@ function PeriodChip({ active, onClick, children }) {
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-full border px-3 py-1.5 text-xs font-bold transition active:scale-95 ${
+      className={`rounded-2xl border px-4 py-2 text-xs font-semibold transition duration-150 ${
         active
-          ? "border-purple-600 bg-purple-600 text-white shadow-sm"
-          : "border-slate-200 bg-white text-slate-600 hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-purple-700 dark:hover:text-purple-400"
+          ? "border-transparent bg-gradient-to-r from-purple-600 to-sky-600 text-white shadow-lg shadow-sky-500/10"
+          : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:bg-slate-900"
       }`}
     >
       {children}
@@ -59,6 +59,7 @@ export default function SocAnalystVaptReports() {
   const [imports, setImports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [rescanRequests, setRescanRequests] = useState([]);
   const [search, setSearch] = useState("");
   // Client first, then year (current year by default), then optional month.
   const [clientFilter, setClientFilter] = useState("");
@@ -85,6 +86,16 @@ export default function SocAnalystVaptReports() {
 
   useEffect(() => {
     loadImports();
+    // load pending rescan requests for SOC dashboard
+    (async () => {
+      try {
+        const token = localStorage.getItem("token");
+        const data = await getAdminVaptRescanRequests(token);
+        setRescanRequests(Array.isArray(data) ? data : []);
+      } catch (err) {
+        // ignore — admin page will surface errors
+      }
+    })();
   }, [loadImports]);
 
   const handleDownload = useCallback(async (importId) => {
@@ -112,6 +123,11 @@ export default function SocAnalystVaptReports() {
     }
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [imports]);
+
+  const nextRescan = useMemo(() => {
+    if (!rescanRequests || rescanRequests.length === 0) return null;
+    return rescanRequests[0];
+  }, [rescanRequests]);
 
   // Default client = the one with the most recently uploaded report.
   const mostRecentClient = clientOptions.reduce(
@@ -225,6 +241,37 @@ export default function SocAnalystVaptReports() {
             </div>
           </div>
         </div>
+        {nextRescan && (
+          <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Next rescan</p>
+                <p className="mt-3 text-xl font-extrabold text-slate-900 dark:text-slate-100">{nextRescan.file_name || nextRescan.import_id}</p>
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">Scheduled for <span className="font-semibold text-slate-900 dark:text-slate-100">{new Date(nextRescan.scheduled_at).toLocaleString()}</span></p>
+                {nextRescan.note && <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Note: {nextRescan.note}</p>}
+              </div>
+              <button onClick={() => navigate('/admin/rescan-requests')} className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-300 dark:hover:bg-slate-900">
+                View rescan requests
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-400">
+              <FileText size={20} />
+            </div>
+            <div className="flex-1">
+              <p className="text-2xl font-extrabold leading-none">{rescanRequests.length}</p>
+              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Pending rescan requests</p>
+              {rescanRequests.length > 0 && (
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">Latest: {rescanRequests[0].file_name || rescanRequests[0].import_id}</p>
+              )}
+              <button onClick={() => navigate('/admin/rescan-requests')} className="mt-2 rounded-full border px-3 py-1 text-xs font-semibold">Open requests</button>
+            </div>
+          </div>
+        </div>
 
         {/* ── Client → year → month filter ── */}
         {imports.length > 0 && (
@@ -251,33 +298,36 @@ export default function SocAnalystVaptReports() {
             </div>
 
             {clientImports.length > 0 && availableYears.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
-                <span className="mr-1 text-[11px] font-black uppercase tracking-wider text-slate-400">Year</span>
-                {availableYears.map((year) => (
-                  <PeriodChip
-                    key={year}
-                    active={effectiveYear === year}
-                    onClick={() => handleYearClick(year)}
-                  >
-                    {year}
-                  </PeriodChip>
-                ))}
-              </div>
-            )}
-
-            {effectiveYear != null && availableMonths.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
-                <span className="mr-1 text-[11px] font-black uppercase tracking-wider text-slate-400">Month</span>
-                <PeriodChip active={monthFilter == null} onClick={() => setMonthFilter(null)}>All</PeriodChip>
-                {availableMonths.map((month) => (
-                  <PeriodChip
-                    key={month}
-                    active={monthFilter === month}
-                    onClick={() => setMonthFilter(month)}
-                  >
-                    {MONTH_LABELS_SHORT[month - 1]}
-                  </PeriodChip>
-                ))}
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <div className="rounded-2xl bg-slate-50 p-4 shadow-sm dark:bg-slate-950/60">
+                  <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Year</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {availableYears.map((year) => (
+                      <PeriodChip
+                        key={year}
+                        active={effectiveYear === year}
+                        onClick={() => handleYearClick(year)}
+                      >
+                        {year}
+                      </PeriodChip>
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded-2xl bg-slate-50 p-4 shadow-sm dark:bg-slate-950/60">
+                  <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Month</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <PeriodChip active={monthFilter == null} onClick={() => setMonthFilter(null)}>All</PeriodChip>
+                    {availableMonths.map((month) => (
+                      <PeriodChip
+                        key={month}
+                        active={monthFilter === month}
+                        onClick={() => setMonthFilter(month)}
+                      >
+                        {MONTH_LABELS_SHORT[month - 1]}
+                      </PeriodChip>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </div>
