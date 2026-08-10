@@ -48,7 +48,7 @@ export default function AdminPublicUsers() {
   };
 
   const buildCsv = (rows) => {
-    const headers = ["Email", "Domain", "Score", "Grade", "Report summary", "Requested at"];
+    const headers = ["First name", "Last name", "Email", "Domain", "Score", "Grade", "Report summary", "Requested at"];
     const csvRows = [headers.join(",")];
 
     rows.forEach((item) => {
@@ -60,6 +60,8 @@ export default function AdminPublicUsers() {
         .join(", ");
 
       const row = [
+        formatCsvValue(item.first_name),
+        formatCsvValue(item.last_name),
         formatCsvValue(item.email),
         formatCsvValue(item.domain),
         formatCsvValue(payload.score ?? ""),
@@ -139,7 +141,7 @@ export default function AdminPublicUsers() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end w-full max-w-md">
               <div className="w-full">
                 <label htmlFor="public-user-search" className="mb-2 block text-sm font-semibold text-slate-700">
-                  Search by email, domain, or grade
+                  Search by first name, last name, email, domain, or grade
                 </label>
                 <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
                   <span className="material-symbols-outlined text-slate-400">search</span>
@@ -181,6 +183,7 @@ export default function AdminPublicUsers() {
               <table className="min-w-full divide-y divide-slate-200 text-sm">
                 <thead>
                   <tr className="text-left text-slate-600">
+                    <th className="px-3 py-3 font-semibold">Name</th>
                     <th className="px-3 py-3 font-semibold">Email</th>
                     <th className="px-3 py-3 font-semibold">Domain</th>
                     <th className="px-3 py-3 font-semibold">Score</th>
@@ -200,6 +203,7 @@ export default function AdminPublicUsers() {
 
                     return (
                       <tr key={item.id} className="align-top text-slate-700">
+                        <td className="px-3 py-3 font-medium">{`${item.first_name || ""} ${item.last_name || ""}`.trim() || "-"}</td>
                         <td className="px-3 py-3 font-medium">{item.email}</td>
                         <td className="px-3 py-3">{item.domain}</td>
                         <td className="px-3 py-3">{payload.score ?? "-"}</td>

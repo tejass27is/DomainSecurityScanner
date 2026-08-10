@@ -22,6 +22,8 @@ function DomainOverviewPage() {
   const [error, setError] = useState("");
   const [scanStatus, setScanStatus] = useState(null);
   const [polling, setPolling] = useState(false);
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [reportSending, setReportSending] = useState(false);
   const [reportMessage, setReportMessage] = useState("");
@@ -147,14 +149,19 @@ function DomainOverviewPage() {
 
   const handleSendReport = async (event) => {
     event.preventDefault();
-    if (!domain || !email.trim()) return;
+    if (!domain || !firstName.trim() || !lastName.trim() || !email.trim()) {
+      setReportMessage("Please enter first name, last name, and a valid email address.");
+      return;
+    }
 
     setReportSending(true);
     setReportMessage("");
 
     try {
-      const result = await sendPublicScanReport(domain, email.trim());
+      const result = await sendPublicScanReport(domain, firstName.trim(), lastName.trim(), email.trim());
       setReportMessage(result?.message || "Report sent successfully.");
+      setFirstName("");
+      setLastName("");
       setEmail("");
     } catch (err) {
       setReportMessage(err?.message || "Unable to send the report right now.");

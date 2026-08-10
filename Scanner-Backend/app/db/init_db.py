@@ -23,11 +23,13 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS reported_issues ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS reported_issues ADD COLUMN IF NOT EXISTS evidence JSONB NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS reported_issues ADD COLUMN IF NOT EXISTS verifications JSONB NULL"))
-        conn.execute(text("CREATE TABLE IF NOT EXISTS public_report_requests (id SERIAL PRIMARY KEY, email VARCHAR(255) NOT NULL, domain TEXT NOT NULL, report_payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ DEFAULT now())"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS public_report_requests (id SERIAL PRIMARY KEY, first_name VARCHAR(255) NOT NULL DEFAULT '', last_name VARCHAR(255) NOT NULL DEFAULT '', email VARCHAR(255) NOT NULL, domain TEXT NOT NULL, report_payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ DEFAULT now())"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_public_report_requests_email ON public_report_requests (email)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_public_report_requests_domain ON public_report_requests (domain)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_public_report_requests_created ON public_report_requests (created_at)"))
         conn.execute(text("DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='public_report_requests' AND column_name='created_at' AND data_type='timestamp without time zone') THEN ALTER TABLE public_report_requests ALTER COLUMN created_at TYPE timestamptz USING created_at AT TIME ZONE 'UTC'; END IF; END $$;"))
+        conn.execute(text("ALTER TABLE IF EXISTS public_report_requests ADD COLUMN IF NOT EXISTS first_name VARCHAR(255) NOT NULL DEFAULT ''"))
+        conn.execute(text("ALTER TABLE IF EXISTS public_report_requests ADD COLUMN IF NOT EXISTS last_name VARCHAR(255) NOT NULL DEFAULT ''"))
 
         # ── vapt_imports ──────────────────────────────────────────────────────
         # Tables created by an earlier schema shipped a NOT NULL `status` column

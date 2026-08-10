@@ -727,14 +727,25 @@ def get_total_scans(db: Session) -> dict:
     return {"total_scans": total_scans}
 
 
-def create_public_report_request(db: Session, email: str, domain: str, report_payload: dict | None = None) -> PublicReportRequest:
+def create_public_report_request(
+    db: Session,
+    email: str,
+    domain: str,
+    first_name: str,
+    last_name: str,
+    report_payload: dict | None = None,
+) -> PublicReportRequest:
     normalized_email = _normalize_email(email)
     normalized_domain = domain.strip().lower() if domain else ""
+    normalized_first_name = first_name.strip() if first_name else ""
+    normalized_last_name = last_name.strip() if last_name else ""
 
-    if not normalized_email or not normalized_domain:
-        raise HTTPException(status_code=400, detail="Email and domain are required")
+    if not normalized_email or not normalized_domain or not normalized_first_name or not normalized_last_name:
+        raise HTTPException(status_code=400, detail="Email, first name, last name, and domain are required")
 
     record = PublicReportRequest(
+        first_name=normalized_first_name,
+        last_name=normalized_last_name,
         email=normalized_email,
         domain=normalized_domain,
         report_payload=report_payload or {},
@@ -763,6 +774,8 @@ def get_public_report_requests(db: Session, search: str | None = None) -> list[d
             or_(
                 PublicReportRequest.email.ilike(needle),
                 PublicReportRequest.domain.ilike(needle),
+                PublicReportRequest.first_name.ilike(needle),
+                PublicReportRequest.last_name.ilike(needle),
             )
         )
 
@@ -770,6 +783,8 @@ def get_public_report_requests(db: Session, search: str | None = None) -> list[d
     return [
         {
             "id": row.id,
+            "first_name": row.first_name,
+            "last_name": row.last_name,
             "email": row.email,
             "domain": row.domain,
             "report_payload": row.report_payload or {},

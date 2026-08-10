@@ -12,10 +12,8 @@ import {
   saveResolvedFinding,
   getResolvedFindings,
   reportIssue,
+  downloadPublicScanReport,
 } from "../services/api";
-import { jsPDF } from "jspdf";
-import autoTable from "jspdf-autotable";
-import isecurifyLogo from "../assets/isecurify_logo.png";
 
 // ─── Category icon mapping ────────────────────────────────────────────────────
 
@@ -1494,123 +1492,11 @@ function ScanDetails() {
   const handleDownloadReport = async () => {
     if (!data) return;
 
-    const doc = new jsPDF();
-    let currentY = 15;
-
     try {
-      const img = new Image();
-      img.src = isecurifyLogo;
-      await new Promise((resolve) => {
-        if (img.complete) resolve();
-        else { img.onload = resolve; img.onerror = resolve; }
-      });
-      if (img.width > 0) {
-        const targetWidth  = 40;
-        const targetHeight = (img.height / img.width) * targetWidth;
-        doc.addImage(img, "PNG", 14, currentY, targetWidth, targetHeight);
-        currentY += targetHeight + 10;
-      }
-    } catch (e) {
-      console.error("Error loading logo:", e);
+      await downloadPublicScanReport(data.host?.domain || domain);
+    } catch (error) {
+      console.error("Failed to download report", error);
     }
-
-    doc.setFontSize(22);
-    doc.setTextColor(40);
-    doc.text("Security Scan Report", 14, currentY);
-    currentY += 10;
-
-    doc.setFontSize(12);
-    doc.text(`Domain: ${data.host?.domain || domain}`, 14, currentY);
-    doc.text(`Score: ${data.domain_score} / 100 (${grade.label})`, 14, currentY + 7);
-    doc.text(`Date: ${new Date().toLocaleDateString()}`, 14, currentY + 14);
-    currentY += 25;
-
-    const expectedCats = [
-      "Application Security", "Network Security", "TLS Security",
-      "DNS Security", "IP Reputation",
-    ];
-    const summaryData = expectedCats.map((catName) => {
-      const cat = allCategories.find((c) => c.name === catName);
-      if (!cat) return [catName, "0 findings"];
-      if (cat.isIpRep) return [catName, `${cat.findings.length} IPs`];
-      const count = cat.findings.reduce((s, f) => s + f.hosts.length, 0);
-      return [catName, `${count} finding${count !== 1 ? "s" : ""}`];
-    });
-
-    doc.setFontSize(18);
-    doc.text("Executive Summary", 14, currentY);
-    currentY += 5;
-
-    autoTable(doc, {
-      startY: currentY,
-      head: [["Category", "Summary"]],
-      body: summaryData,
-      theme: "grid",
-      headStyles: { fillColor: [79, 70, 229] },
-    });
-    currentY = doc.lastAutoTable.finalY + 15;
-
-    allCategories.forEach((cat) => {
-      if (currentY > doc.internal.pageSize.getHeight() - 30) {
-        doc.addPage();
-        currentY = 20;
-      }
-
-      doc.setFontSize(16);
-      doc.text(cat.name, 14, currentY);
-      currentY += 5;
-
-      if (cat.isIpRep) {
-        if (ipReps.length === 0) {
-          doc.setFontSize(12);
-          doc.text("No IPs found.", 14, currentY);
-          currentY += 10;
-        } else {
-          autoTable(doc, {
-            startY: currentY,
-            head: [["IP", "Abuse Score", "Total Reports", "ISP"]],
-            body: ipReps.map((r) => [
-              r.ip || "—",
-              `${r.abuseConfidenceScore ?? 0}%`,
-              (r.totalReports ?? 0).toString(),
-              r.isp || "N/A",
-            ]),
-            theme: "grid",
-            headStyles: { fillColor: [79, 70, 229] },
-          });
-          currentY = doc.lastAutoTable.finalY + 15;
-        }
-      } else {
-        if (cat.findings.length === 0) {
-          doc.setFontSize(12);
-          doc.text("No findings.", 14, currentY);
-          currentY += 10;
-        } else {
-          const rows = [];
-          cat.findings.forEach((f) => {
-            f.hosts.forEach((host) => {
-              rows.push([
-                f.rule,
-                host.subdomain || "—",
-                host.ip || "—",
-                host.port?.toString() || "—",
-                f.severity.toUpperCase(),
-              ]);
-            });
-          });
-          autoTable(doc, {
-            startY: currentY,
-            head: [["Finding Rule", "Affected Host", "IP", "Port", "Severity"]],
-            body: rows,
-            theme: "grid",
-            headStyles: { fillColor: [79, 70, 229] },
-          });
-          currentY = doc.lastAutoTable.finalY + 15;
-        }
-      }
-    });
-
-    doc.save(`${domain}-scan-report.pdf`);
   };
 
   const showFixToast    = (payload) => setFixToast({ ...payload, id: Date.now() });
