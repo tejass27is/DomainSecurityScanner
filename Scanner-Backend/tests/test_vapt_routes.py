@@ -61,3 +61,38 @@ def test_update_vapt_finding_status_persists_comment_and_status():
         assert record.findings[0]["comment"] == "Fixed in patch"
     finally:
         db.close()
+
+
+def test_vapt_import_submit_sets_status_submitted():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-1",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            total_findings=1,
+            unique_hosts=1,
+            risk_score=50,
+            severity="medium",
+            findings=[
+                {
+                    "id": "finding-1",
+                    "status": "pending",
+                    "comment": "",
+                    "title": "Test finding",
+                }
+            ],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        record.status = "submitted"
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        assert record.status == "submitted"
+    finally:
+        db.close()

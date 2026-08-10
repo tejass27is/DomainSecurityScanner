@@ -10,6 +10,10 @@ class CreateAdminRequest(BaseModel):
     email: EmailStr
 
 
+class CreateSocAnalystRequest(BaseModel):
+    email: EmailStr
+
+
 class PersonalEmailApprovalRequest(BaseModel):
     email: EmailStr
     notes: str | None = None

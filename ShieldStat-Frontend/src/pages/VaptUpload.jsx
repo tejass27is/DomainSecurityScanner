@@ -8,6 +8,7 @@ import {
 import {
   uploadVaptReport,
   downloadVaptReport,
+  getVaptOrganizations,
 } from "../services/api";
 import {
   SEVERITY_META,
@@ -158,6 +159,22 @@ export default function VaptUpload() {
   const [progressMsg, setProgressMsg] = useState("");
   const [preview, setPreview] = useState(null);
   const [uploadError, setUploadError] = useState("");
+  const [orgs, setOrgs] = useState([]);
+  const [selectedOrgId, setSelectedOrgId] = useState("");
+  const [orgsError, setOrgsError] = useState("");
+
+  // Only admins and SOC analysts can import reports; clients are consumers.
+  const [currentUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("user") || "null");
+    } catch {
+      return null;
+    }
+  });
+  const canUpload = Boolean(
+    currentUser && (currentUser.role === "admin" || currentUser.role === "soc_analyst"),
+  );
+  const libraryPath = "/admin/vapt-reports";
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -166,6 +183,15 @@ export default function VaptUpload() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!canUpload) return;
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    getVaptOrganizations(token)
+      .then((data) => setOrgs(Array.isArray(data) ? data : []))
+      .catch(() => setOrgsError("Could not load organizations. Please try again."));
+  }, [canUpload]);
 
   const handleFile = useCallback((file) => {
     setUploadError("");
@@ -181,6 +207,10 @@ export default function VaptUpload() {
 
   const handleUpload = useCallback(async () => {
     if (!selectedFile || isUploading) return;
+    if (!selectedOrgId) {
+      setUploadError("Please select the organization this report belongs to.");
+      return;
+    }
     const token = localStorage.getItem("token");
     if (!token) return;
 
@@ -188,7 +218,7 @@ export default function VaptUpload() {
     setUploadError("");
     setProgressMsg("Parsing, scoring and normalizing findings…");
     try {
-      const result = await uploadVaptReport(selectedFile, token);
+      const result = await uploadVaptReport(selectedFile, token, selectedOrgId);
       setPreview(result);
       setProgressMsg("");
     } catch (err) {
@@ -197,7 +227,7 @@ export default function VaptUpload() {
     } finally {
       setIsUploading(false);
     }
-  }, [selectedFile, isUploading]);
+  }, [selectedFile, isUploading, selectedOrgId]);
 
   const handleDownloadPdf = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -217,6 +247,30 @@ export default function VaptUpload() {
   const riskMeta = riskTone(preview?.risk_score ?? 0);
 
   const previewRows = (preview?.findings || []).slice(0, 12);
+
+  if (!canUpload) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6 text-slate-900 dark:text-slate-100">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400">
+            <FileUp size={26} />
+          </div>
+          <h2 className="text-lg font-bold">Upload access is restricted</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
+            VAPT reports are uploaded and published by your security team (SOC analysts). Your
+            account can view and download the reports published to your organization, and mark
+            findings as solved.
+          </p>
+          <Link
+            to="/vapt/reports"
+            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-purple-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95"
+          >
+            <Eye size={16} /> View published reports
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen text-slate-900 dark:text-slate-100">
@@ -239,7 +293,7 @@ export default function VaptUpload() {
             </p>
           </div>
           <Link
-            to="/vapt/reports"
+            to={libraryPath}
             className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-purple-700 dark:hover:text-purple-400"
           >
             <Database size={16} />
@@ -251,6 +305,32 @@ export default function VaptUpload() {
           <>
             {/* ── Drop zone ── */}
             <DropZone onFile={handleFile} error={fileError} isUploading={isUploading} />
+
+            {/* ── Publish-to organization picker (SOC analysts / admins) ── */}
+            <div className="mx-auto mt-5 max-w-3xl rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <label htmlFor="vapt-target-org" className="mb-2 block text-xs font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
+                Publish to organization
+              </label>
+              <select
+                id="vapt-target-org"
+                value={selectedOrgId}
+                onChange={(e) => setSelectedOrgId(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              >
+                <option value="">Select an organization…</option>
+                {orgs.map((org) => (
+                  <option key={org.org_id} value={org.org_id}>
+                    {org.domain || org.org_id}
+                  </option>
+                ))}
+              </select>
+              {orgsError && (
+                <p className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{orgsError}</p>
+              )}
+              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                The finished report is published to this organization — its users see it read-only.
+              </p>
+            </div>
 
             {selectedFile && !fileError && (
               <div className="mx-auto mt-5 flex max-w-3xl flex-col items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row">
@@ -374,7 +454,7 @@ export default function VaptUpload() {
                   <Download size={15} /> Download PDF
                 </button>
                 <Link
-                  to={`/vapt/reports/${preview.import_id}`}
+                  to={`/admin/vapt-reports/${preview.import_id}`}
                   className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95"
                 >
                   <Eye size={15} /> View Full Report
@@ -506,7 +586,7 @@ export default function VaptUpload() {
               {(preview.findings?.length || 0) > 12 && (
                 <div className="border-t border-slate-100 px-6 py-3 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
                   Showing the first 12 findings —{" "}
-                  <Link to={`/vapt/reports/${preview.import_id}`} className="font-bold text-purple-600 hover:underline dark:text-purple-400">
+                  <Link to={`/admin/vapt-reports/${preview.import_id}`} className="font-bold text-purple-600 hover:underline dark:text-purple-400">
                     view all {preview.findings.length} in the full report →
                   </Link>
                 </div>

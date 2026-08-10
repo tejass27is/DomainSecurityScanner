@@ -34,25 +34,40 @@ logger = logging.getLogger(__name__)
 redis_client = Redis(
     host=os.getenv("REDIS_HOST", "redis"),
     port=int(os.getenv("REDIS_PORT", "6379")),
+    password=os.getenv("REDIS_PASSWORD") or None,
     decode_responses=True,
 )
 
 JWT_SECRET = os.getenv('JWT_SECRET')
-OTP_EXPIRY_MINUTES = 10
-LOGIN_OTP_EXPIRY_SECONDS = 120
-LOGIN_OTP_RESEND_WINDOW_SECONDS = 1200
-LOGIN_OTP_RESEND_LIMIT = 5
-LOGIN_OTP_COOLDOWN_SECONDS = 600
-VERIFICATION_EXPIRY_HOURS = 48
-FAILED_LOGIN_ATTEMPTS = 5
+def _env_int(name: str, default: int) -> int:
+    """Read an integer from the environment, falling back to the default."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+OTP_EXPIRY_MINUTES = _env_int("OTP_EXPIRY_MINUTES", 10)
+LOGIN_OTP_EXPIRY_SECONDS = _env_int("LOGIN_OTP_EXPIRY_SECONDS", 120)
+LOGIN_OTP_RESEND_WINDOW_SECONDS = _env_int("LOGIN_OTP_RESEND_WINDOW_SECONDS", 1200)
+LOGIN_OTP_RESEND_LIMIT = _env_int("LOGIN_OTP_RESEND_LIMIT", 5)
+LOGIN_OTP_COOLDOWN_SECONDS = _env_int("LOGIN_OTP_COOLDOWN_SECONDS", 600)
+VERIFICATION_EXPIRY_HOURS = _env_int("VERIFICATION_EXPIRY_HOURS", 48)
+FAILED_LOGIN_ATTEMPTS = _env_int("FAILED_LOGIN_ATTEMPTS", 5)
+FAILED_LOGIN_WINDOW_MINUTES = _env_int("FAILED_LOGIN_WINDOW_MINUTES", 10)
+LOCKOUT_DURATION_MINUTES = _env_int("LOCKOUT_DURATION_MINUTES", 30)
 ADMIN_LOGIN_OTP_BYPASS = os.getenv("ADMIN_LOGIN_OTP_BYPASS", "false").strip().lower() in {"1", "true", "yes", "on"}
 DOMAIN_EMAIL_VALIDATION_ENABLED = os.getenv("DOMAIN_EMAIL_VALIDATION_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-FAILED_LOGIN_WINDOW_MINUTES = 10
-LOCKOUT_DURATION_MINUTES = 30
+# Comma-separated list of public email providers blocked from self-signup
+# (e.g. "gmail.com,yahoo.com,hotmail.com").
 PUBLIC_EMAIL_DOMAINS = {
-    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com",
-    "mail.com", "aol.com", "icloud.com", "protonmail.com", "zoho.com",
-    "gmx.com", "yandex.com", "inbox.com", "me.com", "msn.com",
+    d.strip().lower()
+    for d in os.getenv(
+        "PUBLIC_EMAIL_DOMAINS",
+        "gmail.com,yahoo.com,hotmail.com,outlook.com,live.com,mail.com,aol.com,"
+        "icloud.com,protonmail.com,zoho.com,gmx.com,yandex.com,inbox.com,me.com,msn.com",
+    ).split(",")
+    if d.strip()
 }
 
 ADMIN_TOTP_REQUIRED: bool = os.getenv("ADMIN_TOTP_REQUIRED", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -425,6 +440,7 @@ def login_user(email: str, password: str, db: Session):
                 "user_id": user.user_id,
                 "org_id": user.org_id,
                 "email": user.email,
+                "must_change_password": bool(user.must_change_password),
             },
         }
 
@@ -493,6 +509,7 @@ def verify_user_totp(email: str, password: str, totp_code: str, db: Session) -> 
             "user_id": user.user_id,
             "org_id": user.org_id,
             "email": user.email,
+            "must_change_password": bool(user.must_change_password),
         },
     }
 
@@ -594,6 +611,7 @@ def verify_otp_and_reset_password(email: str, otp: str, new_password: str, db: S
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
     user.password = hashPassword(new_password)
+    user.must_change_password = False
     db.delete(otp_record)
 
     db.commit()
@@ -611,6 +629,7 @@ def reset_password_with_old_password(user_id: str, old_password: str, new_passwo
         raise HTTPException(status_code=401, detail="Old password is incorrect")
 
     user.password = hashPassword(new_password)
+    user.must_change_password = False
     db.commit()
 
     return {"message": "Password updated successfully"}

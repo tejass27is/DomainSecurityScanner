@@ -1,6 +1,59 @@
 import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, getScanSummaries, getTotalScans, createAdmin, deleteAdmin } from "../services/api";
+import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, getScanSummaries, getTotalScans, createAdmin, deleteAdmin, createSocAnalyst, deleteSocAnalyst } from "../services/api";
+
+const ROLE_LABEL = {
+  owner: "Owner",
+  member: "Member",
+  admin: "Admin",
+  marketing: "Marketing",
+  soc_analyst: "SOC Analyst",
+};
+
+function roleLabel(role) {
+  return ROLE_LABEL[role] || role;
+}
+
+const SECURITY_VECTOR_STYLES = {
+  "Application Security": {
+    bg: "bg-sky-50 dark:bg-sky-950/20",
+    border: "border-sky-100 dark:border-sky-900/30",
+    title: "text-sky-700 dark:text-sky-200",
+    value: "text-sky-900 dark:text-sky-100",
+    detail: "text-slate-600 dark:text-slate-400",
+  },
+  "Network Security": {
+    bg: "bg-emerald-50 dark:bg-emerald-950/20",
+    border: "border-emerald-100 dark:border-emerald-900/30",
+    title: "text-emerald-700 dark:text-emerald-200",
+    value: "text-emerald-900 dark:text-emerald-100",
+    detail: "text-slate-600 dark:text-slate-400",
+  },
+  "TLS Security": {
+    bg: "bg-violet-50 dark:bg-violet-950/20",
+    border: "border-violet-100 dark:border-violet-900/30",
+    title: "text-violet-700 dark:text-violet-200",
+    value: "text-violet-900 dark:text-violet-100",
+    detail: "text-slate-600 dark:text-slate-400",
+  },
+  "DNS Security": {
+    bg: "bg-amber-50 dark:bg-amber-950/20",
+    border: "border-amber-100 dark:border-amber-900/30",
+    title: "text-amber-700 dark:text-amber-200",
+    value: "text-amber-900 dark:text-amber-100",
+    detail: "text-slate-600 dark:text-slate-400",
+  },
+};
+
+function getVectorStyles(name) {
+  return SECURITY_VECTOR_STYLES[name] || {
+    bg: "bg-white dark:bg-slate-900/80",
+    border: "border-slate-200 dark:border-slate-700",
+    title: "text-slate-700 dark:text-slate-200",
+    value: "text-slate-900 dark:text-white",
+    detail: "text-slate-500 dark:text-slate-400",
+  };
+}
 
 function AdminUsers() {
   const [activeTab, setActiveTab] = useState("users");
@@ -18,10 +71,13 @@ function AdminUsers() {
   const [blocking, setBlocking] = useState(false);
   const [newAdminEmail, setNewAdminEmail] = useState("");
   const [creatingAdmin, setCreatingAdmin] = useState(false);
+  const [newSocAnalystEmail, setNewSocAnalystEmail] = useState("");
+  const [creatingSocAnalyst, setCreatingSocAnalyst] = useState(false);
   const [notification, setNotification] = useState({ text: "", type: "" });
   const [userSearch, setUserSearch] = useState("");
   const [blacklistSearch, setBlacklistSearch] = useState("");
   const [deletingAdminEmail, setDeletingAdminEmail] = useState(null);
+  const [deletingSocAnalystEmail, setDeletingSocAnalystEmail] = useState(null);
 
   const showNotification = (text, type = "success") => {
     setNotification({ text, type });
@@ -136,6 +192,43 @@ function AdminUsers() {
     }
   };
 
+  const handleCreateSocAnalyst = async (e) => {
+    e.preventDefault();
+    if (!newSocAnalystEmail.trim()) return;
+    setCreatingSocAnalyst(true);
+    try {
+      await createSocAnalyst(newSocAnalystEmail.trim(), localStorage.getItem("token"));
+      showNotification("SOC analyst created — login details were sent by email.");
+      setNewSocAnalystEmail("");
+      fetchUsers();
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setCreatingSocAnalyst(false);
+    }
+  };
+
+  const handleDeleteSocAnalyst = async (email) => {
+    if (!email) return;
+
+    const confirmed = window.confirm(
+      `Delete SOC analyst ${email}? This action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingSocAnalystEmail(email);
+    try {
+      const token = localStorage.getItem("token");
+      await deleteSocAnalyst(email, token);
+      showNotification("SOC analyst deleted successfully");
+      fetchUsers();
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setDeletingSocAnalystEmail(null);
+    }
+  };
+
   const toggleOrg = (orgId) => {
     setExpandedOrgs(prev => ({
       ...prev,
@@ -171,6 +264,7 @@ function AdminUsers() {
 
   const organizations = usersData?.organizations || [];
   const adminUsers = usersData?.admin || [];
+  const socAnalystUsers = usersData?.soc_analysts || [];
   const totalOrgUsers = organizations.reduce((acc, org) => {
     const users = Array.isArray(org.users) ? org.users : [];
     return (
@@ -181,6 +275,7 @@ function AdminUsers() {
 
   const total_users = totalOrgUsers;
   const total_admins = adminUsers.length;
+  const total_soc_analysts = socAnalystUsers.length;
 
   const allUsers = [
     ...organizations.flatMap((org) => {
@@ -198,6 +293,13 @@ function AdminUsers() {
       org_domain: null,
       is_platform_admin: true,
       role: u?.role || "admin",
+    })),
+    ...socAnalystUsers.map((u) => ({
+      ...u,
+      org_id: null,
+      org_domain: null,
+      is_platform_admin: false,
+      role: u?.role || "soc_analyst",
     })),
   ].filter((u) => u?.email);
 
@@ -268,7 +370,7 @@ function AdminUsers() {
         </div>
 
         {/* Stats Row */}
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-4">
           <div className="bg-surface-container-lowest p-4 rounded-xl shadow-sm group flex items-center justify-between">
             <div className="flex items-center gap-4">
               <div className="w-10 h-10 rounded-lg bg-primary-container/30 flex items-center justify-center text-primary">
@@ -293,6 +395,20 @@ function AdminUsers() {
                   Admins
                 </h3>
                 <p className="text-2xl font-black text-on-surface leading-none">{total_admins}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-surface-container-lowest p-4 rounded-xl shadow-sm group flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-lg bg-tertiary-container/30 flex items-center justify-center text-tertiary">
+                <span className="material-symbols-outlined text-lg">security</span>
+              </div>
+              <div>
+                <h3 className="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest mb-0.5">
+                  SOC Analysts
+                </h3>
+                <p className="text-2xl font-black text-on-surface leading-none">{total_soc_analysts}</p>
               </div>
             </div>
           </div>
@@ -387,6 +503,89 @@ function AdminUsers() {
                         className="w-full py-3 bg-primary text-white font-bold text-sm rounded-xl shadow-lg shadow-primary/20 hover:opacity-90 transition-all disabled:opacity-50"
                       >
                         {creatingAdmin ? "Creating…" : "Create admin and send email"}
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* SOC Analysts card */}
+            <div className="grid grid-cols-1 gap-8 xl:grid-cols-12">
+              <div className="col-span-1 xl:col-span-12 bg-surface-container-lowest rounded-3xl overflow-hidden shadow-sm border border-surface-container">
+                <div className="px-4 py-5 border-b border-surface-container flex flex-col gap-4 sm:px-6 sm:py-6 lg:px-8 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h3 className="text-xl font-bold text-on-surface">SOC Analysts</h3>
+                    <p className="text-xs text-on-surface-variant mt-1">
+                      Read-only analysts with access to the platform-wide VAPT report library.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-6 p-4 sm:p-6 lg:grid-cols-2 lg:gap-10 lg:p-8">
+                  <div>
+                    <h4 className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-3">
+                      Current SOC analysts
+                    </h4>
+                    {socAnalystUsers.length === 0 ? (
+                      <p className="text-sm text-on-surface-variant">No SOC analyst accounts yet.</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {socAnalystUsers.map((u) => (
+                          <li
+                            key={u.user_id}
+                            className="flex items-center justify-between gap-3 rounded-xl bg-surface-container-low px-4 py-3"
+                          >
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                              <span className="text-sm font-semibold text-on-surface truncate">{u.email}</span>
+                              {u.is_blacklisted ? (
+                                <span className="shrink-0 px-2 py-0.5 bg-red-100 text-red-700 text-[10px] font-bold rounded-full uppercase">
+                                  Blocked
+                                </span>
+                              ) : (
+                                <span className="shrink-0 px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full uppercase">
+                                  Active
+                                </span>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSocAnalyst(u.email)}
+                              disabled={deletingSocAnalystEmail === u.email}
+                              className="shrink-0 rounded-lg bg-red-600 text-white px-3 py-1.5 text-xs font-semibold hover:bg-red-700 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
+                              {deletingSocAnalystEmail === u.email ? "Deleting..." : "Delete"}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div className="rounded-2xl bg-surface-container-low p-6 border border-surface-container">
+                    <h4 className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-4">
+                      Invite new SOC analyst
+                    </h4>
+                    <form onSubmit={handleCreateSocAnalyst} className="space-y-4">
+                      <div>
+                        <label htmlFor="new-soc-analyst-email" className="sr-only">
+                          SOC analyst email
+                        </label>
+                        <input
+                          id="new-soc-analyst-email"
+                          type="email"
+                          value={newSocAnalystEmail}
+                          onChange={(e) => setNewSocAnalystEmail(e.target.value)}
+                          placeholder="soc@company.com"
+                          required
+                          autoComplete="off"
+                          className="w-full bg-surface-container-lowest border border-surface-container rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={creatingSocAnalyst}
+                        className="w-full py-3 bg-primary text-white font-bold text-sm rounded-xl shadow-lg shadow-primary/20 hover:opacity-90 transition-all disabled:opacity-50"
+                      >
+                        {creatingSocAnalyst ? "Creating…" : "Create SOC analyst and send email"}
                       </button>
                     </form>
                   </div>
@@ -532,26 +731,21 @@ function AdminUsers() {
                                                     </button>
                                                     {isDomainExpanded && sum && (
                                                         <div className="p-4 bg-slate-50 border-t border-surface-container grid grid-cols-2 lg:grid-cols-4 gap-4">
-                                                            <div className="p-4 bg-white rounded-xl border border-surface-container shadow-sm flex flex-col items-center justify-center text-center">
-                                                                <span className="text-[10px] text-on-surface-variant font-bold uppercase tracking-widest mb-1">Application Security</span>
-                                                                <div className="text-lg font-black text-slate-800">{Object.keys(sum.app_security || {}).length}</div>
-                                                                <span className="text-[10px] text-slate-500 font-semibold mt-1">Issues</span>
-                                                            </div>
-                                                            <div className="p-4 bg-white rounded-xl border border-surface-container shadow-sm flex flex-col items-center justify-center text-center">
-                                                                <span className="text-[10px] text-on-surface-variant font-bold uppercase tracking-widest mb-1">Network Security</span>
-                                                                <div className="text-lg font-black text-slate-800">{Object.keys(sum.network_security || {}).length}</div>
-                                                                <span className="text-[10px] text-slate-500 font-semibold mt-1">Issues</span>
-                                                            </div>
-                                                            <div className="p-4 bg-white rounded-xl border border-surface-container shadow-sm flex flex-col items-center justify-center text-center">
-                                                                <span className="text-[10px] text-on-surface-variant font-bold uppercase tracking-widest mb-1">TLS Security</span>
-                                                                <div className="text-lg font-black text-slate-800">{Object.keys(sum.tls_security || {}).length}</div>
-                                                                <span className="text-[10px] text-slate-500 font-semibold mt-1">Issues</span>
-                                                            </div>
-                                                            <div className="p-4 bg-white rounded-xl border border-surface-container shadow-sm flex flex-col items-center justify-center text-center">
-                                                                <span className="text-[10px] text-on-surface-variant font-bold uppercase tracking-widest mb-1">DNS Security</span>
-                                                                <div className="text-lg font-black text-slate-800">{Object.keys(sum.dns_security || {}).length}</div>
-                                                                <span className="text-[10px] text-slate-500 font-semibold mt-1">Issues</span>
-                                                            </div>
+                                                                {[
+                                                                ["Application Security", Object.keys(sum.app_security || {}).length],
+                                                                ["Network Security", Object.keys(sum.network_security || {}).length],
+                                                                ["TLS Security", Object.keys(sum.tls_security || {}).length],
+                                                                ["DNS Security", Object.keys(sum.dns_security || {}).length],
+                                                            ].map(([title, value]) => {
+                                                                const styles = getVectorStyles(title);
+                                                                return (
+                                                                    <div key={title} className={`p-4 rounded-xl border shadow-sm flex flex-col items-center justify-center text-center ${styles.bg} ${styles.border}`}>
+                                                                        <span className={`text-[10px] ${styles.title} font-bold uppercase tracking-widest mb-1`}>{title}</span>
+                                                                        <div className={`text-lg font-black ${styles.value}`}>{value}</div>
+                                                                        <span className={`text-[10px] font-semibold mt-1 ${styles.detail}`}>Issues</span>
+                                                                    </div>
+                                                                );
+                                                            })}
                                                         </div>
                                                     )}
                                                 </div>
@@ -612,7 +806,7 @@ function AdminUsers() {
                                         </span>
                                       ) : (
                                         <span className="shrink-0 px-2 py-0.5 bg-surface-container text-on-surface-variant text-[10px] font-bold rounded-full uppercase">
-                                          {u.role}
+                                          {roleLabel(u.role)}
                                         </span>
                                       )}
                                     </div>

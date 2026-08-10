@@ -49,6 +49,11 @@ class User(Base):
     # False → setup not yet confirmed (secret might exist but not verified)
     # True  → user successfully verified a code at least once; TOTP is active
 
+    # TRUE when the account was provisioned with a temporary password (e.g. an
+    # admin/SOC analyst created by a platform admin). The user must replace it
+    # on first login before they can use the platform.
+    must_change_password = Column(Boolean, nullable=False, server_default="false")
+
 class Invitation(Base):
     __tablename__ = "invitations"
 
@@ -340,6 +345,9 @@ class VaptImport(Base):
 
     import_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
+    # The platform user who uploaded this report (NULL for imports created by
+    # earlier schema versions that predate this column).
+    uploaded_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     file_name = Column(String(255), nullable=False)
     file_format = Column(String(20), nullable=False, default="xml")  # xml | csv | xlsx
     source_tool = Column(String(50), nullable=False, default="generic")  # nessus | openvas | qualys | generic
@@ -359,6 +367,28 @@ class VaptImport(Base):
 
     __table_args__ = (
         Index("idx_vapt_org_created", "org_id", "created_at"),
+    )
+
+
+class VaptRescanSchedule(Base):
+    __tablename__ = "vapt_rescan_schedules"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    import_id = Column(UUID(as_uuid=True), ForeignKey("vapt_imports.import_id"), nullable=False)
+    org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
+    created_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    hosts = Column(JSON, nullable=True)  # list of host strings to rescan
+    scheduled_at = Column(TIMESTAMP, nullable=False)
+    recurrence = Column(JSON, nullable=True)
+    status = Column(String(20), nullable=False, default="scheduled")
+    notified = Column(Boolean, nullable=False, server_default="false")
+    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_vapt_rescan_org", "org_id"),
+        Index("idx_vapt_rescan_scheduled", "scheduled_at"),
+        Index("idx_vapt_rescan_status", "status"),
     )
 
 

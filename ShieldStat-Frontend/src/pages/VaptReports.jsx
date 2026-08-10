@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
-  Database, FileUp, FileText, Globe, Layers, Download, Trash2, Eye,
+  Database, FileText, Globe, Layers, Download, Eye,
   AlertCircle, Server, Activity, FileSpreadsheet, FileDigit,
 } from "lucide-react";
 import {
   getVaptImports,
   downloadVaptReport,
-  deleteVaptImport,
 } from "../services/api";
 import {
   severityMeta,
@@ -16,6 +15,13 @@ import {
   FORMAT_BADGE,
   formatLabel,
 } from "../utils/vaptReport";
+import {
+  CURRENT_YEAR,
+  MONTH_LABELS_SHORT,
+  getAvailableYears,
+  getAvailableMonths,
+  filterImportsByPeriod,
+} from "../utils/vaptReportFilter";
 
 const FORMAT_ICON = {
   xml: FileText,
@@ -34,13 +40,31 @@ function RiskPill({ score }) {
   );
 }
 
+function PeriodChip({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-2xl border px-4 py-2 text-xs font-semibold transition duration-150 ${
+        active
+          ? "border-transparent bg-gradient-to-r from-purple-600 to-sky-600 text-white shadow-lg shadow-sky-500/10"
+          : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:bg-slate-900"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function VaptReports() {
   const navigate = useNavigate();
   const [imports, setImports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [deletingId, setDeletingId] = useState(null);
-  const [confirmDelete, setConfirmDelete] = useState(null);
+  // Default = current year when the org has reports in it, else its newest year;
+  // month narrows within the selected year. "all" shows every year.
+  const [yearFilter, setYearFilter] = useState(null);
+  const [monthFilter, setMonthFilter] = useState(null);
 
   const loadImports = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -74,23 +98,24 @@ export default function VaptReports() {
     }
   }, []);
 
-  const handleDelete = useCallback(async (importId) => {
-    const token = localStorage.getItem("token");
-    if (!token) return;
-    setDeletingId(importId);
-    try {
-      await deleteVaptImport(importId, token);
-      setImports((prev) => prev.filter((i) => i.import_id !== importId));
-      setConfirmDelete(null);
-    } catch (err) {
-      setError(err?.message || "Failed to delete the import.");
-    } finally {
-      setDeletingId(null);
-    }
-  }, []);
+  const availableYears = getAvailableYears(imports);
+  const defaultYear = availableYears.includes(CURRENT_YEAR)
+    ? CURRENT_YEAR
+    : availableYears[0] ?? null;
+  const effectiveYear = yearFilter === "all" ? null : (yearFilter ?? defaultYear);
+  const availableMonths = getAvailableMonths(imports, effectiveYear);
+  const filteredImports = filterImportsByPeriod(imports, {
+    year: effectiveYear,
+    month: monthFilter,
+  });
 
-  const totalFindings = imports.reduce((acc, i) => acc + (i.total_findings || 0), 0);
-  const worstScore = imports.reduce((acc, i) => Math.max(acc, i.risk_score || 0), 0);
+  const handleYearClick = (year) => {
+    setYearFilter(year);
+    setMonthFilter(null);
+  };
+
+  const totalFindings = filteredImports.reduce((acc, i) => acc + (i.total_findings || 0), 0);
+  const worstScore = filteredImports.reduce((acc, i) => Math.max(acc, i.risk_score || 0), 0);
 
   return (
     <div className="min-h-screen text-slate-900 dark:text-slate-100">
@@ -106,16 +131,10 @@ export default function VaptReports() {
             </div>
             <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Report Library</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-              Every scanner export your organization has imported, normalized and scored.
+              VAPT assessments published to your organization by your security team. View, solve
+              findings and download PDFs.
             </p>
           </div>
-          <Link
-            to="/vapt"
-            className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95"
-          >
-            <FileUp size={16} />
-            Import Report
-          </Link>
         </div>
 
         {/* ── Summary strip ── */}
@@ -125,7 +144,7 @@ export default function VaptReports() {
               <Database size={20} />
             </div>
             <div>
-              <p className="text-2xl font-extrabold leading-none">{imports.length}</p>
+              <p className="text-2xl font-extrabold leading-none">{filteredImports.length}</p>
               <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Imports</p>
             </div>
           </div>
@@ -157,6 +176,55 @@ export default function VaptReports() {
           </div>
         )}
 
+        {/* ── Year / month filter ── */}
+        {imports.length > 0 && (
+          <div className="mb-6 rounded-[28px] border border-slate-200 bg-gradient-to-r from-slate-50 via-white to-slate-50 p-5 shadow-sm shadow-slate-200/50 transition dark:border-slate-800 dark:bg-slate-950/80 dark:shadow-none">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Filter by period</p>
+                <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600 dark:text-slate-400">Pick a year and month to narrow the report library. Active selections are highlighted for easy scanning.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
+                <span>Showing:</span>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs uppercase text-slate-700 dark:bg-slate-800 dark:text-slate-200">{yearFilter === "all" ? "All years" : effectiveYear}</span>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs uppercase text-slate-700 dark:bg-slate-800 dark:text-slate-200">{monthFilter == null ? "All months" : MONTH_LABELS_SHORT[monthFilter - 1]}</span>
+              </div>
+            </div>
+            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl bg-white/90 p-4 shadow-sm dark:bg-slate-950/80">
+                <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Year</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <PeriodChip active={yearFilter === "all"} onClick={() => handleYearClick("all")}>All</PeriodChip>
+                  {availableYears.map((year) => (
+                    <PeriodChip
+                      key={year}
+                      active={yearFilter === year || (yearFilter == null && effectiveYear === year)}
+                      onClick={() => handleYearClick(year)}
+                    >
+                      {year}
+                    </PeriodChip>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-2xl bg-white/90 p-4 shadow-sm dark:bg-slate-950/80">
+                <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Month</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <PeriodChip active={monthFilter == null} onClick={() => setMonthFilter(null)}>All</PeriodChip>
+                  {availableMonths.map((month) => (
+                    <PeriodChip
+                      key={month}
+                      active={monthFilter === month}
+                      onClick={() => setMonthFilter(month)}
+                    >
+                      {MONTH_LABELS_SHORT[month - 1]}
+                    </PeriodChip>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex min-h-[40vh] items-center justify-center">
             <div className="flex flex-col items-center gap-3">
@@ -171,16 +239,24 @@ export default function VaptReports() {
             <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-slate-100 text-slate-400 dark:bg-slate-800">
               <Database size={28} />
             </div>
-            <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200">No imports yet</h2>
+            <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200">No published reports yet</h2>
             <p className="mt-2 max-w-sm text-sm leading-6 text-slate-500 dark:text-slate-400">
-              Upload a Nessus, CSV or Excel export to generate your first normalized VAPT report.
+              Reports uploaded by your security team will appear here with risk scores, findings
+              and downloadable PDFs.
             </p>
-            <Link
-              to="/vapt"
-              className="mt-6 inline-flex items-center gap-2 rounded-xl bg-purple-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95"
-            >
-              <FileUp size={16} /> Import your first report
-            </Link>
+          </div>
+        ) : filteredImports.length === 0 ? (
+          <div className="flex min-h-[50vh] flex-col items-center justify-center rounded-3xl border border-dashed border-slate-300 bg-white/60 p-12 text-center dark:border-slate-700 dark:bg-slate-900/40">
+            <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-slate-100 text-slate-400 dark:bg-slate-800">
+              <Database size={28} />
+            </div>
+            <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200">
+              No reports in {effectiveYear}
+              {monthFilter != null ? ` / ${MONTH_LABELS_SHORT[monthFilter - 1]}` : ""}
+            </h2>
+            <p className="mt-2 max-w-sm text-sm leading-6 text-slate-500 dark:text-slate-400">
+              Pick a different year or month above to see those reports.
+            </p>
           </div>
         ) : (
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -196,7 +272,7 @@ export default function VaptReports() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {imports.map((item) => {
+                  {filteredImports.map((item) => {
                     const sev = severityMeta(item.severity);
                     const FormatIcon = FORMAT_ICON[item.file_format] || FileText;
                     return (
@@ -253,19 +329,6 @@ export default function VaptReports() {
                             >
                               <Download size={15} />
                             </button>
-                            <button
-                              type="button"
-                              title="Delete"
-                              disabled={deletingId === item.import_id}
-                              onClick={() => setConfirmDelete(item)}
-                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-red-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:border-slate-700 dark:text-slate-400 dark:hover:border-red-900 dark:hover:bg-red-950/30 dark:hover:text-red-400"
-                            >
-                              {deletingId === item.import_id ? (
-                                <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-red-500" />
-                              ) : (
-                                <Trash2 size={15} />
-                              )}
-                            </button>
                           </div>
                         </td>
                       </tr>
@@ -278,42 +341,6 @@ export default function VaptReports() {
         )}
       </div>
 
-      {/* ── Delete confirmation modal ── */}
-      {confirmDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm" onClick={() => setConfirmDelete(null)}>
-          <div
-            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400">
-              <Trash2 size={22} />
-            </div>
-            <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">Delete this import?</h3>
-            <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
-              <b className="text-slate-700 dark:text-slate-300">{confirmDelete.file_name}</b> and its{" "}
-              {confirmDelete.total_findings} normalized finding{confirmDelete.total_findings === 1 ? "" : "s"} will be
-              permanently removed. The generated PDF will no longer be available.
-            </p>
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(null)}
-                className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDelete(confirmDelete.import_id)}
-                disabled={deletingId === confirmDelete.import_id}
-                className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-bold text-white shadow-md shadow-red-600/20 transition hover:bg-red-700 active:scale-95 disabled:opacity-50"
-              >
-                {deletingId === confirmDelete.import_id ? "Deleting…" : "Delete import"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
