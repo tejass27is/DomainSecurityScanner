@@ -43,6 +43,10 @@ SEVERITY_COLORS = {
     "LOW": colors.HexColor("#16a34a"),
     "INFO": colors.HexColor("#4b5563"),
 }
+# Only these severities are shown in the PDF report. LOW (and INFO) findings
+# are filtered out of every section: severity breakdown, executive summary
+# counts, and the per-category detail tables.
+REPORT_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM")
 ROW_BACKGROUNDS = [colors.whitesmoke, colors.white]
 
 LEFT = RIGHT = BOTTOM = 14 * mm
@@ -258,6 +262,25 @@ def _draw_page_header(canvas_obj, doc, logo: "_Logo | None", domain: str):
     canvas_obj.restoreState()
 
 
+def _filter_report_findings(categories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep only findings whose severity is in REPORT_SEVERITIES (CRITICAL,
+    HIGH, MEDIUM). LOW/INFO findings are dropped from the PDF entirely, so the
+    breakdown counts, summary counts and detail tables stay consistent."""
+    filtered = []
+    for cat in categories:
+        if cat.get("isIpRep"):
+            filtered.append(cat)
+            continue
+        kept = [
+            f for f in (cat.get("findings") or [])
+            if str(f.get("severity") or "INFO").upper() in REPORT_SEVERITIES
+        ]
+        new_cat = dict(cat)
+        new_cat["findings"] = kept
+        filtered.append(new_cat)
+    return filtered
+
+
 def _count_severity_totals(categories: List[Dict[str, Any]]) -> tuple[Dict[str, int], int]:
     totals = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
     total_findings = 0
@@ -332,6 +355,9 @@ def generate_domain_scan_report_pdf_bytes(
 
     generated_at = generated_at or datetime.now()
     generated_at_label = generated_at.strftime("%d %b %Y")  # date only — no time
+    # Drop LOW/INFO findings up front so every section of the report (severity
+    # breakdown, exec-summary counts, detail tables) shows the same data.
+    categories = _filter_report_findings(categories)
     totals, total_findings = _count_severity_totals(categories)
 
     # ── Cover page ──
@@ -390,13 +416,12 @@ def generate_domain_scan_report_pdf_bytes(
     ))
     story.append(Spacer(1, 8 * mm))
 
-    # Severity breakdown — `totals` was already being computed but never
-    # actually shown anywhere in the original report; a reader had no way
-    # to tell "57 findings" apart from "57 LOW findings" without opening
-    # every table. Surface it explicitly, colour-coded like the detail rows.
+    # Severity breakdown — colour-coded like the detail rows, and limited to
+    # the severities shown in this report (CRITICAL/HIGH/MEDIUM). LOW and
+    # INFO findings are filtered out entirely.
     story.append(Paragraph("Severity Breakdown", section_style))
     story.append(Spacer(1, 2 * mm))
-    severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+    severity_order = list(REPORT_SEVERITIES)
     breakdown_rows = [["Severity", "Count"]] + [[s.title(), str(totals.get(s, 0))] for s in severity_order]
     story.append(_style_table(
         breakdown_rows, [content_w * 0.32, content_w * 0.68],

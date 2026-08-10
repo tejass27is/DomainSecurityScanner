@@ -33,6 +33,9 @@ categories = [
         "findings": [
             {"rule": "Missing X-Content-Type-Options", "severity": "MEDIUM",
              "hosts": [{"subdomain": "www.example.com", "ip": "1.2.3.4", "port": 443}]},
+            # This LOW finding must be filtered OUT of the PDF entirely.
+            {"rule": "Low value test finding", "severity": "LOW",
+             "hosts": [{"subdomain": "low.example.com", "ip": "1.2.3.5", "port": 80}]},
         ],
     },
     {
@@ -130,5 +133,13 @@ big_drawings = [
 ]
 assert not big_drawings, f"FAIL: duplicate logo still on overview page ({len(big_drawings)} drawings)"
 print("OK: no duplicate logo on the Report Overview page")
+
+# 8. LOW-severity findings are excluded from the report — only CRITICAL,
+# HIGH and MEDIUM appear in the severity breakdown and detail tables.
+low_hits = re.findall(r"\bLOW\b|\bLow\b", all_text)
+assert not low_hits, f"FAIL: LOW still appears in the report: {low_hits}"
+assert "Low value test finding" not in all_text, "FAIL: LOW finding still listed in a detail table"
+assert "Total findings" in all_text, "FAIL: total findings row missing"
+print("OK: only CRITICAL/HIGH/MEDIUM severities shown (LOW excluded)")
 
 print("RESULT: ALL PASS")
