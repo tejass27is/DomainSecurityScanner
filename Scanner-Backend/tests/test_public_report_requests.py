@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
@@ -6,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.db.base import Base, engine
 from app.api.admin.service import create_public_report_request
-from app.api.public.routes import _build_report_data, _clear_existing_public_scan_results
-from app.db.models import ScanSummary
+from app.api.public.routes import _build_report_data, _clear_existing_public_scan_results, public_scan_status, redis_client
+from app.db.models import ActiveScan, ScanSummary
 
 
 def test_create_public_report_request_persists_summary():
@@ -85,6 +86,7 @@ def test_build_report_data_uses_stored_domain_score_to_match_the_scan():
     assert ip_reps == []
 
 
+<<<<<<< HEAD
 def test_build_report_data_falls_back_to_weighted_score_when_domain_score_missing():
     row = ScanSummary(
         domain="example.com",
@@ -103,3 +105,27 @@ def test_build_report_data_falls_back_to_weighted_score_when_domain_score_missin
     assert score == 75
     assert grade_label == "Fair"
     assert categories[0]["name"] == "Application Security"
+=======
+def test_public_scan_status_returns_stage_payload_from_redis(monkeypatch):
+    Base.metadata.drop_all(bind=engine, checkfirst=True)
+    Base.metadata.create_all(bind=engine)
+
+    db = Session(bind=engine)
+    try:
+        db.add(ActiveScan(domain="example.com", org_id="00000000-0000-0000-0000-000000000010", status="running"))
+        db.commit()
+
+        async def fake_redis_get(_key):
+            return b'{"progress": 35, "status": "running", "stage": "dns", "message": "Checking DNS records"}'
+
+        monkeypatch.setattr(redis_client.redis, "get", fake_redis_get)
+
+        response = asyncio.run(public_scan_status(domain="example.com", db=db))
+
+        assert response["progress"] == 35
+        assert response["status"] == "running"
+        assert response["stage"] == "dns"
+        assert response["message"] == "Checking DNS records"
+    finally:
+        db.close()
+>>>>>>> 5f888c2 (feat: implement scan progress tracking and status updates in public scan endpoints, enhance UI for progress display)

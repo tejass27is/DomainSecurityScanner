@@ -2,9 +2,11 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"scanner-platform/internal/models"
@@ -32,6 +34,56 @@ func getCancelSignal(job *models.ScanJob) bool {
 	return val == "1"
 }
 
+func normalizePublicStage(stage string) string {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "discovery", "subdomain_discovery":
+		return "dns"
+	case "filter", "subdomain_filter", "collection", "subdomain_collection", "data_collection":
+		return "headers"
+	case "completed", "scan_complete", "scan_completed":
+		return "report_generation"
+	case "", "initializing":
+		return "queued"
+	default:
+		return strings.ToLower(strings.TrimSpace(stage))
+	}
+}
+
+func syncPublicScanProgress(job *models.ScanJob, stage string, progress int, message string, status string) {
+	if job == nil || job.ScanID == "" || job.Target == "" {
+		return
+	}
+
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	defer client.Close()
+
+	payload := map[string]any{
+		"progress": progress,
+		"status": status,
+		"stage": normalizePublicStage(stage),
+		"message": message,
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Failed to marshal progress payload: %v", err)
+		return
+	}
+
+	key := fmt.Sprintf("scan_progress:%s:%s", job.ScanID, strings.ToLower(job.Target))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := client.Set(ctx, key, string(data), time.Hour).Err(); err != nil {
+		log.Printf("Failed to update public progress for %s: %v", key, err)
+	}
+}
+
 func updateScanProgress(job *models.ScanJob, stage string, progress int, message string, status string, lastError string, checkpoint map[string]any) {
 	job.CurrentStage = stage
 	job.Progress = progress
@@ -44,6 +96,7 @@ func updateScanProgress(job *models.ScanJob, stage string, progress int, message
 	if checkpoint != nil {
 		job.Checkpoint = checkpoint
 	}
+	syncPublicScanProgress(job, stage, progress, message, status)
 }
 
 func emitScanEvent(job *models.ScanJob, event string, status string, progress int, message string, evidence []map[string]any) error {
@@ -129,6 +182,7 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 	job.CurrentStage = "initializing"
 	job.Progress = 5
 	job.Message = "Starting scan pipeline"
+	syncPublicScanProgress(job, "initializing", 5, "Starting scan pipeline", "running")
 
 	log.Printf("Scan started: %s (%s)", job.ScanID, job.Target)
 

@@ -1,3 +1,4 @@
+import json
 import urllib.parse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -118,6 +119,95 @@ def _clear_existing_public_scan_results(db: Session, domain: str) -> None:
         db.rollback()
 
 
+def _normalize_stage_name(stage: str | None) -> str:
+    normalized = (stage or "").strip().lower()
+    if not normalized:
+        return "queued"
+
+    mapping = {
+        "discovery": "dns",
+        "subdomain_discovery": "dns",
+        "filter": "headers",
+        "subdomain_filter": "headers",
+        "collection": "headers",
+        "subdomain_collection": "headers",
+        "data_collection": "headers",
+        "completed": "report_generation",
+        "scan_complete": "report_generation",
+        "scan_completed": "report_generation",
+    }
+    return mapping.get(normalized, normalized)
+
+
+def _build_progress_payload(progress: int | None, status: str | None = None, stage: str | None = None, message: str | None = None) -> str:
+    payload = {
+        "progress": max(0, min(100, int(progress))) if progress is not None else 0,
+        "status": (status or "running").strip() or "running",
+        "stage": _normalize_stage_name(stage),
+        "message": message or "Scan in progress",
+    }
+    return json.dumps(payload)
+
+
+def _parse_progress_payload(raw_value) -> dict | None:
+    if raw_value is None:
+        return None
+
+    if isinstance(raw_value, bytes):
+        raw_value = raw_value.decode("utf-8", errors="ignore")
+
+    if not isinstance(raw_value, str):
+        return None
+
+    raw_value = raw_value.strip()
+    if not raw_value:
+        return None
+
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        try:
+            numeric = int(raw_value)
+            return {"progress": numeric, "status": "running", "stage": "queued", "message": "Scan in progress"}
+        except (TypeError, ValueError):
+            return None
+
+    if isinstance(parsed, dict):
+        progress = parsed.get("progress")
+        try:
+            progress_int = int(progress)
+        except (TypeError, ValueError):
+            progress_int = 0
+
+        return {
+            "progress": max(0, min(100, progress_int)),
+            "status": str(parsed.get("status") or "running").strip() or "running",
+            "stage": _normalize_stage_name(parsed.get("stage")),
+            "message": str(parsed.get("message") or "Scan in progress").strip() or "Scan in progress",
+        }
+
+    return None
+
+
+def _build_fallback_public_status(active_scan: ActiveScan | None, stage: str | None = None) -> dict:
+    base_progress = 10
+    current_stage = _normalize_stage_name(stage)
+    if current_stage == "dns":
+        base_progress = 28
+    elif current_stage == "headers":
+        base_progress = 68
+    elif current_stage == "report_generation":
+        base_progress = 92
+
+    status_value = (getattr(active_scan, "status", None) or "pending").strip() or "pending"
+    return {
+        "status": status_value,
+        "progress": base_progress,
+        "stage": current_stage,
+        "message": "Scan in progress",
+    }
+
+
 def _normalize_findings(payload: dict | None):
     if not payload:
         return []
@@ -218,8 +308,9 @@ async def public_scan(
 
     progress_key = f"scan_progress:{PUBLIC_ORG_ID}:{domain.strip().lower()}"
     try:
-        result = await redis_client.redis.set(progress_key, "0", ex=3600)
-        print(f"[PUBLIC SCAN] ✓ Set progress key {progress_key} = 0 (result={result})")
+        payload = _build_progress_payload(10, status="queued", stage="queued", message="Scan queued")
+        result = await redis_client.redis.set(progress_key, payload, ex=3600)
+        print(f"[PUBLIC SCAN] ✓ Set progress key {progress_key} = {payload} (result={result})")
     except Exception as e:
         print(f"[PUBLIC SCAN] ✗ Failed to set progress: {e}")
         print(f"[PUBLIC SCAN] Redis host: {redis_client.host}")
@@ -266,43 +357,40 @@ async def public_scan_status(
             "message": "Scan complete",
         }
 
+    progress_key = f"scan_progress:{PUBLIC_ORG_ID}:{normalized_domain}"
+    try:
+        cached = await redis_client.redis.get(progress_key)
+        print(f"[SCAN STATUS] key={progress_key}, raw_cached={repr(cached)}, type={type(cached).__name__}")
+        status_payload = _parse_progress_payload(cached)
+        if status_payload:
+            print(f"[SCAN STATUS] ✓ Parsed progress payload: {status_payload}")
+            return {
+                "status": status_payload.get("status", "pending"),
+                "progress": status_payload.get("progress", 0),
+                "stage": status_payload.get("stage", "queued"),
+                "message": status_payload.get("message", "Scan in progress"),
+            }
+        print(f"[SCAN STATUS] cached is None or invalid; continuing to fallback")
+    except Exception as e:
+        print(f"[SCAN STATUS] ✗ Redis get failed for {progress_key}: {e}")
+        print(f"[SCAN STATUS] Redis host: {redis_client.host}")
+
     try:
         active_scan = db.query(ActiveScan).filter(
             ActiveScan.domain == normalized_domain,
             ActiveScan.org_id == PUBLIC_ORG_ID,
         ).first()
-    except Exception:
+    except Exception as e:
+        print(f"[SCAN STATUS] ✗ ActiveScan query failed: {e}")
         active_scan = None
 
     if active_scan:
-        progress = 10
-        progress_key = f"scan_progress:{PUBLIC_ORG_ID}:{normalized_domain}"
-        try:
-            cached = await redis_client.redis.get(progress_key)
-            print(f"[SCAN STATUS] key={progress_key}, raw_cached={repr(cached)}, type={type(cached).__name__}")
-            if cached is not None:
-                try:
-                    if isinstance(cached, bytes):
-                        cached_str = cached.decode('utf-8', errors='ignore')
-                    else:
-                        cached_str = str(cached)
-                    progress_int = int(cached_str)
-                    progress = min(max(progress_int, 0), 100)
-                    print(f"[SCAN STATUS] ✓ Parsed progress: {cached_str} -> {progress}")
-                except (ValueError, TypeError) as ve:
-                    print(f"[SCAN STATUS] ✗ Failed to parse '{cached}': {ve}")
-                    progress = 10
-            else:
-                print(f"[SCAN STATUS] cached is None, using default progress=10")
-        except Exception as e:
-            print(f"[SCAN STATUS] ✗ Redis get failed for {progress_key}: {e}")
-            print(f"[SCAN STATUS] Redis host: {redis_client.host}")
-            progress = 10
-
+        status_payload = _build_fallback_public_status(active_scan)
         return {
-            "status": active_scan.status or "pending",
-            "progress": progress,
-            "message": "Scan in progress",
+            "status": status_payload.get("status", active_scan.status or "pending"),
+            "progress": status_payload.get("progress", 10),
+            "stage": status_payload.get("stage", "queued"),
+            "message": status_payload.get("message", "Scan in progress"),
         }
 
     return {

@@ -11,12 +11,36 @@ import (
 	"strings"
 )
 
-func getBackendBaseURL() string {
-	backendURL := os.Getenv("BACKEND_URL")
-	if backendURL == "" {
-		backendURL = "http://scanner-backend:8000"
+func getBackendURLs() []string {
+	configured := strings.TrimSpace(os.Getenv("BACKEND_URL"))
+	candidates := []string{}
+	if configured != "" {
+		candidates = append(candidates, configured)
 	}
-	return backendURL
+	candidates = append(candidates,
+		"http://scanner-backend:8000",
+		"http://localhost:8000",
+		"http://127.0.0.1:8000",
+	)
+
+	seen := make(map[string]bool, len(candidates))
+	unique := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		unique = append(unique, trimmed)
+	}
+	return unique
+}
+
+func getBackendBaseURL() string {
+	for _, candidate := range getBackendURLs() {
+		return candidate
+	}
+	return "http://localhost:8000"
 }
 
 func postJSON(url string, payload any) (string, error) {
@@ -52,19 +76,32 @@ func postJSON(url string, payload any) (string, error) {
 }
 
 func send_webhook_notification(payload models.ScanNotification) (string, error) {
-	url := fmt.Sprintf("%s/webhooks/scan/notification", getBackendBaseURL())
-	return postJSON(url, payload)
+	var lastErr error
+	for _, baseURL := range getBackendURLs() {
+		url := fmt.Sprintf("%s/webhooks/scan/notification", baseURL)
+		_, err := postJSON(url, payload)
+		if err == nil {
+			return "ok", nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
 }
 
 func send_scan_result_webhook(payload models.ScanResult) (string, error) {
-	url := fmt.Sprintf("%s/webhooks/scan/result", getBackendBaseURL())
-	return postJSON(url, payload)
+	var lastErr error
+	for _, baseURL := range getBackendURLs() {
+		url := fmt.Sprintf("%s/webhooks/scan/result", baseURL)
+		_, err := postJSON(url, payload)
+		if err == nil {
+			return "ok", nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
 }
 
 func send_fix_result_webhook(result models.FixScanResult) (string, error) {
-
-	url := fmt.Sprintf("%s/fix/result", getBackendBaseURL())
-
 	payload := map[string]interface{}{
 		"scan_id":  result.ScanID,
 		"domain":   result.Domain,
@@ -72,5 +109,14 @@ func send_fix_result_webhook(result models.FixScanResult) (string, error) {
 		"result":   result.Data,
 	}
 
-	return postJSON(url, payload)
+	var lastErr error
+	for _, baseURL := range getBackendURLs() {
+		url := fmt.Sprintf("%s/fix/result", baseURL)
+		_, err := postJSON(url, payload)
+		if err == nil {
+			return "ok", nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
 }

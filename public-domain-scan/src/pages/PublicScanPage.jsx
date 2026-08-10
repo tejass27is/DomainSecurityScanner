@@ -51,7 +51,17 @@ export default function PublicScanPage() {
   const categoryRows = overview?.categories ? Object.entries(overview.categories) : [];
   const totalCategoryCount = overview?.summary?.category_count ?? 0;
   const topIp = overview?.preview?.detailed_preview?.top_findings?.[0]?.ip || 'Redacted';
+  const progressPercent = scanStatus?.progress != null ? Math.min(Math.max(Number(scanStatus.progress) || 0, 8), 100) : 8;
   const showScanningState = Boolean(!overview && (loading || polling || scanStatus));
+  const currentStage = scanStatus?.stage || 'queued';
+  const progressLabelMap = {
+    queued: 'Queued',
+    dns: 'DNS checks',
+    headers: 'Headers & exposure checks',
+    report_generation: 'Report generation',
+  };
+  const stageDisplay = progressLabelMap[currentStage] || 'Preparing scan';
+  const stageMessage = scanStatus?.message || 'The public overview updates continuously while the scan runs.';
 
   const severityCounts = publicFindings.reduce((counts, finding) => {
     const severity = String(finding?.severity || '').toLowerCase();
@@ -111,7 +121,8 @@ export default function PublicScanPage() {
       try {
         const status = await getPublicScanStatus(domain);
         setScanStatus(status);
-        if (status.status === 'complete') {
+
+        if (status?.status === 'complete' || Number(status?.progress) === 100) {
           const data = await getPublicDomainOverview(domain);
           setOverview(data);
           setPolling(false);
@@ -254,10 +265,25 @@ export default function PublicScanPage() {
               <p className="status-copy">
                 We are checking DNS, headers, and security signals for {domain || inputDomain}. This will feel quick and responsive.
               </p>
+              <div className="scan-progress-card">
+                <div className="scan-progress-meta">
+                  <div>
+                    <p className="progress-label">Live scan progress</p>
+                    <p className="progress-stage">{stageDisplay}</p>
+                  </div>
+                  <span className="progress-value">{Math.round(progressPercent)}%</span>
+                </div>
+                <div className="scan-progress-track" aria-hidden="true">
+                  <div className="scan-progress-fill" style={{ width: `${progressPercent}%` }} />
+                </div>
+                <p className="scan-progress-copy">
+                  {progressPercent >= 100 ? 'Finalizing the report preview…' : stageMessage}
+                </p>
+              </div>
               <div className="scanning-steps">
-                <span className="step-pill">Analyzing DNS</span>
-                <span className="step-pill">Reviewing security posture</span>
-                <span className="step-pill">Preparing the public summary</span>
+                <span className={`step-pill ${currentStage === 'dns' ? 'active' : ''}`}>Analyzing DNS</span>
+                <span className={`step-pill ${currentStage === 'headers' ? 'active' : ''}`}>Reviewing security posture</span>
+                <span className={`step-pill ${currentStage === 'report_generation' ? 'active' : ''}`}>Preparing the public summary</span>
               </div>
             </div>
           )}

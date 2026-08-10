@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from app.api.webhooks.schemas import ScannerWebhookRequest, ScannerWebhookResultRequest
 from typing import Any
@@ -16,6 +18,36 @@ redis_client = RedisClient()
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/webhooks')
+
+
+def _normalize_scan_stage(stage: str | None) -> str:
+    normalized = (stage or "").strip().lower()
+    if not normalized:
+        return "queued"
+
+    mapping = {
+        "discovery": "dns",
+        "subdomain_discovery": "dns",
+        "filter": "headers",
+        "subdomain_filter": "headers",
+        "collection": "headers",
+        "subdomain_collection": "headers",
+        "data_collection": "headers",
+        "completed": "report_generation",
+        "scan_complete": "report_generation",
+        "scan_completed": "report_generation",
+    }
+    return mapping.get(normalized, normalized)
+
+
+def _build_progress_payload(progress: int | None, status: str | None = None, stage: str | None = None, message: str | None = None) -> str:
+    payload = {
+        "progress": max(0, min(100, int(progress))) if progress is not None else 0,
+        "status": (status or "running").strip() or "running",
+        "stage": _normalize_scan_stage(stage),
+        "message": message or "Scan in progress",
+    }
+    return json.dumps(payload)
 
 
 @router.post("/fix-result")
@@ -167,11 +199,17 @@ async def scanner_webhook(request: ScannerWebhookRequest):
         "checkpoint": request.checkpoint,
     }
 
-    if request.target and request.progress is not None:
+    if request.target and (request.progress is not None or request.stage is not None or request.message is not None):
         progress_key = f"scan_progress:{request.scan_id}:{request.target.strip().lower()}"
         try:
-            await redis_client.redis.set(progress_key, str(int(request.progress)), ex=3600)
-            print(f"✓ Updated progress: key={progress_key}, value={request.progress}")
+            payload = _build_progress_payload(
+                request.progress,
+                status=request.status,
+                stage=request.stage,
+                message=request.message,
+            )
+            await redis_client.redis.set(progress_key, payload, ex=3600)
+            print(f"✓ Updated progress: key={progress_key}, value={payload}")
         except Exception as e:
             print(f"✗ Failed to set progress: {progress_key}: {e}")
 
