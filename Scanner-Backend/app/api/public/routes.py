@@ -147,6 +147,8 @@ class PublicScanRequest(BaseModel):
 class PublicReportEmailRequest(BaseModel):
     domain: str
     email: str
+    first_name: str
+    last_name: str
 
 
 def ensure_public_org_exists(db: Session) -> None:
@@ -312,11 +314,17 @@ def send_report_email(
 ):
     domain = request.domain.strip().lower()
     email = request.email.strip().lower()
+    first_name = request.first_name.strip()
+    last_name = request.last_name.strip()
 
     if not domain:
         raise HTTPException(status_code=400, detail="Domain is required")
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
+    if not first_name:
+        raise HTTPException(status_code=400, detail="First name is required")
+    if not last_name:
+        raise HTTPException(status_code=400, detail="Last name is required")
 
     row = db.query(ScanSummary).filter(ScanSummary.domain == domain).first()
     if not row:
@@ -341,7 +349,14 @@ def send_report_email(
     )
 
     send_scan_report_email(email, domain, pdf_bytes)
-    create_public_report_request(db, email=email, domain=domain, report_payload=report_payload)
+    create_public_report_request(
+        db,
+        email=email,
+        domain=domain,
+        first_name=first_name,
+        last_name=last_name,
+        report_payload=report_payload,
+    )
     return {"message": "Report sent successfully", "email": email, "domain": domain}
 
 

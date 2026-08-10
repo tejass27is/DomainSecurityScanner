@@ -84,6 +84,8 @@ class PublicReportRequest(Base):
     __tablename__ = "public_report_requests"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    first_name = Column(String(255), nullable=False, default="")
+    last_name = Column(String(255), nullable=False, default="")
     email = Column(String(255), nullable=False, index=True)
     domain = Column(Text, nullable=False, index=True)
     report_payload = Column(JSON, nullable=False, default={})

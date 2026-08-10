@@ -20,6 +20,8 @@ def test_create_public_report_request_persists_summary():
             db,
             email="user@example.com",
             domain="example.com",
+            first_name="Jane",
+            last_name="Doe",
             report_payload={
                 "score": 88,
                 "grade_label": "Good",
@@ -27,6 +29,8 @@ def test_create_public_report_request_persists_summary():
             },
         )
 
+        assert record.first_name == "Jane"
+        assert record.last_name == "Doe"
         assert record.email == "user@example.com"
         assert record.domain == "example.com"
         assert record.report_payload["score"] == 88

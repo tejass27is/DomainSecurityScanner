@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Database, FileText, Globe, Layers, Download, Eye, FileUp,
   AlertCircle, Server, Activity, FileSpreadsheet, FileDigit, ShieldCheck,
   Building2,
 } from "lucide-react";
-import { getAllVaptImports, downloadVaptReportAdmin, getAdminVaptRescanRequests } from "../services/api";
+import { getAllVaptImports, downloadVaptReportAdmin, getAdminVaptRescanRequests, getWebSocketUrl } from "../services/api";
 import {
   severityMeta,
   riskTone,
@@ -66,6 +66,8 @@ export default function SocAnalystVaptReports() {
   const [yearFilter, setYearFilter] = useState(null);
   const [monthFilter, setMonthFilter] = useState(null);
 
+  const wsRef = useRef(null);
+
   const loadImports = useCallback(async () => {
     const token = localStorage.getItem("token");
     if (!token) {
@@ -84,19 +86,48 @@ export default function SocAnalystVaptReports() {
     }
   }, [navigate]);
 
+  const refreshRescanRequests = useCallback(async () => {
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) return;
+      const data = await getAdminVaptRescanRequests(token);
+      setRescanRequests(Array.isArray(data) ? data : []);
+    } catch (err) {
+      // ignore; keep current rescan state until next successful refresh
+    }
+  }, []);
+
   useEffect(() => {
     loadImports();
-    // load pending rescan requests for SOC dashboard
-    (async () => {
-      try {
-        const token = localStorage.getItem("token");
-        const data = await getAdminVaptRescanRequests(token);
-        setRescanRequests(Array.isArray(data) ? data : []);
-      } catch (err) {
-        // ignore — admin page will surface errors
-      }
-    })();
-  }, [loadImports]);
+    refreshRescanRequests();
+
+    if (typeof window !== "undefined" && window.WebSocket) {
+      const ws = new WebSocket(getWebSocketUrl("platform"));
+      wsRef.current = ws;
+
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested"].includes(message.event)) {
+            refreshRescanRequests();
+          }
+        } catch (err) {
+          // ignore invalid websocket payload
+        }
+      };
+
+      ws.onclose = () => {
+        wsRef.current = null;
+      };
+      ws.onerror = () => {
+        // ignore socket errors; fallback remains API refresh
+      };
+
+      return () => {
+        wsRef.current?.close();
+      };
+    }
+  }, [loadImports, refreshRescanRequests]);
 
   const handleDownload = useCallback(async (importId) => {
     const token = localStorage.getItem("token");

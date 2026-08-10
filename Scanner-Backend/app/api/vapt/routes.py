@@ -408,7 +408,16 @@ async def schedule_vapt_rescan(
 
     # notify frontend via WS
     try:
-        await ws_manager.send(record.org_id, {"event": "vapt_rescan_scheduled", "org_id": record.org_id, "import_id": str(record.import_id), "schedule_id": str(schedule.id), "scheduled_at": scheduled_at.isoformat(), "hosts": hosts})
+        payload = {
+            "event": "vapt_rescan_scheduled",
+            "org_id": record.org_id,
+            "import_id": str(record.import_id),
+            "schedule_id": str(schedule.id),
+            "scheduled_at": scheduled_at.isoformat(),
+            "hosts": hosts,
+        }
+        await ws_manager.send(record.org_id, payload)
+        await ws_manager.send("platform", payload)
     except Exception:
         pass
 
@@ -465,7 +474,7 @@ class AdminRescheduleRequest(BaseModel):
 
 
 @router.post("/admin/vapt/rescan-requests/{schedule_id}/approve")
-def admin_approve_reschedule(
+async def admin_approve_reschedule(
     schedule_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_soc_analyst),
@@ -485,7 +494,8 @@ def admin_approve_reschedule(
         pass
 
     try:
-        ws_manager.send(schedule.org_id, {"event": "vapt_rescan_approved", "import_id": str(schedule.import_id), "schedule_id": str(schedule.id)})
+        await ws_manager.send(schedule.org_id, {"event": "vapt_rescan_approved", "import_id": str(schedule.import_id), "schedule_id": str(schedule.id)})
+        await ws_manager.send("platform", {"event": "vapt_rescan_approved", "import_id": str(schedule.import_id), "schedule_id": str(schedule.id), "org_id": schedule.org_id})
     except Exception:
         pass
 
@@ -498,7 +508,7 @@ def admin_approve_reschedule(
 
 
 @router.post("/admin/vapt/rescan-requests/{schedule_id}/request-date")
-def admin_request_new_date(
+async def admin_request_new_date(
     schedule_id: str,
     body: AdminRescheduleRequest,
     db: Session = Depends(get_db),
@@ -528,7 +538,8 @@ def admin_request_new_date(
         pass
 
     try:
-        ws_manager.send(schedule.org_id, {"event": "vapt_rescan_date_requested", "import_id": str(schedule.import_id), "schedule_id": str(schedule.id), "proposed_at": proposed.isoformat()})
+        await ws_manager.send(schedule.org_id, {"event": "vapt_rescan_date_requested", "import_id": str(schedule.import_id), "schedule_id": str(schedule.id), "proposed_at": proposed.isoformat()})
+        await ws_manager.send("platform", {"event": "vapt_rescan_date_requested", "import_id": str(schedule.import_id), "schedule_id": str(schedule.id), "org_id": schedule.org_id, "proposed_at": proposed.isoformat()})
     except Exception:
         pass
 

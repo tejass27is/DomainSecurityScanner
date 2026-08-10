@@ -250,10 +250,10 @@ export function getPublicDomainOverview(domain) {
   return request(`/public/domain-overview?domain=${encodeURIComponent(domain)}`);
 }
 
-export function sendPublicScanReport(domain, email) {
+export function sendPublicScanReport(domain, firstName, lastName, email) {
   return request("/public/send-report", {
     method: "POST",
-    body: { domain, email },
+    body: { domain, first_name: firstName, last_name: lastName, email },
   });
 }
 

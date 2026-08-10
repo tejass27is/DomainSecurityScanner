@@ -23,6 +23,8 @@ export default function PublicScanPage() {
   const [overview, setOverview] = useState(null);
   const [scanStatus, setScanStatus] = useState(null);
   const [polling, setPolling] = useState(false);
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [reportSending, setReportSending] = useState(false);
   const [reportMessage, setReportMessage] = useState('');
@@ -71,8 +73,8 @@ export default function PublicScanPage() {
 
   const handleSendReport = async (event) => {
     event.preventDefault();
-    if (!domain || !email.trim()) {
-      setReportMessage('Please enter a valid email address.');
+    if (!domain || !firstName.trim() || !lastName.trim() || !email.trim()) {
+      setReportMessage('Please enter first name, last name, and a valid email address.');
       return;
     }
 
@@ -80,11 +82,13 @@ export default function PublicScanPage() {
     setReportMessage('');
 
     try {
-      const result = await sendPublicScanReport(domain, email.trim());
+      const result = await sendPublicScanReport(domain, firstName.trim(), lastName.trim(), email.trim());
       const msg = result?.message || 'Report sent successfully.';
       setReportMessage(msg);
       setToastMessage(msg);
       setToastVisible(true);
+      setFirstName('');
+      setLastName('');
       setEmail('');
       setReportSent(true);
     } catch (err) {
@@ -272,12 +276,28 @@ export default function PublicScanPage() {
                   </div>
                   <div className="pp-heading-copy">
                     <h2 className="section-title">Your domain scan result is ready!</h2>
-                    <p className="section-sub">To get the detailed report, enter your email below and we'll send it to you.</p>
+                    <p className="section-sub">To get the detailed report, enter your name and email below and we'll send it to you.</p>
                     <p className="pp-privacy">We respect your privacy. No spam, ever.</p>
                   </div>
                 </div>
 
                 <form onSubmit={handleSendReport} className="public-preview-inline-form centered">
+                  <input
+                    type="text"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    placeholder="First name"
+                    className="pp-input"
+                    disabled={reportSending || reportSent}
+                  />
+                  <input
+                    type="text"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    placeholder="Last name"
+                    className="pp-input"
+                    disabled={reportSending || reportSent}
+                  />
                   <input
                     ref={emailInputRef}
                     type="email"
@@ -287,7 +307,7 @@ export default function PublicScanPage() {
                     className="pp-input"
                     disabled={reportSending || reportSent}
                   />
-                  <button type="submit" disabled={reportSending || !email.trim() || reportSent} className="pp-send-btn gradient">
+                  <button type="submit" disabled={reportSending || !firstName.trim() || !lastName.trim() || !email.trim() || reportSent} className="pp-send-btn gradient">
                     {reportSending ? 'Sending...' : reportSent ? 'Sent' : 'Send Report'}
                   </button>
                 </form>

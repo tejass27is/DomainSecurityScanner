@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Download, Search, ChevronDown, AlertCircle,
   Globe, Layers, Server, Info, FileText, Lock, Activity, ExternalLink,
-  ShieldAlert, Bug, FilterX, Database, Wrench,
+  ShieldAlert, Bug, FilterX, Database, Wrench, Clock, CheckCircle2,
 } from "lucide-react";
 import { getVaptImport, getVaptImportAdmin, downloadVaptReport, downloadVaptReportAdmin, updateVaptFindingStatus, submitVaptImport, postVaptRescanSchedule, postVaptRescanScheduleAdmin, deleteVaptImport, deleteVaptImportAdmin } from "../services/api";
 import { getVaptRescanSchedules, postAdminApproveReschedule, postAdminRequestNewDate } from "../services/api";
@@ -399,6 +399,88 @@ function RescanRequestsPanel({
   );
 }
 
+function NotificationPanel({ record, schedules, isPlatformView }) {
+  const items = [];
+  if (record?.status === "submitted") {
+    items.push({
+      key: "submitted",
+      icon: Activity,
+      title: "Report submitted",
+      description: isPlatformView
+        ? "This report was submitted by the organization and is awaiting SOC review."
+        : "Your report has been submitted to SOC for verification and next scan planning.",
+    });
+  } else {
+    items.push({
+      key: "draft",
+      icon: Info,
+      title: "Draft report",
+      description: "This report is still in draft state and has not been submitted to SOC yet.",
+    });
+  }
+
+  if (schedules?.length > 0) {
+    const next = schedules[0];
+    const status = (next.status || "scheduled").toLowerCase();
+    if (status === "requested") {
+      items.push({
+        key: "requested",
+        icon: Clock,
+        title: "New date requested",
+        description: `SOC requested a new scan date for ${fmtDate(next.scheduled_at)}. ${next.note ? `Note: ${next.note}` : ""}`,
+      });
+    } else if (status === "approved") {
+      items.push({
+        key: "approved",
+        icon: CheckCircle2,
+        title: "Scan approved",
+        description: `SOC approved the next scan for ${fmtDate(next.scheduled_at)}. ${next.note ? `Note: ${next.note}` : ""}`,
+      });
+    } else {
+      items.push({
+        key: "scheduled",
+        icon: Clock,
+        title: "Next scan scheduled",
+        description: `A verification scan is scheduled for ${fmtDate(next.scheduled_at)}. ${next.note ? `Note: ${next.note}` : ""}`,
+      });
+    }
+  } else if (record?.status === "submitted") {
+    items.push({
+      key: "waiting",
+      icon: AlertCircle,
+      title: "Waiting for next scan",
+      description: "SOC has not scheduled the next verification scan yet.",
+    });
+  }
+
+  return (
+    <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400">Activity log</p>
+          <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">Recent report events for both user and SOC workflows.</p>
+        </div>
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+          {isPlatformView ? "SOC view" : "User view"}
+        </span>
+      </div>
+      <div className="space-y-3">
+        {items.map((item) => (
+          <div key={item.key} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-950">
+            <div className="flex items-start gap-3">
+              <item.icon className="mt-0.5 h-5 w-5 text-slate-500 dark:text-slate-400" />
+              <div>
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{item.title}</p>
+                <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-400">{item.description}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function VaptReport() {
@@ -434,6 +516,21 @@ export default function VaptReport() {
   // must be triaged before submitting the report. Set to `true` to disable.
   const SKIP_REQUIRE_ALL_TRIAGED = true;
 
+  const refreshRescanSchedules = useCallback(async () => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    try {
+      setRescanLoading(true);
+      const schedules = await getVaptRescanSchedules(importId, token);
+      setRescanSchedules(Array.isArray(schedules) ? schedules : []);
+    } catch (err) {
+      // ignore; separate admin UI surfaces errors
+    } finally {
+      setRescanLoading(false);
+    }
+  }, [importId]);
+
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) {
@@ -449,17 +546,8 @@ export default function VaptReport() {
           ? await getVaptImportAdmin(importId, token)
           : await getVaptImport(importId, token);
         if (!cancelled) setRecord(data);
-        // load any existing rescan schedules for the import
         if (!cancelled) {
-          try {
-            setRescanLoading(true);
-            const schedules = await getVaptRescanSchedules(importId, token);
-            setRescanSchedules(Array.isArray(schedules) ? schedules : []);
-          } catch (err) {
-            // ignore; separate admin UI surfaces errors
-          } finally {
-            setRescanLoading(false);
-          }
+          await refreshRescanSchedules();
         }
       } catch (err) {
         if (!cancelled) setError(err?.message || "Failed to load the report.");
@@ -468,7 +556,7 @@ export default function VaptReport() {
       }
     })();
     return () => { cancelled = true; };
-  }, [importId, isPlatformView, navigate]);
+  }, [importId, isPlatformView, navigate, refreshRescanSchedules]);
 
   const handleDownloadPdf = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -834,6 +922,8 @@ export default function VaptReport() {
             </div>
           </div>
 
+          <NotificationPanel record={record} schedules={rescanSchedules} isPlatformView={isPlatformView} />
+
           {/* Stat cards — own full-width row, no longer squeezed inside the
               title flex container. */}
           <div>
@@ -1179,7 +1269,10 @@ export default function VaptReport() {
         onClose={() => setShowRescanModal(false)}
         importId={record?.import_id}
         adminMode={isPlatformView}
-        onScheduled={(res) => setToast({ text: 'Rescan scheduled', type: 'success' })}
+        onScheduled={async (res) => {
+          await refreshRescanSchedules();
+          setToast({ text: 'Rescan scheduled', type: 'success' });
+        }}
       />
     </div>
   );
