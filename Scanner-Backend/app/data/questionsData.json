@@ -1,0 +1,1122 @@
+[
+  {
+    "id": 1,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you have a tool that shows all the devices connected to your WiFi or network?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yup, it shows everything automatically",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Yeah, but we check manually",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Kind of, only sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Nope / No clue",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you control who can join your network so random devices can’t sneak in?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Fully locked down",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly controlled",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "A little bit",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Nope / No idea",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 3,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you use anything that tells you what software/apps are installed on your systems?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, completely automated",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Yes, but we check by hand",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sort of",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No / Don’t know",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 4,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you guide employees on which apps are allowed or not?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, all apps are controlled",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Yes, for important apps",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Kind of",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Nope",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 5,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you have a tool that scans for weaknesses or security issues?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, runs automatically",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Yes, but manually",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "A little bit",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No idea",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 6,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Are your computers automatically updated with security patches?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Always updated",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly updated",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes updated",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No idea",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 7,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you know exactly who has “admin access”?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, tracked clearly",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Kind of",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Nope",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 8,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you follow clear rules about who gets admin access?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Strict rules",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Some rules",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No rules",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 9,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you check your systems for wrong settings or unsafe configurations?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, automatically",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Yes, manually",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Nope",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 10,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you enforce basic security rules like strong passwords?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, enforced",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Yes, partly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sort of",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 11,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do you use tools that monitor logs for weird or suspicious activity?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Fully automated",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "We try",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 12,
+    "category_id": 1,
+    "category_name": "Asset & Access Management",
+    "question_text": "Do all your logs get collected in one place so they’re easy to review?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yup",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Kinda",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Nope",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 13,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you limit which browsers or email apps people can use?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, fully controlled",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Yes, for the most part",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 14,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you scan email attachments before opening them?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, automatically",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Sometimes",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Never",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 15,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you use anti-malware or antivirus tools?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, everywhere",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "On most systems",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Only some systems",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Nope",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 16,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do malware alerts go to a central team or system?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Always",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Usually",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 17,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you know which network ports/services are active by default?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, fully",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "A little",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 18,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you get alerts if weird/unknown ports open up?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Sometimes",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 19,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you automatically back up your data?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Always",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Often",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Never",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 20,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Is your backup data protected while moving or being stored?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes, encrypted",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Not sure",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 21,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you use MFA to log in to routers, firewalls, or network devices?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes everywhere",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "On some devices",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No idea",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 22,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you check for unexpected changes in your network settings?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Occasionally",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 23,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you know all the connections your network has to the internet?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Somewhat",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 24,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Can you block suspicious traffic if needed?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Nope",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 25,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you know what counts as “sensitive data” in your company?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "A bit",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 26,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you monitor sensitive data to ensure it’s safe?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Fully",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Partly",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Not at all",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 27,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do people only access the information they truly need for their job?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Always",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 28,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you store each team’s data separately (HR separate from Finance etc.)?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 29,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you have a separate guest WiFi?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 30,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you track all approved WiFi access points?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Somewhat",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No idea",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 31,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do most logins go through a single system (like Google Workspace/Okta)?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "A bit",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Not at all",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 32,
+    "category_id": 2,
+    "category_name": "Network & Data Protection",
+    "question_text": "Do you use MFA for important accounts?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes everywhere",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "On some accounts",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 33,
+    "category_id": 3,
+    "category_name": "Governance & Response",
+    "question_text": "Do you train employees about security basics?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Regularly trained",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Sometimes",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Never",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 34,
+    "category_id": 3,
+    "category_name": "Governance & Response",
+    "question_text": "Do you train employees to spot scams or phishing emails?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Sometimes",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 35,
+    "category_id": 3,
+    "category_name": "Governance & Response",
+    "question_text": "Do developers follow safe coding practices?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Always",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Mostly",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No idea",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 36,
+    "category_id": 3,
+    "category_name": "Governance & Response",
+    "question_text": "Do you test your software for security issues?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Sometimes",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 37,
+    "category_id": 3,
+    "category_name": "Governance & Response",
+    "question_text": "Do you have a plan for what to do if there’s a cyber incident?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Clear plan",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Rough plan",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "A little",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No plan",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 38,
+    "category_id": 3,
+    "category_name": "Governance & Response",
+    "question_text": "Do you practice your incident response plan?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Sometimes",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 39,
+    "category_id": 3,
+    "category_name": "Governance & Response",
+    "question_text": "Do you do ethical hacking or penetration tests to find weaknesses?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Sometimes",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Rarely",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "Never",
+        "score": 0
+      }
+    ]
+  },
+  {
+    "id": 40,
+    "category_id": 3,
+    "category_name": "Governance & Response",
+    "question_text": "Do you use tools to scan your systems for vulnerabilities?",
+    "options": [
+      {
+        "option_key": "A",
+        "option_text": "Yes",
+        "score": 3
+      },
+      {
+        "option_key": "B",
+        "option_text": "Often",
+        "score": 2
+      },
+      {
+        "option_key": "C",
+        "option_text": "Sometimes",
+        "score": 1
+      },
+      {
+        "option_key": "D",
+        "option_text": "No",
+        "score": 0
+      }
+    ]
+  }
+]

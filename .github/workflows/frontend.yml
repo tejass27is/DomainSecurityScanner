@@ -1,0 +1,69 @@
+name: Deploy Frontend (Static)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'ShieldStat-Frontend/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ Checkout code
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # 2️⃣ Setup Node
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      # 3️⃣ Install dependencies
+      - name: Install dependencies
+        working-directory: ShieldStat-Frontend
+        run: npm install
+
+      # 4️⃣ Build Next.js (static export)
+      - name: Build frontend
+        working-directory: ShieldStat-Frontend
+        run: |
+          NEXT_PUBLIC_API_URL=/api npm run build
+
+      # 5️⃣ CLEAN OLD FILES (IMPORTANT)
+      - name: Clean old files on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            echo "Cleaning old build..."
+            rm -rf /var/www/scanner-frontend/*
+
+      # 6️⃣ Upload new build
+      - name: Upload build to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "ShieldStat-Frontend/out/"
+          target: "/var/www/scanner-frontend/"
+
+      # 7️⃣ Fix permissions + reload nginx
+      - name: Finalize deployment
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            echo "Fixing permissions..."
+            chown -R www-data:www-data /var/www/scanner-frontend
+
+            echo "Reloading Nginx..."
+            systemctl reload nginx
