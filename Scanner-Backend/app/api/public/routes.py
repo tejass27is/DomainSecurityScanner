@@ -56,9 +56,15 @@ def _build_report_data(row: ScanSummary):
     # IP Reputation always appears (mirrors the logged-in report), even when empty
     categories.append({"name": "IP Reputation", "isIpRep": True, "findings": ip_reps})
 
-    criticality = row.domain_criticality or get_criticality_from_domain_keywords(row.domain)
-    breakdown = calculate_weighted_score(categories_payload, criticality)
-    score = round(float(breakdown.total_score), 2)
+    # Use the stored scan score (the same number shown on the scan dashboard)
+    # so the PDF always matches what the user saw in the app. Only fall back
+    # to a fresh weighted calculation if the stored score is missing.
+    if row.domain_score is not None:
+        score = int(row.domain_score)
+    else:
+        criticality = row.domain_criticality or get_criticality_from_domain_keywords(row.domain)
+        breakdown = calculate_weighted_score(categories_payload, criticality)
+        score = int(round(float(breakdown.total_score), 2))
     return categories, ip_reps, score, _score_grade(score)
 
 PUBLIC_USER_EMAIL = "public@shieldstat.local"
@@ -512,10 +518,14 @@ def public_domain_overview(
         if preview:
             category_previews.append(preview)
 
+    # Headline score: prefer the stored scan score (matches the scan dashboard
+    # and the PDF report) so every surface shows the same number.
+    headline_score = row.domain_score if row.domain_score is not None else breakdown.total_score
+
     response = {
         "domain": row.domain,
         "summary": {
-            "total_score": breakdown.total_score,
+            "total_score": headline_score,
             "severity": row.severity,
             "category_count": len(categories),
             "highest_risk_category": highest_risk_category,

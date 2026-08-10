@@ -61,7 +61,9 @@ def test_clear_existing_public_scan_results_removes_stale_summary():
         db.close()
 
 
-def test_build_report_data_uses_weighted_score_instead_of_stale_domain_score():
+def test_build_report_data_uses_stored_domain_score_to_match_the_scan():
+    """The PDF report must show the same score the scan dashboard displays
+    (the stored domain_score), not a recomputed weighted score."""
     row = ScanSummary(
         domain="example.com",
         org_id="org-1",
@@ -77,7 +79,27 @@ def test_build_report_data_uses_weighted_score_instead_of_stale_domain_score():
 
     categories, ip_reps, score, grade_label = _build_report_data(row)
 
-    assert score == 75.0
+    assert score == 64
     assert grade_label == "Fair"
     assert categories[0]["name"] == "Application Security"
     assert ip_reps == []
+
+
+def test_build_report_data_falls_back_to_weighted_score_when_domain_score_missing():
+    row = ScanSummary(
+        domain="example.com",
+        org_id="org-1",
+        domain_score=None,
+        domain_criticality="medium",
+        app_security={
+            "Missing HSTS header": [
+                {"subdomain": "www.example.com", "severity": "critical"},
+            ]
+        },
+    )
+
+    categories, ip_reps, score, grade_label = _build_report_data(row)
+
+    assert score == 75
+    assert grade_label == "Fair"
+    assert categories[0]["name"] == "Application Security"
