@@ -1,37 +1,46 @@
 package worker
 
 import (
-	"os"
 	"testing"
 )
 
-func TestBackendURLsUsesConfiguredURLFirst(t *testing.T) {
+func TestGetBackendBaseURLUsesConfiguredURL(t *testing.T) {
 	t.Setenv("BACKEND_URL", "http://example.test:8000")
 
-	urls := getBackendURLs()
-	if len(urls) == 0 || urls[0] != "http://example.test:8000" {
-		t.Fatalf("expected configured backend URL first, got %v", urls)
+	url, err := getBackendBaseURL()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if url != "http://example.test:8000" {
+		t.Fatalf("expected configured backend URL, got %q", url)
 	}
 }
 
-func TestBackendURLsFallbacksIncludeLocalHosts(t *testing.T) {
+func TestGetBackendBaseURLRemovesTrailingSlash(t *testing.T) {
+	t.Setenv("BACKEND_URL", "http://localhost:8000/")
+
+	url, err := getBackendBaseURL()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	expected := "http://localhost:8000"
+
+	if url != expected {
+		t.Fatalf("expected %q, got %q", expected, url)
+	}
+}
+func TestGetBackendBaseURLReturnsErrorWhenNotConfigured(t *testing.T) {
 	t.Setenv("BACKEND_URL", "")
 
-	urls := getBackendURLs()
-	if len(urls) < 3 {
-		t.Fatalf("expected fallback backend URLs, got %v", urls)
+	url, err := getBackendBaseURL()
+
+	if err == nil {
+		t.Fatal("expected error when BACKEND_URL is not configured")
 	}
 
-	seen := map[string]bool{}
-	for _, u := range urls {
-		seen[u] = true
+	if url != "" {
+		t.Fatalf("expected empty URL, got %q", url)
 	}
-
-	for _, expected := range []string{"http://scanner-backend:8000", "http://localhost:8000", "http://127.0.0.1:8000"} {
-		if !seen[expected] {
-			t.Fatalf("expected fallback URL %s in %v", expected, urls)
-		}
-	}
-
-	_ = os.Getenv("BACKEND_URL")
 }

@@ -11,42 +11,30 @@ import (
 	"strings"
 )
 
-func getBackendURLs() []string {
+// getBackendBaseURL returns the backend URL configured through BACKEND_URL.
+//
+// Example:
+//
+//	BACKEND_URL=https://scan.isecurify.us/api/
+//
+// becomes:
+//
+//	https://scan.isecurify.us/api
+func getBackendBaseURL() (string, error) {
 	configured := strings.TrimSpace(os.Getenv("BACKEND_URL"))
-	candidates := []string{}
-	if configured != "" {
-		candidates = append(candidates, configured)
-	}
-	candidates = append(candidates,
-		"http://scanner-backend:8000",
-		"http://localhost:8000",
-		"http://127.0.0.1:8000",
-	)
 
-	seen := make(map[string]bool, len(candidates))
-	unique := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		trimmed := strings.TrimSpace(candidate)
-		if trimmed == "" || seen[trimmed] {
-			continue
-		}
-		seen[trimmed] = true
-		unique = append(unique, trimmed)
+	if configured == "" {
+		return "", fmt.Errorf("BACKEND_URL is not configured")
 	}
-	return unique
+
+	return strings.TrimRight(configured, "/"), nil
 }
 
-func getBackendBaseURL() string {
-	for _, candidate := range getBackendURLs() {
-		return candidate
-	}
-	return "http://localhost:8000"
-}
-
+// postJSON sends a JSON POST request to the specified URL.
 func postJSON(url string, payload any) (string, error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to marshal JSON payload: %w", err)
 	}
 
 	res, err := http.Post(
@@ -55,53 +43,81 @@ func postJSON(url string, payload any) (string, error) {
 		bytes.NewBuffer(jsonData),
 	)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to POST to %s: %w", url, err)
 	}
+
 	defer res.Body.Close()
 
 	body, readErr := io.ReadAll(res.Body)
 	if readErr != nil {
-		return "", readErr
+		return "", fmt.Errorf("failed to read response from %s: %w", url, readErr)
 	}
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		detail := strings.TrimSpace(string(body))
+
 		if detail == "" {
 			detail = http.StatusText(res.StatusCode)
 		}
-		return "", fmt.Errorf("%s returned %s: %s", url, res.Status, detail)
+
+		return "", fmt.Errorf(
+			"%s returned %s: %s",
+			url,
+			res.Status,
+			detail,
+		)
 	}
 
 	return res.Status, nil
 }
 
+// send_webhook_notification sends a scan notification to the backend.
 func send_webhook_notification(payload models.ScanNotification) (string, error) {
-	var lastErr error
-	for _, baseURL := range getBackendURLs() {
-		url := fmt.Sprintf("%s/webhooks/scan/notification", baseURL)
-		_, err := postJSON(url, payload)
-		if err == nil {
-			return "ok", nil
-		}
-		lastErr = err
+	baseURL, err := getBackendBaseURL()
+	if err != nil {
+		return "", err
 	}
-	return "", lastErr
+
+	url := fmt.Sprintf(
+		"%s/webhooks/scan/notification",
+		baseURL,
+	)
+
+	_, err = postJSON(url, payload)
+	if err != nil {
+		return "", err
+	}
+
+	return "ok", nil
 }
 
+// send_scan_result_webhook sends the completed scan result to the backend.
 func send_scan_result_webhook(payload models.ScanResult) (string, error) {
-	var lastErr error
-	for _, baseURL := range getBackendURLs() {
-		url := fmt.Sprintf("%s/webhooks/scan/result", baseURL)
-		_, err := postJSON(url, payload)
-		if err == nil {
-			return "ok", nil
-		}
-		lastErr = err
+	baseURL, err := getBackendBaseURL()
+	if err != nil {
+		return "", err
 	}
-	return "", lastErr
+
+	url := fmt.Sprintf(
+		"%s/webhooks/scan/result",
+		baseURL,
+	)
+
+	_, err = postJSON(url, payload)
+	if err != nil {
+		return "", err
+	}
+
+	return "ok", nil
 }
 
+// send_fix_result_webhook sends the fix scan result to the backend.
 func send_fix_result_webhook(result models.FixScanResult) (string, error) {
+	baseURL, err := getBackendBaseURL()
+	if err != nil {
+		return "", err
+	}
+
 	payload := map[string]interface{}{
 		"scan_id":  result.ScanID,
 		"domain":   result.Domain,
@@ -109,14 +125,15 @@ func send_fix_result_webhook(result models.FixScanResult) (string, error) {
 		"result":   result.Data,
 	}
 
-	var lastErr error
-	for _, baseURL := range getBackendURLs() {
-		url := fmt.Sprintf("%s/fix/result", baseURL)
-		_, err := postJSON(url, payload)
-		if err == nil {
-			return "ok", nil
-		}
-		lastErr = err
+	url := fmt.Sprintf(
+		"%s/fix/result",
+		baseURL,
+	)
+
+	_, err = postJSON(url, payload)
+	if err != nil {
+		return "", err
 	}
-	return "", lastErr
+
+	return "ok", nil
 }
