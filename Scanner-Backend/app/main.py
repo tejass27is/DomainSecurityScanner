@@ -70,17 +70,21 @@ async def startup_event():
     cleanup_thread.start()
 
 # CORS
+# CORS configuration
+cors_origins_raw = os.getenv("CORS_ORIGINS", "")
+
 cors_origins = [
-    origin.strip()
-    for origin in os.getenv(
-        "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost:3000,http://127.0.0.1:3000",
-    ).split(",")
+    origin.strip().rstrip("/")
+    for origin in cors_origins_raw.split(",")
     if origin.strip()
 ]
 
+# Local development fallback
 if not cors_origins:
-    cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
 app.add_middleware(
     CORSMiddleware,

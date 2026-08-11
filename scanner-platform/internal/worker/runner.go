@@ -2,46 +2,87 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"sync"
+	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"scanner-platform/internal/models"
 	"scanner-platform/scanner-engine/core"
 	"scanner-platform/scanner-engine/fix"
 	"scanner-platform/scanner-engine/scanners/collection"
 	"scanner-platform/scanner-engine/scanners/discovery"
 	"scanner-platform/scanner-engine/scanners/filters"
-)
 
-// cancelClient is shared across cancel checks instead of opening a new TCP
-// connection to Redis on every call (which happened multiple times per scan).
-var (
-	cancelClientOnce sync.Once
-	cancelClient     *redis.Client
+	"github.com/redis/go-redis/v9"
 )
-
-func cancelRedisClient() *redis.Client {
-	cancelClientOnce.Do(func() {
-		addr := os.Getenv("REDIS_ADDR")
-		if addr == "" {
-			addr = "localhost:6379"
-		}
-		cancelClient = redis.NewClient(&redis.Options{Addr: addr})
-	})
-	return cancelClient
-}
 
 func getCancelSignal(job *models.ScanJob) bool {
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	defer client.Close()
+
 	key := fmt.Sprintf("scan_cancel:%s:%s", job.ScanID, job.Target)
-	val, err := cancelRedisClient().Get(context.Background(), key).Result()
+	val, err := client.Get(context.Background(), key).Result()
 	if err != nil {
 		return false
 	}
 	return val == "1"
+}
+
+func normalizePublicStage(stage string) string {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "discovery", "subdomain_discovery":
+		return "dns"
+	case "filter", "subdomain_filter", "collection", "subdomain_collection", "data_collection":
+		return "headers"
+	case "completed", "scan_complete", "scan_completed":
+		return "report_generation"
+	case "", "initializing":
+		return "queued"
+	default:
+		return strings.ToLower(strings.TrimSpace(stage))
+	}
+}
+
+func syncPublicScanProgress(job *models.ScanJob, stage string, progress int, message string, status string) {
+	if job == nil || job.ScanID == "" || job.Target == "" {
+		return
+	}
+
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	defer client.Close()
+
+	payload := map[string]any{
+		"progress": progress,
+		"status":   status,
+		"stage":    normalizePublicStage(stage),
+		"message":  message,
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Failed to marshal progress payload: %v", err)
+		return
+	}
+
+	key := fmt.Sprintf("scan_progress:%s:%s", job.ScanID, strings.ToLower(job.Target))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := client.Set(ctx, key, string(data), time.Hour).Err(); err != nil {
+		log.Printf("Failed to update public progress for %s: %v", key, err)
+	}
 }
 
 func updateScanProgress(job *models.ScanJob, stage string, progress int, message string, status string, lastError string, checkpoint map[string]any) {
@@ -56,6 +97,7 @@ func updateScanProgress(job *models.ScanJob, stage string, progress int, message
 	if checkpoint != nil {
 		job.Checkpoint = checkpoint
 	}
+	syncPublicScanProgress(job, stage, progress, message, status)
 }
 
 func emitScanEvent(job *models.ScanJob, event string, status string, progress int, message string, evidence []map[string]any) error {
@@ -95,10 +137,8 @@ func RunFix(ctx context.Context, job *models.FixScanJob) (any, error) {
 	result := models.FixScanResult{}
 	var err error
 
-	// Only the "port" fix type is implemented. Any other value would have
-	// silently sent an empty result webhook before — reject it explicitly.
-	switch job.FixType {
-	case "port":
+	if job.FixType == "port" {
+
 		fmt.Println("================================")
 		fmt.Println("Processing fix request")
 		fmt.Println("================================")
@@ -115,11 +155,6 @@ func RunFix(ctx context.Context, job *models.FixScanJob) (any, error) {
 
 		fmt.Println("Verification completed")
 		fmt.Println("Fix Port-Scanner Completed.")
-
-	default:
-		err = fmt.Errorf("unsupported fix type %q — only 'port' is implemented", job.FixType)
-		log.Println("Fix rejected:", err)
-		return null, err
 	}
 
 	// ========================================
@@ -148,6 +183,7 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 	job.CurrentStage = "initializing"
 	job.Progress = 5
 	job.Message = "Starting scan pipeline"
+	syncPublicScanProgress(job, "initializing", 5, "Starting scan pipeline", "running")
 
 	log.Printf("Scan started: %s (%s)", job.ScanID, job.Target)
 
@@ -264,12 +300,6 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 
 	collection_registry.RegisterCollectionScanner(collection.NewDNSDataOutput())
 	collection_registry.RegisterCollectionScanner(collection.NewHTTPXFilterOutput())
-	// NOTE: ServiceDetectionScanner (nmap -sV) is intentionally NOT registered
-	// in the production worker. It runs nmap once per host while the collection
-	// stage has a fixed 90s budget — on real domains with many live hosts it
-	// gets killed mid-run and only degrades reliability. The backend's own
-	// evaluate_port() works purely from port numbers and never reads service
-	// names, so nothing downstream needs nmap's output.
 	collection_registry.RegisterCollectionScanner(collection.NewPortFilter())
 	collection_registry.RegisterCollectionScanner(collection.NewTLSDataCollection())
 	collection_registry.RegisterCollectionScanner(collection.NewMailSecurityDataCollection())

@@ -9,6 +9,7 @@ services:
     environment:
       - WORKER_TYPE=main
       - REDIS_ADDR=redis:6379
+      - BACKEND_URL=http://backend:8000
     deploy:
       replicas: 1
 
@@ -22,6 +23,7 @@ services:
     environment:
       - WORKER_TYPE=fix
       - REDIS_ADDR=redis:6379
+      - BACKEND_URL=http://backend:8000
     deploy:
       replicas: 1
 
