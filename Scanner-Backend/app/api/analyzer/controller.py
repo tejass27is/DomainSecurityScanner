@@ -5,6 +5,11 @@ from fastapi import HTTPException
 from sqlalchemy import desc, text
 import json
 import uuid
+from app.api.analyzer.scoring_service import (
+    calculate_weighted_score,
+    format_scoring_response,
+    get_criticality_from_domain_keywords,
+)
 START_SCORE = 100
 
 SAFE_PORTS = {80, 443, 993, 995, 465, 587}
@@ -230,6 +235,27 @@ def score_domain(data, root_domain=None, has_mail_service=False):
     }
 
 
+# Rule-specific severities used instead of the subdomain's CVSS score, so a
+# severe finding (e.g. "HTTP without HTTPS") isn't downgraded to "Low" just
+# because the host happens to score well overall. Falls back to the
+# CVSS-derived severity when a rule isn't listed.
+ISSUE_SEVERITY_OVERRIDES = {
+    "HTTP without HTTPS": "Critical",
+    "443 open without TLS": "Critical",
+    "Expired TLS": "Critical",
+    "Weak TLS version": "High",
+    "Risky port exposed": "High",
+    "Unexpected open port": "Medium",
+    "Missing HSTS header": "High",
+    "Missing CSP header": "Medium",
+    "Missing X-Frame-Options": "Medium",
+    "Missing X-Content-Type-Options": "Medium",
+    "Missing NS record": "High",
+    "Missing MX record": "Medium",
+    "Missing TXT record": "Low",
+}
+
+
 def categorize_issues(results, raw_data):
     categorized = defaultdict(lambda: defaultdict(list))
     asset_map = {a.get("subdomain"): a for a in raw_data}
@@ -251,13 +277,15 @@ def categorize_issues(results, raw_data):
 
                     if issue.startswith(pattern):
 
-                        # Base entry (default)
-                        severity_data = get_cvss_severity(sub["score"])
-
+                        # Use the rule-specific severity when known, otherwise
+                        # fall back to the CVSS severity from the subdomain score.
                         entry = {
                             "subdomain": subdomain,
                             "ip": ip,
-                            "severity": severity_data["severity"]
+                            "severity": ISSUE_SEVERITY_OVERRIDES.get(
+                                pattern,
+                                get_cvss_severity(sub["score"])["severity"],
+                            )
                         }
                         # Only add port for Network Security
                         if category == "Network Security":
@@ -358,12 +386,33 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
     tls_security = _to_plain_dict(categorized.get("TLS Security"))
     dns_security = _to_plain_dict(categorized.get("DNS Security"))
 
+    # ── Single merged score ────────────────────────────────────────────────────
+    # The worker's raw per-subdomain average and the backend's weighted model
+    # used to diverge (dashboard showed one number, the breakdown another).
+    # Resolve ONE score here: the category-weighted total (with criticality),
+    # and store it as domain_score so every consumer — dashboard, PDF, history,
+    # public preview — shows the same number.
+    #
+    # Criticality is preserved from the stored row (admin-set value) and only
+    # auto-detected when the domain has never been scored. Previously this
+    # hardcoded "medium", which silently reset admin-set criticality on every
+    # scan — making the criticality multiplier (0.8x–1.5x) dead in practice.
+    categories = {}
+    if app_security:
+        categories["Application Security"] = app_security
+    if network_security:
+        categories["Network Security"] = network_security
+    if tls_security:
+        categories["TLS Security"] = tls_security
+    if dns_security:
+        categories["DNS Security"] = dns_security
+
     ips_of_scan = get_ips_from_scan(subdomains)
 
     existing_summary = db.execute(
         text(
             """
-            SELECT org_id
+            SELECT org_id, domain_criticality
             FROM scan_summary
             WHERE domain = :domain
             LIMIT 1
@@ -373,11 +422,21 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
     ).fetchone()
 
     existing_org_id = None
+    existing_criticality = None
     if existing_summary:
         try:
             existing_org_id = existing_summary[0]
+            existing_criticality = existing_summary[1]
         except Exception:
             existing_org_id = None
+
+    criticality = existing_criticality or get_criticality_from_domain_keywords(root_domain)
+    breakdown = calculate_weighted_score(categories, criticality)
+    merged_score = int(round(float(breakdown.total_score)))
+    severity = get_cvss_severity(merged_score)["severity"]
+    formatted = format_scoring_response(breakdown)
+    scoring_breakdown_json = json.dumps(formatted["scoring_breakdown"])
+    compliance_json = json.dumps(breakdown.compliance_scores)
 
     # prefer provided org_id, otherwise fall back to existing summary org_id
     org_id_to_use = org_id or existing_org_id
@@ -389,28 +448,36 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
                 UPDATE scan_summary
                 SET org_id = COALESCE(:org_id, org_id),
                     domain_score = :domain_score,
-                    domain_criticality = COALESCE(:domain_criticality, domain_criticality),
+                    weighted_score = :weighted_score,
+                    base_score = :base_score,
+                    domain_criticality = :domain_criticality,
                     severity = :severity,
                     mail_security = :mail_security,
                     app_security = :app_security,
                     network_security = :network_security,
                     tls_security = :tls_security,
                     dns_security = :dns_security,
-                    ips = :ips
+                    ips = :ips,
+                    scoring_breakdown = :scoring_breakdown,
+                    compliance_scores = :compliance_scores
                 WHERE domain = :domain
                 """
             ),
             {
                 "org_id": org_id,
-                "domain_score": scoring["domain_score"],
-                "severity": scoring["severity"],
-                "domain_criticality": "medium",
+                "domain_score": merged_score,
+                "weighted_score": breakdown.total_score,
+                "base_score": breakdown.base_score,
+                "domain_criticality": criticality,
+                "severity": severity,
                 "mail_security": json.dumps(mail_security),
                 "app_security": json.dumps(app_security),
                 "network_security": json.dumps(network_security),
                 "tls_security": json.dumps(tls_security),
                 "dns_security": json.dumps(dns_security),
                 "ips": json.dumps(ips_of_scan),
+                "scoring_breakdown": scoring_breakdown_json,
+                "compliance_scores": compliance_json,
                 "domain": root_domain,
             },
         )
@@ -454,6 +521,8 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
                     domain,
                     org_id,
                     domain_score,
+                    weighted_score,
+                    base_score,
                     domain_criticality,
                     severity,
                     mail_security,
@@ -461,11 +530,15 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
                     network_security,
                     tls_security,
                     dns_security,
-                    ips
+                    ips,
+                    scoring_breakdown,
+                    compliance_scores
                 ) VALUES (
                     :domain,
                     :org_id,
                     :domain_score,
+                    :weighted_score,
+                    :base_score,
                     :domain_criticality,
                     :severity,
                     :mail_security,
@@ -473,22 +546,28 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
                     :network_security,
                     :tls_security,
                     :dns_security,
-                    :ips
+                    :ips,
+                    :scoring_breakdown,
+                    :compliance_scores
                 )
                 """
             ),
             {
                 "domain": root_domain,
                 "org_id": org_id_to_use,
-                "domain_score": scoring["domain_score"],
-                "domain_criticality": "medium",
-                "severity": scoring["severity"],
+                "domain_score": merged_score,
+                "weighted_score": breakdown.total_score,
+                "base_score": breakdown.base_score,
+                "domain_criticality": criticality,
+                "severity": severity,
                 "mail_security": json.dumps(mail_security),
                 "app_security": json.dumps(app_security),
                 "network_security": json.dumps(network_security),
                 "tls_security": json.dumps(tls_security),
                 "dns_security": json.dumps(dns_security),
                 "ips": json.dumps(ips_of_scan),
+                "scoring_breakdown": scoring_breakdown_json,
+                "compliance_scores": compliance_json,
             },
         )
 
@@ -498,8 +577,9 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
     if org_id_to_use:
         history_result = {
             "domain": root_domain,
-            "domain_score": scoring["domain_score"],
-            "severity": scoring["severity"],
+            "domain_score": merged_score,
+            "weighted_score": breakdown.total_score,
+            "severity": severity,
             "host": {
                 "domain": root_domain,
                 "mail_security": mail_security or {},
@@ -512,6 +592,8 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
             },
             "ips": ips_of_scan or [],
             "subdomains": scoring.get("subdomains") or [],
+            "scoring_breakdown": formatted["scoring_breakdown"],
+            "compliance_scores": breakdown.compliance_scores,
             "raw_scan": raw_data or {},
         }
 
@@ -526,7 +608,7 @@ def calculate_and_store_summary(db: Session, org_id: str, target: str, raw_data:
                 "_id": str(uuid.uuid4()),
                 "org_id": org_id_to_use,
                 "domain": root_domain,
-                "domain_score": scoring["domain_score"],
+                "domain_score": merged_score,
                 "result": json.dumps(history_result),
                 "scan_date": datetime.now(timezone.utc),
             },

@@ -55,7 +55,7 @@ class WebSocketManager:
         for ws in dead_connections:
             try:
                 self.connections[org_id].remove(ws)
-            except:
+            except Exception:
                 pass
 
 

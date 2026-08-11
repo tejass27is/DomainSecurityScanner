@@ -1,4 +1,3 @@
-import json
 import uuid
 from datetime import datetime, timezone 
 from sqlalchemy.orm import Session
@@ -12,6 +11,11 @@ from app.db.models import (
 from app.core.redis_queue import redis_client
 from collections import defaultdict
 from app.api.analyzer.controller import get_cvss_severity
+from app.api.analyzer.scoring_service import (
+    calculate_weighted_score,
+    format_scoring_response,
+    get_criticality_from_domain_keywords,
+)
 from fastapi import HTTPException
 
 import ssl
@@ -113,9 +117,12 @@ async def queue_fix_job(
         "created_at": datetime.utcnow().isoformat()
     }
 
-    await redis_client.rpush(
+    # RedisClient only exposes PushToQueue/PopFromQueue (lpush/brpop), which
+    # pairs correctly with the Go worker's BRPop on "fix_queue". There is no
+    # rpush method on the wrapper — calling one raises AttributeError.
+    await redis_client.PushToQueue(
         "fix_queue",
-        json.dumps(job)
+        job
     )
 
     return {
@@ -259,42 +266,33 @@ def _remove_fixed_issue(
 
 
 def _recalculate_score(summary: ScanSummary):
-    """Recalculate the domain security score"""
-    subdomain_penalty: dict[str, int] = defaultdict(int)
+    """Recalculate the score with the SAME merged weighted model that
+    calculate_and_store_summary uses. The old penalty-average logic made the
+    score jump to a different number right after a fix (and left
+    weighted_score / breakdown / compliance stale), breaking the merge."""
+    categories = {}
+    for column, name in (
+        ("app_security", "Application Security"),
+        ("network_security", "Network Security"),
+        ("tls_security", "TLS Security"),
+        ("dns_security", "DNS Security"),
+    ):
+        payload = getattr(summary, column)
+        if payload:
+            categories[name] = payload
 
-    category_blocks = [
-        summary.app_security or {},
-        summary.network_security or {},
-        summary.tls_security or {},
-        summary.dns_security or {},
-    ]
+    criticality = summary.domain_criticality or get_criticality_from_domain_keywords(summary.domain)
+    breakdown = calculate_weighted_score(categories, criticality)
+    merged_score = int(round(float(breakdown.total_score)))
 
-    # Calculate penalties for remaining issues
-    for block in category_blocks:
-        for issue_key, findings in block.items():
-            penalty = ISSUE_KEY_TO_PENALTY.get(issue_key, 0)
-            if not penalty:
-                continue
-            for finding in findings or []:
-                subdomain = finding.get("subdomain")
-                if subdomain:
-                    subdomain_penalty[subdomain] += penalty
-
-    # Calculate new score
-    subdomain_names = list(subdomain_penalty.keys())
-    if not subdomain_names:
-        summary.domain_score = 100
-        summary.severity = "low"
-        return
-
-    scores = [
-        max(100 - subdomain_penalty.get(name, 0), 0) 
-        for name in subdomain_names
-    ]
-    domain_score = int(sum(scores) / len(scores))
-
-    summary.domain_score = domain_score
-    summary.severity = get_cvss_severity(domain_score)["severity"]
+    summary.domain_score = merged_score
+    summary.weighted_score = breakdown.total_score
+    summary.base_score = breakdown.base_score
+    summary.domain_criticality = criticality
+    summary.severity = get_cvss_severity(merged_score)["severity"]
+    formatted = format_scoring_response(breakdown)
+    summary.scoring_breakdown = formatted["scoring_breakdown"]
+    summary.compliance_scores = breakdown.compliance_scores
 
 
 # Maps

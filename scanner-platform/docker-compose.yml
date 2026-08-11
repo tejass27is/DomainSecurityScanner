@@ -1,6 +1,6 @@
 services:
   worker-main:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     container_name: scanner-worker-main
@@ -11,11 +11,9 @@ services:
       - REDIS_ADDR=redis:6379
     deploy:
       replicas: 1
-    volumes:
-      - .:/app
 
   worker-fix:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     container_name: scanner-worker-fix
@@ -26,8 +24,6 @@ services:
       - REDIS_ADDR=redis:6379
     deploy:
       replicas: 1
-    volumes:
-      - .:/app
 
 networks:
   scanner-network:

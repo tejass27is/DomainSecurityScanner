@@ -48,6 +48,8 @@ func (f *HTTPXFilterOutput) RunCollectionScanner(
 		"httpx",
 		"-silent",
 		"-json",
+		"-timeout", "5",
+		"-retries", "0",
 	)
 
 	stdin, err := cmd.StdinPipe()

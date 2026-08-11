@@ -1,4 +1,3 @@
-import json
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -129,7 +128,7 @@ async def create_port_fix(
 
 
 @router.post("/submit", response_model=FixSubmitResponse)
-def submit_fix(
+async def submit_fix(
     request: FixRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(protect),
@@ -147,7 +146,9 @@ def submit_fix(
             "fix_type": request.fix_type,
             "data": request.data,
         }
-        redis_client.redis.rpush(QUEUE_NAME, json.dumps(queue_payload))
+        # Await the push — calling the async client's rpush without await
+        # silently did nothing before.
+        await redis_client.PushToQueue(QUEUE_NAME, queue_payload)
     except Exception as e:
         logger.error(f"Error in submit_fix: {str(e)}")
         raise HTTPException(

@@ -5,27 +5,39 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"scanner-platform/internal/models"
 	"scanner-platform/scanner-engine/core"
 	"scanner-platform/scanner-engine/fix"
 	"scanner-platform/scanner-engine/scanners/collection"
 	"scanner-platform/scanner-engine/scanners/discovery"
 	"scanner-platform/scanner-engine/scanners/filters"
-	"github.com/redis/go-redis/v9"
 )
 
-func getCancelSignal(job *models.ScanJob) bool {
-	addr := os.Getenv("REDIS_ADDR")
-	if addr == "" {
-		addr = "localhost:6379"
-	}
-	client := redis.NewClient(&redis.Options{Addr: addr})
-	defer client.Close()
+// cancelClient is shared across cancel checks instead of opening a new TCP
+// connection to Redis on every call (which happened multiple times per scan).
+var (
+	cancelClientOnce sync.Once
+	cancelClient     *redis.Client
+)
 
+func cancelRedisClient() *redis.Client {
+	cancelClientOnce.Do(func() {
+		addr := os.Getenv("REDIS_ADDR")
+		if addr == "" {
+			addr = "localhost:6379"
+		}
+		cancelClient = redis.NewClient(&redis.Options{Addr: addr})
+	})
+	return cancelClient
+}
+
+func getCancelSignal(job *models.ScanJob) bool {
 	key := fmt.Sprintf("scan_cancel:%s:%s", job.ScanID, job.Target)
-	val, err := client.Get(context.Background(), key).Result()
+	val, err := cancelRedisClient().Get(context.Background(), key).Result()
 	if err != nil {
 		return false
 	}
@@ -83,8 +95,10 @@ func RunFix(ctx context.Context, job *models.FixScanJob) (any, error) {
 	result := models.FixScanResult{}
 	var err error
 
-	if job.FixType == "port" {
-
+	// Only the "port" fix type is implemented. Any other value would have
+	// silently sent an empty result webhook before — reject it explicitly.
+	switch job.FixType {
+	case "port":
 		fmt.Println("================================")
 		fmt.Println("Processing fix request")
 		fmt.Println("================================")
@@ -101,6 +115,11 @@ func RunFix(ctx context.Context, job *models.FixScanJob) (any, error) {
 
 		fmt.Println("Verification completed")
 		fmt.Println("Fix Port-Scanner Completed.")
+
+	default:
+		err = fmt.Errorf("unsupported fix type %q — only 'port' is implemented", job.FixType)
+		log.Println("Fix rejected:", err)
+		return null, err
 	}
 
 	// ========================================
@@ -174,12 +193,12 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 
 	updateScanProgress(job, "discovery", 35, "Discovery completed", "running", "", map[string]any{"subdomains_found": len(results.Data.([]string))})
 	discovery_payload := models.ScanNotification{
-		ScanID: job.ScanID,
-		Target: job.Target,
-		Event:  "subdomain_discovery_completed",
-		Status: "completed",
-		Stage:  "discovery",
-		Progress: 35,
+		ScanID:     job.ScanID,
+		Target:     job.Target,
+		Event:      "subdomain_discovery_completed",
+		Status:     "completed",
+		Stage:      "discovery",
+		Progress:   35,
 		Checkpoint: map[string]any{"subdomains_found": len(results.Data.([]string))},
 	}
 
@@ -220,12 +239,12 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 
 	updateScanProgress(job, "filter", 65, "Filtering completed", "running", "", map[string]any{"filtered_subdomains": len(filter_pipeline_results.Data.([]interface{}))})
 	filter_payload := models.ScanNotification{
-		ScanID: job.ScanID,
-		Target: job.Target,
-		Event:  "subdomain_filter_completed",
-		Status: "completed",
-		Stage:  "filter",
-		Progress: 65,
+		ScanID:     job.ScanID,
+		Target:     job.Target,
+		Event:      "subdomain_filter_completed",
+		Status:     "completed",
+		Stage:      "filter",
+		Progress:   65,
 		Checkpoint: map[string]any{"filtered_subdomains": len(filter_pipeline_results.Data.([]interface{}))},
 	}
 
@@ -245,6 +264,12 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 
 	collection_registry.RegisterCollectionScanner(collection.NewDNSDataOutput())
 	collection_registry.RegisterCollectionScanner(collection.NewHTTPXFilterOutput())
+	// NOTE: ServiceDetectionScanner (nmap -sV) is intentionally NOT registered
+	// in the production worker. It runs nmap once per host while the collection
+	// stage has a fixed 90s budget — on real domains with many live hosts it
+	// gets killed mid-run and only degrades reliability. The backend's own
+	// evaluate_port() works purely from port numbers and never reads service
+	// names, so nothing downstream needs nmap's output.
 	collection_registry.RegisterCollectionScanner(collection.NewPortFilter())
 	collection_registry.RegisterCollectionScanner(collection.NewTLSDataCollection())
 	collection_registry.RegisterCollectionScanner(collection.NewMailSecurityDataCollection())
@@ -268,12 +293,12 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 
 	updateScanProgress(job, "collection", 90, "Collection completed", "running", "", map[string]any{"collection_items": len(collection_data_results.Data.(map[string]interface{}))})
 	collection_payload := models.ScanNotification{
-		ScanID: job.ScanID,
-		Target: job.Target,
-		Event:  "subdomain_collection_completed",
-		Status: "completed",
-		Stage:  "collection",
-		Progress: 90,
+		ScanID:     job.ScanID,
+		Target:     job.Target,
+		Event:      "subdomain_collection_completed",
+		Status:     "completed",
+		Stage:      "collection",
+		Progress:   90,
 		Checkpoint: map[string]any{"collection_items": len(collection_data_results.Data.(map[string]interface{}))},
 	}
 
