@@ -241,6 +241,13 @@ def test_build_report_data_falls_back_to_weighted_score_when_domain_score_missin
     assert score == 75
     assert grade_label == "Fair"
     assert categories[0]["name"] == "Application Security"
+<<<<<<< Updated upstream
+=======
+
+def test_public_scan_status_returns_stage_payload_from_redis(monkeypatch):
+    Base.metadata.drop_all(bind=engine, checkfirst=True)
+    Base.metadata.create_all(bind=engine)
+>>>>>>> Stashed changes
 
 
 def test_enrich_ip_reputation_turns_ip_strings_into_dicts(monkeypatch):
@@ -266,6 +273,7 @@ def test_enrich_ip_reputation_turns_ip_strings_into_dicts(monkeypatch):
                 }
             }
 
+<<<<<<< Updated upstream
     captured = {"calls": []}
 
     def fake_get(url, params=None, headers=None, timeout=None):
@@ -322,3 +330,11 @@ def test_normalize_findings_uses_dominant_severity_not_last_host():
     assert findings[0]["rule"] == "Open port 22"
     assert findings[0]["severity"] == "high"
     assert len(findings[0]["hosts"]) == 2
+=======
+        assert response["progress"] == 35
+        assert response["status"] == "running"
+        assert response["stage"] == "dns"
+        assert response["message"] == "Checking DNS records"
+    finally:
+        db.close()
+>>>>>>> Stashed changes
