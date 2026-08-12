@@ -43,13 +43,42 @@ func detectWildcard(sans []string) bool {
 	return false
 }
 
+// toPortDataList normalizes whatever shape port_collection arrives as into a
+// []core.PortData. PortFilter stores []core.PortData, but older/alternate
+// code paths leave []interface{}{map[string]any} — TLS used to only accept the
+// latter, silently skipping every subdomain in production.
+func toPortDataList(raw any) ([]core.PortData, bool) {
+	switch v := raw.(type) {
+	case []core.PortData:
+		return v, true
+	case []any:
+		var out []core.PortData
+		for _, p := range v {
+			pm, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			pf, ok := pm["port"].(float64)
+			if !ok {
+				continue
+			}
+			out = append(out, core.PortData{Port: int(pf)})
+		}
+		return out, len(out) > 0
+	}
+	return nil, false
+}
+
 func (f *TLSDataCollection) RunCollectionScanner(
 	ctx context.Context,
 	subdomains core.Result,
 	domain string,
 ) (core.Result, error) {
 
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	// 300s to match the collection stage budget (pipeline.go) — with a 120s
+	// cap, tlsx got killed before probing every host's TLS ports, and hosts
+	// without TLS data scored as "clean" even when their certs were expired.
+	ctx, cancel := context.WithTimeout(ctx, 300*time.Second)
 	defer cancel()
 
 	empty := core.Result{
@@ -108,35 +137,17 @@ func (f *TLSDataCollection) RunCollectionScanner(
 				continue
 			}
 
-			portsRaw, ok := m["port_collection"]
-			if !ok || portsRaw == nil {
-				continue
-			}
-
-			ports, ok := portsRaw.([]any)
+			ports, ok := toPortDataList(m["port_collection"])
 			if !ok {
 				continue
 			}
 
 			for _, p := range ports {
-
-				pm, ok := p.(map[string]any)
-				if !ok {
+				if !isTLSCandidate(p.Port) {
 					continue
 				}
 
-				portFloat, ok := pm["port"].(float64)
-				if !ok {
-					continue
-				}
-
-				port := int(portFloat)
-
-				if !isTLSCandidate(port) {
-					continue
-				}
-
-				fmt.Fprintf(stdin, "%s:%d\n", host, port)
+				fmt.Fprintf(stdin, "%s:%d\n", host, p.Port)
 			}
 		}
 	}()
@@ -199,30 +210,14 @@ func (f *TLSDataCollection) RunCollectionScanner(
 				continue
 			}
 
-			portsRaw, ok := m["port_collection"]
-			if !ok || portsRaw == nil {
-				continue
-			}
-
-			ports, ok := portsRaw.([]any)
+			ports, ok := toPortDataList(m["port_collection"])
 			if !ok {
 				continue
 			}
 
 			for i := range ports {
-
-				pm, ok := ports[i].(map[string]any)
-				if !ok {
-					continue
-				}
-
-				pf, ok := pm["port"].(float64)
-				if !ok {
-					continue
-				}
-
-				if int(pf) == port {
-					pm["tls"] = tlsData
+				if ports[i].Port == port {
+					ports[i].TLS = tlsData
 				}
 			}
 

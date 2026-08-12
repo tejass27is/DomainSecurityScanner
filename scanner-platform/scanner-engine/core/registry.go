@@ -28,10 +28,6 @@ func (r *FilterScannerRegistry) RegisterFilterScanner(scanner FilterScanner) {
 	r.filterscanners = append(r.filterscanners, scanner)
 }
 
-func (r *Registry) IsFilterScanner(scanner FilterScanner) bool {
-	return true
-}
-
 func (r *FilterScannerRegistry) All() []FilterScanner {
 	return r.filterscanners
 }

@@ -99,7 +99,11 @@ func (p *FilterScannerPipeline) ExecuteFilterScanners(ctx context.Context, disco
 			return Result{}, context.Canceled
 		}
 		fmt.Println("Running filter scanner:", scanner.Name())
-		stageCtx, cancel := WithStageTimeout(ctx, 30*time.Second)
+		// 120s (was 30s) so httpx always finishes probing the full host list.
+		// With a 30s cap the process gets killed mid-scan and only the hosts
+		// probed so far survive — the SAME discovered set produced 7 hosts one
+		// run and 34 the next, which is exactly what made scores flip 62↔43.
+		stageCtx, cancel := WithStageTimeout(ctx, 120*time.Second)
 		res, err := p.runner.RunFilterScanners(stageCtx, scanner, subdomains, domain)
 		cancel()
 		if err != nil {
@@ -151,7 +155,10 @@ func (c *CollectionPipeline) ExecuteCollectionScanenrs(ctx context.Context, subd
 			return Result{}, context.Canceled
 		}
 		fmt.Println("Running collection scanner:", scanner.Name())
-		stageCtx, cancel := WithStageTimeout(ctx, 90*time.Second)
+		// 300s (was 90s) so every host gets its full evaluation (ports + TLS).
+		// When TLS didn't finish before the old 90s cap, missing TLS data made
+		// hosts look "clean" and silently inflated the score.
+		stageCtx, cancel := WithStageTimeout(ctx, 300*time.Second)
 		res, err := c.runner.RunCollectionScanners(stageCtx, scanner, subdomains, domain)
 		cancel()
 		if err != nil {

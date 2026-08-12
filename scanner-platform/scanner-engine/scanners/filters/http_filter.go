@@ -1,21 +1,19 @@
 package filters
 
-
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
-	"bufio"
-	"encoding/json"
 	"time"
 
 	"scanner-platform/scanner-engine/core"
 )
 
+type HTTPFilter struct{}
 
-type HTTPFilter struct {}
-
-func  NewHTTPFilter() *HTTPFilter {
+func NewHTTPFilter() *HTTPFilter {
 	return &HTTPFilter{}
 }
 
@@ -34,7 +32,12 @@ func (f *HTTPFilter) RunFilterScanner(
 ) (core.Result, error) {
 	null := core.Result{}
 
-	cmd := exec.CommandContext(ctx, "httpx", "-silent", "-json")
+	// Explicit fast per-host timeout + no retries makes the filter
+	// deterministic: with httpx defaults the probe is a slow race that gets
+	// killed by the stage budget mid-scan, so different runs of the same
+	// domain kept different random subsets of hosts (7 one run, 34 the next)
+	// — which is what made the score flip between scans.
+	cmd := exec.CommandContext(ctx, "httpx", "-silent", "-json", "-timeout", "5", "-retries", "0")
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -78,16 +81,20 @@ func (f *HTTPFilter) RunFilterScanner(
 			continue
 		}
 
-		if hx.Host != "" && (hx.StatusCode == 200 || hx.StatusCode == 301 || hx.StatusCode == 302) {
+		// Keep ANY host that produced an HTTP response (httpx -silent only
+		// emits hosts that answered). Restricting to 200/301/302 silently
+		// dropped 403/500 hosts — real attack surface — so the score under-
+		// reported the domain. Non-responders never appear here at all.
+		if hx.Host != "" {
 			live_subdomains = append(live_subdomains, hx.Host)
 		}
 	}
 
 	http_filtered_subdomains := core.Result{
-		Scanner: f.Name(),
-		Category: f.Category(),
-		Target: domain,
-		Data: live_subdomains,
+		Scanner:   f.Name(),
+		Category:  f.Category(),
+		Target:    domain,
+		Data:      live_subdomains,
 		Timestamp: time.Now(),
 	}
 

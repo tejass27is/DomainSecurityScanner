@@ -11,15 +11,6 @@ import (
 	"strings"
 )
 
-// getBackendBaseURL returns the backend URL configured through BACKEND_URL.
-//
-// Example:
-//
-//	BACKEND_URL=https://scan.isecurify.us/api/
-//
-// becomes:
-//
-//	https://scan.isecurify.us/api
 func getBackendBaseURL() (string, error) {
 	configured := strings.TrimSpace(os.Getenv("BACKEND_URL"))
 

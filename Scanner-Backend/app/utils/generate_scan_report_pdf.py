@@ -29,8 +29,8 @@ RASTER_LOGO_PATH = _APP_ROOT / "assets" / "isecurify_logo.png"
 # Brand palette, sampled from the iSecurify logo (the wordmark/icon are pure
 # #800080). The cover/back pages use a clean white background with the same
 # dark body text as the inner pages, so the whole report reads consistently.
-BRAND_PURPLE = colors.HexColor("#800080")
-BRAND_PURPLE_DARK = colors.HexColor("#5b005b")
+BRAND_PURPLE = colors.HexColor("#bf73bf")
+BRAND_PURPLE_DARK = colors.HexColor("#bf73bf")
 COVER_BG = colors.HexColor("#FFFFFF")
 INDIGO = BRAND_PURPLE
 TEXT_COLOR = colors.HexColor("#16213E")
@@ -47,6 +47,13 @@ SEVERITY_COLORS = {
 # are filtered out of every section: severity breakdown, executive summary
 # counts, and the per-category detail tables.
 REPORT_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM")
+# Severity ordering (worst first) used to pick the dominant severity of a rule
+# — matches how the scan dashboard labels a rule. Derived from REPORT_SEVERITIES
+# so the order can never drift out of sync.
+SEVERITY_RANK = {s: i for i, s in enumerate(REPORT_SEVERITIES)}
+# LOW is the one severity that appears ONLY in the Severity Breakdown table;
+# every other section of the report stays limited to REPORT_SEVERITIES.
+BREAKDOWN_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
 ROW_BACKGROUNDS = [colors.whitesmoke, colors.white]
 
 LEFT = RIGHT = BOTTOM = 14 * mm
@@ -263,20 +270,34 @@ def _draw_page_header(canvas_obj, doc, logo: "_Logo | None", domain: str):
 
 
 def _filter_report_findings(categories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Keep only findings whose severity is in REPORT_SEVERITIES (CRITICAL,
-    HIGH, MEDIUM). LOW/INFO findings are dropped from the PDF entirely, so the
-    breakdown counts, summary counts and detail tables stay consistent."""
+    """Filter at the HOST level, not the rule level: keep only hosts whose
+    severity is in REPORT_SEVERITIES (CRITICAL/HIGH/MEDIUM). A rule survives as
+    long as at least one of its hosts is CRITICAL/HIGH/MEDIUM — the same way the
+    scan dashboard counts it — and LOW/INFO hosts are dropped. The rule severity
+    is re-derived as the worst severity still present, so the severity
+    label/colour always matches what is actually shown."""
     filtered = []
     for cat in categories:
         if cat.get("isIpRep"):
             filtered.append(cat)
             continue
-        kept = [
-            f for f in (cat.get("findings") or [])
-            if str(f.get("severity") or "INFO").upper() in REPORT_SEVERITIES
-        ]
+        kept_findings = []
+        for finding in cat.get("findings") or []:
+            finding_sev = str(finding.get("severity") or "INFO").upper()
+            kept_hosts, kept_sevs = [], []
+            for host in finding.get("hosts") or []:
+                sev = str(host.get("severity") or finding_sev).upper()
+                if sev in REPORT_SEVERITIES:
+                    kept_hosts.append(host)
+                    kept_sevs.append(sev)
+            if not kept_hosts:
+                continue
+            new_finding = dict(finding)
+            new_finding["hosts"] = kept_hosts
+            new_finding["severity"] = min(kept_sevs, key=lambda s: SEVERITY_RANK.get(s, 99))
+            kept_findings.append(new_finding)
         new_cat = dict(cat)
-        new_cat["findings"] = kept
+        new_cat["findings"] = kept_findings
         filtered.append(new_cat)
     return filtered
 
@@ -288,11 +309,11 @@ def _count_severity_totals(categories: List[Dict[str, Any]]) -> tuple[Dict[str, 
         if cat.get("isIpRep"):
             continue
         for finding in cat.get("findings") or []:
-            hosts = finding.get("hosts") or []
-            count = len(hosts)
-            total_findings += count
-            severity = str(finding.get("severity") or "INFO").upper()
-            totals[severity] = totals.get(severity, 0) + count
+            finding_sev = str(finding.get("severity") or "INFO").upper()
+            for host in finding.get("hosts") or []:
+                total_findings += 1
+                sev = str(host.get("severity") or finding_sev).upper()
+                totals[sev] = totals.get(sev, 0) + 1
     return totals, total_findings
 
 
@@ -355,8 +376,10 @@ def generate_domain_scan_report_pdf_bytes(
 
     generated_at = generated_at or datetime.now()
     generated_at_label = generated_at.strftime("%d %b %Y")  # date only — no time
-    # Drop LOW/INFO findings up front so every section of the report (severity
-    # breakdown, exec-summary counts, detail tables) shows the same data.
+    # The Severity Breakdown is the ONLY section that shows LOW, so capture the
+    # full per-severity counts from the unfiltered data before dropping LOW/INFO
+    # findings from everything else (exec summary, total findings, detail tables).
+    all_totals, _ = _count_severity_totals(categories)
     categories = _filter_report_findings(categories)
     totals, total_findings = _count_severity_totals(categories)
 
@@ -416,13 +439,13 @@ def generate_domain_scan_report_pdf_bytes(
     ))
     story.append(Spacer(1, 8 * mm))
 
-    # Severity breakdown — colour-coded like the detail rows, and limited to
-    # the severities shown in this report (CRITICAL/HIGH/MEDIUM). LOW and
-    # INFO findings are filtered out entirely.
+    # Severity breakdown — colour-coded like the detail rows. LOW is shown here
+    # (and only here) so readers still see the full severity picture, while the
+    # detail tables stay limited to CRITICAL/HIGH/MEDIUM.
     story.append(Paragraph("Severity Breakdown", section_style))
     story.append(Spacer(1, 2 * mm))
-    severity_order = list(REPORT_SEVERITIES)
-    breakdown_rows = [["Severity", "Count"]] + [[s.title(), str(totals.get(s, 0))] for s in severity_order]
+    severity_order = list(BREAKDOWN_SEVERITIES)
+    breakdown_rows = [["Severity", "Count"]] + [[s.title(), str(all_totals.get(s, 0))] for s in severity_order]
     story.append(_style_table(
         breakdown_rows, [content_w * 0.32, content_w * 0.68],
         header_bg=BRAND_PURPLE_DARK,
@@ -488,7 +511,8 @@ def generate_domain_scan_report_pdf_bytes(
                             str(host.get("subdomain") or "—"),
                             str(host.get("ip") or "—"),
                             str(host.get("port") or "—"),
-                            str(finding.get("severity") or "INFO").upper(),
+                            # Per-host severity — hosts inside one rule can differ
+                            str(host.get("severity") or finding.get("severity") or "INFO").upper(),
                         ])
                 story.append(_style_table(rows, finding_col_widths, severity_col=4))
 

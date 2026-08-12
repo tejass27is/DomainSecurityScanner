@@ -57,6 +57,7 @@ def get_score(
                 domain,
                 org_id,
                 domain_score,
+                weighted_score,
                 severity,
                 mail_security,
                 app_security,
@@ -85,6 +86,7 @@ def get_score(
         "domain": row.domain,
         "org_id": row.org_id,
         "domain_score": row.domain_score,
+        "weighted_score": row.weighted_score,
         "domain_criticality": None,
         "severity": row.severity,
         "mail_security": row.mail_security,
@@ -111,9 +113,23 @@ def get_score(
     # Use stored criticality or auto-detect from domain
     criticality = score_data["domain_criticality"] or get_criticality_from_domain_keywords(score_data["domain"])
 
-    # Calculate weighted score
+    # Calculate weighted score (for the breakdown panel / compliance)
     breakdown = calculate_weighted_score(categories, criticality)
     scoring_response = format_scoring_response(breakdown)
+
+    # The stored domain_score IS the weighted total (merged at scan time in
+    # calculate_and_store_summary). Use it for the headline fields so the
+    # dashboard headline, PDF and this response can never drift apart.
+    #
+    # Legacy rows (scanned before the merge) have weighted_score = NULL — their
+    # domain_score still holds the old worker average. Fall back to the freshly
+    # computed weighted total for those so the headline always agrees with the
+    # breakdown panel.
+    merged_score = (
+        score_data["domain_score"]
+        if score_data.get("weighted_score") is not None and score_data["domain_score"] is not None
+        else breakdown.total_score
+    )
 
     # Extract IP reputation score if available
     ip_reputation_score = None
@@ -123,16 +139,16 @@ def get_score(
             ip_reputation_score = first_ip.get("abuseConfidenceScore")
 
     response = {
-        # New weighted scoring fields
-        "total_score": breakdown.total_score,
+        # New weighted scoring fields — total_score == stored domain_score (merged)
+        "total_score": merged_score,
         "base_score": breakdown.base_score,
-        "weighted_score": breakdown.total_score,
+        "weighted_score": merged_score,
         "scoring_breakdown": scoring_response["scoring_breakdown"],
         "compliance": scoring_response["compliance"],
 
         # Legacy fields for backward compatibility
         "org_id": score_data["org_id"],
-        "domain_score": score_data["domain_score"],
+        "domain_score": merged_score,
         "host": {
             "domain": score_data["domain"],
             "mail_security": score_data["mail_security"] or {}

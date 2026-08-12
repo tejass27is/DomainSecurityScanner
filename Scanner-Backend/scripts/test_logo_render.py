@@ -41,8 +41,14 @@ categories = [
     {
         "name": "Network Security",
         "findings": [
+            # Mixed-severity rule: one HIGH host + one LOW host. The HIGH host
+            # MUST survive (exactly the dashboard/PDF mismatch the user saw),
+            # while the LOW host is dropped.
             {"rule": "Open port 22", "severity": "HIGH",
-             "hosts": [{"subdomain": "example.com", "ip": "1.2.3.4", "port": 22}]},
+             "hosts": [
+                 {"subdomain": "high.example.com", "ip": "1.2.3.4", "port": 22, "severity": "HIGH"},
+                 {"subdomain": "mail2.example.com", "ip": "1.2.3.6", "port": 22, "severity": "LOW"},
+             ]},
         ],
     },
     {"name": "IP Reputation", "isIpRep": True, "findings": []},
@@ -134,12 +140,22 @@ big_drawings = [
 assert not big_drawings, f"FAIL: duplicate logo still on overview page ({len(big_drawings)} drawings)"
 print("OK: no duplicate logo on the Report Overview page")
 
-# 8. LOW-severity findings are excluded from the report — only CRITICAL,
-# HIGH and MEDIUM appear in the severity breakdown and detail tables.
-low_hits = re.findall(r"\bLOW\b|\bLow\b", all_text)
-assert not low_hits, f"FAIL: LOW still appears in the report: {low_hits}"
+# 8. LOW severity appears ONLY in the Severity Breakdown table (title-cased
+# "Low") — it must never appear in the detail tables (uppercase "LOW") or as a
+# finding rule/host.
+uppercase_low = re.findall(r"\bLOW\b", all_text)
+assert not uppercase_low, f"FAIL: LOW still appears in a detail table: {uppercase_low}"
+title_low = re.findall(r"\bLow\b", all_text)
+assert len(title_low) == 1, f"FAIL: expected 'Low' only in the Severity Breakdown, found {title_low}"
 assert "Low value test finding" not in all_text, "FAIL: LOW finding still listed in a detail table"
 assert "Total findings" in all_text, "FAIL: total findings row missing"
-print("OK: only CRITICAL/HIGH/MEDIUM severities shown (LOW excluded)")
+print("OK: LOW shown only in the Severity Breakdown table")
+
+# 9. Dashboard parity: a rule with mixed-severity hosts (HIGH + LOW) must keep
+# the HIGH host in the PDF — previously the whole rule vanished when the last
+# host was LOW. The LOW host itself must still be filtered out.
+assert "high.example.com" in all_text, "FAIL: HIGH host disappeared from the PDF"
+assert "mail2.example.com" not in all_text, "FAIL: LOW host still appears in the PDF"
+print("OK: HIGH host survives mixed-severity rule; LOW host dropped")
 
 print("RESULT: ALL PASS")

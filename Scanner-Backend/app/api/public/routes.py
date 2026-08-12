@@ -1,12 +1,23 @@
-import json
+import os
+import time
 import urllib.parse
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.db.base import get_db
-from app.db.models import ScanSummary, Organization, User, ActiveScan
+from app.db.models import (
+    ScanSummary,
+    Organization,
+    User,
+    ActiveScan,
+    PortFixRequest,
+    HeaderFixRequest,
+    TlsFixRequest,
+    ResolvedFinding,
+)
 from app.api.analyzer.scoring_service import format_scoring_response, calculate_weighted_score, get_criticality_from_domain_keywords
 from app.api.scanner.service import _validate_domain_dns
 from app.api.auth.service import hashPassword
@@ -17,6 +28,68 @@ from app.utils.generate_scan_report_pdf import generate_domain_scan_report_pdf_b
 
 router = APIRouter(prefix="/public", tags=["public"])
 redis_client = RedisClient()
+
+ABUSEIPDB_URL = "https://api.abuseipdb.com/api/v2/check"
+
+# Per-IP cache so repeated report downloads don't hammer the AbuseIPDB rate
+# limit (free tier: 1000 req/day). A 24h TTL is a good balance — reputation
+# doesn't change minute to minute.
+_IP_REP_CACHE: dict = {}
+_IP_REP_CACHE_TTL = 24 * 3600
+
+
+def _enrich_ip_reputation(ips: list | None) -> list:
+    """Turn stored IP strings into AbuseIPDB reputation dicts.
+
+    The scan pipeline stores plain IP strings in scan_summary.ips, but the
+    report/PDF expects dicts with abuseConfidenceScore / totalReports etc.
+    Query AbuseIPDB for each unique IP, skip failures, and cache per IP.
+    """
+    if not ips:
+        return []
+
+    # Already-enriched dicts (future-proof) — return as-is.
+    if all(isinstance(item, dict) for item in ips):
+        return [item for item in ips if isinstance(item, dict)]
+
+    api_key = os.getenv("ABUSEIPDB_API_KEY")
+    if not api_key:
+        return []
+
+    enriched = []
+    now = time.time()
+    for ip in dict.fromkeys(str(item).strip() for item in ips if item):
+        cached = _IP_REP_CACHE.get(ip)
+        if cached and (now - cached[0]) < _IP_REP_CACHE_TTL:
+            enriched.append(cached[1])
+            continue
+        try:
+            response = httpx.get(
+                ABUSEIPDB_URL,
+                params={"ipAddress": ip, "maxAgeInDays": 90, "verbose": False},
+                headers={"Key": api_key, "Accept": "application/json"},
+                timeout=8,
+            )
+            if response.status_code != 200:
+                continue
+            result = response.json().get("data", {})
+            rep = {
+                "ip": result.get("ipAddress") or ip,
+                "abuseConfidenceScore": result.get("abuseConfidenceScore", 0),
+                "totalReports": result.get("totalReports", 0),
+                "countryCode": result.get("countryCode", ""),
+                "isp": result.get("isp", ""),
+                "domain": result.get("domain", ""),
+                "isPublic": result.get("isPublic", True),
+                "usageType": result.get("usageType", ""),
+                "lastReportedAt": result.get("lastReportedAt"),
+            }
+            _IP_REP_CACHE[ip] = (now, rep)
+            enriched.append(rep)
+        except Exception:
+            # One bad IP shouldn't break the whole report.
+            continue
+    return enriched
 
 
 def _score_grade(score: int) -> str:
@@ -46,13 +119,15 @@ def _build_report_data(row: ScanSummary):
     if row.dns_security:
         categories.append({"name": "DNS Security", "findings": _normalize_findings(row.dns_security)})
         categories_payload["DNS Security"] = row.dns_security
-    if row.mail_security:
-        categories.append({"name": "Mail Security", "findings": _normalize_findings(row.mail_security)})
-        categories_payload["Mail Security"] = row.mail_security
-
-    ip_reps = []
-    if isinstance(row.ips, list):
-        ip_reps = [item for item in row.ips if isinstance(item, dict)]
+    # NOTE: Mail Security findings live under DNS Security (stored by
+    # evaluate_dns_security in the analyzer), NOT in row.mail_security which
+    # is raw config. Adding a separate Mail Security category here would always
+    # show "No findings." — misleading. The mail findings are correctly surfaced
+    # under the DNS Security category below.
+    # Enrich stored IP strings with live AbuseIPDB data so the PDF report's
+    # "IP Reputation" section actually shows something (the scan pipeline
+    # stores plain IP strings, not reputation dicts).
+    ip_reps = _enrich_ip_reputation(row.ips)
 
     # IP Reputation always appears (mirrors the logged-in report), even when empty
     categories.append({"name": "IP Reputation", "isIpRep": True, "findings": ip_reps})
@@ -109,6 +184,13 @@ def _clear_existing_public_scan_results(db: Session, domain: str) -> None:
         return
 
     try:
+        # Delete child rows that FK-reference scan_summary.domain FIRST.
+        # Otherwise the DELETE below violates the FK constraint on Postgres
+        # and the old summary survives — scan-status then reports "complete"
+        # with the previous score while the new scan is still running.
+        for model in (PortFixRequest, HeaderFixRequest, TlsFixRequest, ResolvedFinding):
+            db.query(model).filter(model.domain == normalized_domain).delete(synchronize_session=False)
+
         db.query(ScanSummary).filter(ScanSummary.domain == normalized_domain).delete(synchronize_session=False)
         db.query(ActiveScan).filter(
             ActiveScan.domain == normalized_domain,
@@ -119,93 +201,7 @@ def _clear_existing_public_scan_results(db: Session, domain: str) -> None:
         db.rollback()
 
 
-def _normalize_stage_name(stage: str | None) -> str:
-    normalized = (stage or "").strip().lower()
-    if not normalized:
-        return "queued"
-
-    mapping = {
-        "discovery": "dns",
-        "subdomain_discovery": "dns",
-        "filter": "headers",
-        "subdomain_filter": "headers",
-        "collection": "headers",
-        "subdomain_collection": "headers",
-        "data_collection": "headers",
-        "completed": "report_generation",
-        "scan_complete": "report_generation",
-        "scan_completed": "report_generation",
-    }
-    return mapping.get(normalized, normalized)
-
-
-def _build_progress_payload(progress: int | None, status: str | None = None, stage: str | None = None, message: str | None = None) -> str:
-    payload = {
-        "progress": max(0, min(100, int(progress))) if progress is not None else 0,
-        "status": (status or "running").strip() or "running",
-        "stage": _normalize_stage_name(stage),
-        "message": message or "Scan in progress",
-    }
-    return json.dumps(payload)
-
-
-def _parse_progress_payload(raw_value) -> dict | None:
-    if raw_value is None:
-        return None
-
-    if isinstance(raw_value, bytes):
-        raw_value = raw_value.decode("utf-8", errors="ignore")
-
-    if not isinstance(raw_value, str):
-        return None
-
-    raw_value = raw_value.strip()
-    if not raw_value:
-        return None
-
-    try:
-        parsed = json.loads(raw_value)
-    except json.JSONDecodeError:
-        try:
-            numeric = int(raw_value)
-            return {"progress": numeric, "status": "running", "stage": "queued", "message": "Scan in progress"}
-        except (TypeError, ValueError):
-            return None
-
-    if isinstance(parsed, dict):
-        progress = parsed.get("progress")
-        try:
-            progress_int = int(progress)
-        except (TypeError, ValueError):
-            progress_int = 0
-
-        return {
-            "progress": max(0, min(100, progress_int)),
-            "status": str(parsed.get("status") or "running").strip() or "running",
-            "stage": _normalize_stage_name(parsed.get("stage")),
-            "message": str(parsed.get("message") or "Scan in progress").strip() or "Scan in progress",
-        }
-
-    return None
-
-
-def _build_fallback_public_status(active_scan: ActiveScan | None, stage: str | None = None) -> dict:
-    base_progress = 10
-    current_stage = _normalize_stage_name(stage)
-    if current_stage == "dns":
-        base_progress = 28
-    elif current_stage == "headers":
-        base_progress = 68
-    elif current_stage == "report_generation":
-        base_progress = 92
-
-    status_value = (getattr(active_scan, "status", None) or "pending").strip() or "pending"
-    return {
-        "status": status_value,
-        "progress": base_progress,
-        "stage": current_stage,
-        "message": "Scan in progress",
-    }
+_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 
 def _normalize_findings(payload: dict | None):
@@ -217,17 +213,24 @@ def _normalize_findings(payload: dict | None):
         if not isinstance(hosts, list):
             continue
         normalized_hosts = []
-        severity = "info"
+        severities = []
         for host in hosts:
             if isinstance(host, dict):
+                host_severity = str(host.get("severity") or "").lower()
+                if host_severity:
+                    severities.append(host_severity)
                 normalized_hosts.append({
                     "subdomain": host.get("subdomain") or host.get("host") or host.get("name"),
                     "ip": host.get("ip") or host.get("ip_address"),
                     "port": host.get("port"),
                     "severity": host.get("severity"),
                 })
-                if host.get("severity"):
-                    severity = str(host.get("severity")).lower()
+        # Dominant severity = the WORST one present among the hosts, matching
+        # the scan dashboard (which labels a rule "high" if any host is high).
+        # Using the last host's severity instead made rules with mixed-severity
+        # hosts (e.g. a HIGH host followed by a LOW host) collapse to LOW and
+        # wrongly disappear from the PDF report.
+        severity = min(severities, key=lambda s: _SEVERITY_RANK.get(s, 99)) if severities else "info"
         findings.append({
             "rule": rule_name,
             "severity": severity,

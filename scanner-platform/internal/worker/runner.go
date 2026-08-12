@@ -15,6 +15,7 @@ import (
 	"scanner-platform/scanner-engine/scanners/collection"
 	"scanner-platform/scanner-engine/scanners/discovery"
 	"scanner-platform/scanner-engine/scanners/filters"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -64,9 +65,9 @@ func syncPublicScanProgress(job *models.ScanJob, stage string, progress int, mes
 
 	payload := map[string]any{
 		"progress": progress,
-		"status": status,
-		"stage": normalizePublicStage(stage),
-		"message": message,
+		"status":   status,
+		"stage":    normalizePublicStage(stage),
+		"message":  message,
 	}
 
 	data, err := json.Marshal(payload)
@@ -228,12 +229,12 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 
 	updateScanProgress(job, "discovery", 35, "Discovery completed", "running", "", map[string]any{"subdomains_found": len(results.Data.([]string))})
 	discovery_payload := models.ScanNotification{
-		ScanID: job.ScanID,
-		Target: job.Target,
-		Event:  "subdomain_discovery_completed",
-		Status: "completed",
-		Stage:  "discovery",
-		Progress: 35,
+		ScanID:     job.ScanID,
+		Target:     job.Target,
+		Event:      "subdomain_discovery_completed",
+		Status:     "completed",
+		Stage:      "discovery",
+		Progress:   35,
 		Checkpoint: map[string]any{"subdomains_found": len(results.Data.([]string))},
 	}
 
@@ -274,12 +275,12 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 
 	updateScanProgress(job, "filter", 65, "Filtering completed", "running", "", map[string]any{"filtered_subdomains": len(filter_pipeline_results.Data.([]interface{}))})
 	filter_payload := models.ScanNotification{
-		ScanID: job.ScanID,
-		Target: job.Target,
-		Event:  "subdomain_filter_completed",
-		Status: "completed",
-		Stage:  "filter",
-		Progress: 65,
+		ScanID:     job.ScanID,
+		Target:     job.Target,
+		Event:      "subdomain_filter_completed",
+		Status:     "completed",
+		Stage:      "filter",
+		Progress:   65,
 		Checkpoint: map[string]any{"filtered_subdomains": len(filter_pipeline_results.Data.([]interface{}))},
 	}
 
@@ -322,12 +323,12 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 
 	updateScanProgress(job, "collection", 90, "Collection completed", "running", "", map[string]any{"collection_items": len(collection_data_results.Data.(map[string]interface{}))})
 	collection_payload := models.ScanNotification{
-		ScanID: job.ScanID,
-		Target: job.Target,
-		Event:  "subdomain_collection_completed",
-		Status: "completed",
-		Stage:  "collection",
-		Progress: 90,
+		ScanID:     job.ScanID,
+		Target:     job.Target,
+		Event:      "subdomain_collection_completed",
+		Status:     "completed",
+		Stage:      "collection",
+		Progress:   90,
 		Checkpoint: map[string]any{"collection_items": len(collection_data_results.Data.(map[string]interface{}))},
 	}
 

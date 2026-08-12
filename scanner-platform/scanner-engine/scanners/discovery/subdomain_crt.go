@@ -27,37 +27,62 @@ func (c *CrtCTScanner) Category() string {
 }
 
 func (c *CrtCTScanner) RunDiscoveryScanner(
-	ctx context.Context, 
+	ctx context.Context,
 	domain string,
-	) (core.Result, error) {
+) (core.Result, error) {
 	url := "https://crt.sh/?q=%25." + domain + "&output=json"
 
 	null := core.Result{}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return null, err
-	}
-	req.Header.Set("User-Agent", "scanner/1.0")
-	req.Header.Set("Accept", "application/json")
-
+	// crt.sh is a free, community-hosted service whose nginx edge frequently
+	// returns transient 502/503 errors when its (heavily loaded) Postgres
+	// backend is slow or rebuilding. The 502 is almost never about the query
+	// itself, so retry a couple of times with short backoff before giving up.
+	// A failed source is non-fatal anyway: the discovery pipeline logs the
+	// error and continues with the other sources (certspotter, subfinder, ...).
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 20 * time.Second,
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return null, err
-	}
-	defer resp.Body.Close()
+	var body []byte
+	resp := &http.Response{}
+	retryDelays := []time.Duration{2 * time.Second, 5 * time.Second}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return null, err
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return null, err
+		}
+		req.Header.Set("User-Agent", "scanner/1.0")
+		req.Header.Set("Accept", "application/json")
+
+		resp, err = client.Do(req)
+		if err != nil {
+			return null, err
+		}
+		body, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return null, err
+		}
+
+		// Retry transient server errors (502/503/504) a limited number of
+		// times with backoff. 4xx errors (bad query etc.) are not retried.
+		if resp.StatusCode >= 500 && attempt < len(retryDelays) {
+			fmt.Printf("crt.sh returned %d on attempt %d, retrying in %s...\n",
+				resp.StatusCode, attempt+1, retryDelays[attempt])
+			select {
+			case <-time.After(retryDelays[attempt]):
+				continue
+			case <-ctx.Done():
+				return null, ctx.Err()
+			}
+		}
+		break
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return null, fmt.Errorf("crt.sh returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return null, fmt.Errorf("crt.sh returned status %d after retries: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	trimmed := strings.TrimSpace(string(body))
@@ -101,8 +126,8 @@ func (c *CrtCTScanner) RunDiscoveryScanner(
 	}
 
 	crt_subdomains_found := core.Result{
-		Scanner: c.Name(),
-		Category: c.Category(),
+		Scanner:   c.Name(),
+		Category:  c.Category(),
 		Target:    domain,
 		Data:      results,
 		Timestamp: time.Now(),

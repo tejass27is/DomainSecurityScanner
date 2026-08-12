@@ -24,8 +24,8 @@ func (s *SubdomainSubFinderScanner) Category() string {
 	return "discovery"
 }
 
-func (s * SubdomainSubFinderScanner) RunDiscoveryScanner(
-	ctx context.Context, 
+func (s *SubdomainSubFinderScanner) RunDiscoveryScanner(
+	ctx context.Context,
 	domain string) (core.Result, error) {
 	null := core.Result{}
 	cmd := exec.CommandContext(
@@ -51,9 +51,10 @@ func (s * SubdomainSubFinderScanner) RunDiscoveryScanner(
 	for scanner.Scan() {
 		sub := strings.TrimSpace(scanner.Text())
 
-		// if !IsValidSubdomain(sub, domain) {
-		// 	continue
-		// }
+		// Drop invalid/noisy entries instead of feeding them into the pipeline.
+		if !IsValidSubdomain(sub, domain) {
+			continue
+		}
 
 		if _, ok := seen[sub]; ok {
 			continue
@@ -79,10 +80,10 @@ func (s * SubdomainSubFinderScanner) RunDiscoveryScanner(
 	}
 
 	subfinder_subdomains_found := core.Result{
-		Scanner: s.Name(),
-		Category: s.Category(),
-		Target: domain,
-		Data: results,
+		Scanner:   s.Name(),
+		Category:  s.Category(),
+		Target:    domain,
+		Data:      results,
 		Timestamp: time.Now(),
 	}
 

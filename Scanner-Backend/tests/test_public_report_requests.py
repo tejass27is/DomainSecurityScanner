@@ -86,7 +86,7 @@ def test_build_report_data_uses_stored_domain_score_to_match_the_scan():
     assert ip_reps == []
 
 
-<<<<<<< HEAD
+
 def test_build_report_data_falls_back_to_weighted_score_when_domain_score_missing():
     row = ScanSummary(
         domain="example.com",
@@ -105,7 +105,6 @@ def test_build_report_data_falls_back_to_weighted_score_when_domain_score_missin
     assert score == 75
     assert grade_label == "Fair"
     assert categories[0]["name"] == "Application Security"
-=======
 def test_public_scan_status_returns_stage_payload_from_redis(monkeypatch):
     Base.metadata.drop_all(bind=engine, checkfirst=True)
     Base.metadata.create_all(bind=engine)
@@ -128,4 +127,3 @@ def test_public_scan_status_returns_stage_payload_from_redis(monkeypatch):
         assert response["message"] == "Checking DNS records"
     finally:
         db.close()
->>>>>>> 5f888c2 (feat: implement scan progress tracking and status updates in public scan endpoints, enhance UI for progress display)

@@ -16,7 +16,6 @@ from app.api.admin.routes import router as admin_router
 from app.api.malware.routes import router as malware_router
 from app.api.public.routes import router as public_router
 from app.db.base import SessionLocal
-from app.api.fix.routes import router as fix_router
 from app.api.report_issue.routes import router as report_issue_router
 from app.api.vapt.routes import router as vapt_router
 from app.api.admin.service import seed_default_subscription_plans, delete_expired_unclaimed_promo_codes

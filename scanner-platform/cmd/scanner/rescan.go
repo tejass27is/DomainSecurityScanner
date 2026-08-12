@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
+	"time"
 )
 
 type PortScanResult struct {
@@ -16,7 +18,12 @@ func RescanSinglePort(host string, port int) PortScanResult {
 
 	fmt.Printf("\nScanning %s:%d\n", host, port)
 
-	cmd := exec.Command(
+	// Hard timeout so a hung naabu process can never block the worker forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(
+		ctx,
 		"naabu",
 		"-host", host,
 		"-p", fmt.Sprintf("%d", port),
