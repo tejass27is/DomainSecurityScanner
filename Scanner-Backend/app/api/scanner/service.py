@@ -9,6 +9,19 @@ from app.db.models import Organization, ActiveScan
 redis_client = RedisClient()
 
 
+def _build_cancel_signal_keys(org_id: str, domain: str) -> list[str]:
+    domain = (domain or "").strip().lower()
+    org_id = (org_id or "").strip()
+    if not org_id or not domain:
+        return []
+
+    scan_id = f"{org_id}:{domain}"
+    return [
+        f"scan_cancel:{org_id}:{domain}",
+        f"scan_cancel:{scan_id}:{domain}",
+    ]
+
+
 def _validate_domain_dns(domain: str) -> tuple[bool, str]:
     """
     Resolves the domain's A records via DNS.
@@ -46,8 +59,12 @@ async def create_scan_task_to_queue(db: Session, domain: str, org_id: str):
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
 
+        # 🔐 Verify domain ownership: user can only scan domains they've registered
         org_domains = list(org.domain) if org.domain else []
         if domain not in org_domains:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"🔴 SECURITY: Unauthorized scan attempt for domain '{domain}' by org '{org_id}'")
             raise HTTPException(
                 status_code=403,
                 detail="Domain not registered. Please add the domain to your account before scanning."
@@ -56,7 +73,9 @@ async def create_scan_task_to_queue(db: Session, domain: str, org_id: str):
         db.commit()
 
         scan_job = {
-            "scan_id": org_id,
+            "scan_id": f"{org_id}:{domain}",
+            "org_id": org_id,
+            "domain": domain,
             "target": domain,
         }
 
@@ -101,3 +120,30 @@ async def create_scan_task_to_queue(db: Session, domain: str, org_id: str):
     except Exception as e:
         db.rollback()
         raise e
+
+
+def cancel_active_scans_for_org(db: Session, org_id: str):
+    """Immediately stop all active scans for an org so logout clears running scans."""
+    if not org_id:
+        return []
+
+    cancelled_domains = []
+    try:
+        active_scans = db.query(ActiveScan).filter(ActiveScan.org_id == org_id).all()
+        for active_scan in active_scans or []:
+            domain = (getattr(active_scan, "domain", None) or "").strip().lower()
+            if not domain:
+                continue
+            active_scan.status = "cancelled"
+            cancelled_domains.append(domain)
+            try:
+                for key in _build_cancel_signal_keys(org_id, domain):
+                    redis_client.redis.set(key, "1", ex=1800)
+                redis_client.redis.delete(f"scan_progress:{org_id}:{domain}")
+            except Exception:
+                pass
+        db.commit()
+        return cancelled_domains
+    except Exception:
+        db.rollback()
+        return []

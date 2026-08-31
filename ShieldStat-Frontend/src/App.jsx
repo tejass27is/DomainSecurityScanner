@@ -15,7 +15,6 @@ const ScanDashboard = lazy(() => import("./pages/ScanDashboard"));
 const ScanDetails = lazy(() => import("./pages/ScanDetails"));
 const ScanHistory = lazy(() => import("./pages/ScanHistory"));
 const AdminUsers = lazy(() => import("./pages/AdminUsers"));
-const AdminPublicUsers = lazy(() => import("./pages/AdminPublicUsers"));
 const AdminAudit = lazy(() => import("./pages/AdminAudit"));
 const PersonalInvitations = lazy(() => import("./pages/PersonalInvitations"));
 const AdminSubscription = lazy(() => import("./pages/AdminSubscription"));
@@ -29,6 +28,7 @@ const VaptReports = lazy(() => import("./pages/VaptReports"));
 const VaptReport = lazy(() => import("./pages/VaptReport"));
 const SocAnalystVaptReports = lazy(() => import("./pages/SocAnalystVaptReports"));
 const AdminRescanRequests = lazy(() => import("./pages/AdminRescanRequests"));
+const AdminVaptAccessRequests = lazy(() => import("./pages/AdminVaptAccessRequests"));
 
 function App() {
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -110,13 +110,14 @@ function App() {
         }
       >
         <Route index element={<AdminUsers />} />
-        <Route path="public-users" element={<AdminPublicUsers />} />
         <Route path="personal-invitations" element={<PersonalInvitations />} />
         <Route path="subscription" element={<AdminSubscription />} />
         <Route path="audit" element={<AdminAudit />} />
         <Route path="reports" element={<AdminReports />} />
         <Route path="vapt-reports" element={<SocAnalystVaptReports />} />
         <Route path="vapt-reports/:importId" element={<VaptReport />} />
+        <Route path="vapt-upload" element={<VaptUpload />} />
+        <Route path="vapt-access-requests" element={<AdminVaptAccessRequests />} />
         <Route path="rescan-requests" element={<AdminRescanRequests />} />
         <Route path="profile" element={<Profile />} />
       </Route>

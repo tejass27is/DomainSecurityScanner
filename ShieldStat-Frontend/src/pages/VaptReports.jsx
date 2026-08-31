@@ -7,6 +7,7 @@ import {
 import {
   getVaptImports,
   downloadVaptReport,
+  getVaptAccessStatus,
 } from "../services/api";
 import {
   severityMeta,
@@ -65,6 +66,8 @@ export default function VaptReports() {
   // month narrows within the selected year. "all" shows every year.
   const [yearFilter, setYearFilter] = useState(null);
   const [monthFilter, setMonthFilter] = useState(null);
+  const [approvedRegionCodes, setApprovedRegionCodes] = useState([]);
+  const [regionFilter, setRegionFilter] = useState(null);
 
   const loadImports = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -85,8 +88,39 @@ export default function VaptReports() {
   }, [navigate]);
 
   useEffect(() => {
-    loadImports();
-  }, [loadImports]);
+    const token = localStorage.getItem("token");
+    if (!token) {
+      navigate("/auth", { replace: true });
+      return;
+    }
+
+    const checkAccess = async () => {
+      try {
+        const profile = JSON.parse(localStorage.getItem("user") || "null");
+        const isStaff = profile?.role === "admin" || profile?.role === "soc_analyst";
+        if (isStaff) {
+          loadImports();
+          return;
+        }
+
+        const status = await getVaptAccessStatus(token);
+        if (!status?.vapt_access_enabled) {
+          navigate("/vapt", { replace: true });
+          return;
+        }
+
+        setApprovedRegionCodes(
+          status?.approved_region_codes ||
+            (status?.approved_regions || []).map((r) => (typeof r === "string" ? r : r?.code)).filter(Boolean),
+        );
+        loadImports();
+      } catch {
+        navigate("/vapt", { replace: true });
+      }
+    };
+
+    checkAccess();
+  }, [loadImports, navigate]);
 
   const handleDownload = useCallback(async (importId) => {
     const token = localStorage.getItem("token");
@@ -107,7 +141,7 @@ export default function VaptReports() {
   const filteredImports = filterImportsByPeriod(imports, {
     year: effectiveYear,
     month: monthFilter,
-  });
+  }).filter((item) => !regionFilter || item.region === regionFilter);
 
   const handleYearClick = (year) => {
     setYearFilter(year);
@@ -167,6 +201,21 @@ export default function VaptReports() {
             </div>
           </div>
         </div>
+
+        {/* ── Region tabs (your approved regions) ── */}
+        {approvedRegionCodes.length > 0 && imports.length > 0 && (
+          <div className="mb-6 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">
+              Region
+            </span>
+            <PeriodChip active={!regionFilter} onClick={() => setRegionFilter(null)}>All Regions</PeriodChip>
+            {approvedRegionCodes.map((code) => (
+              <PeriodChip key={code} active={regionFilter === code} onClick={() => setRegionFilter(code)}>
+                {code}
+              </PeriodChip>
+            ))}
+          </div>
+        )}
 
         {error && (
           <div className="mb-6 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
@@ -253,6 +302,7 @@ export default function VaptReports() {
             <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200">
               No reports in {effectiveYear}
               {monthFilter != null ? ` / ${MONTH_LABELS_SHORT[monthFilter - 1]}` : ""}
+              {regionFilter ? ` · ${regionFilter}` : ""}
             </h2>
             <p className="mt-2 max-w-sm text-sm leading-6 text-slate-500 dark:text-slate-400">
               Pick a different year or month above to see those reports.
@@ -287,7 +337,9 @@ export default function VaptReports() {
                                 {item.file_name}
                               </p>
                               <p className="text-xs text-slate-500 dark:text-slate-400">
-                                {item.file_format.toUpperCase()} export · {formatLabel(item)}
+                                {item.file_format.toUpperCase()} export ·{" "}
+                                <span className="font-bold text-purple-600 dark:text-purple-400">{item.region || "—"}</span> ·{" "}
+                                {formatLabel(item)}
                               </p>
                             </div>
                           </div>

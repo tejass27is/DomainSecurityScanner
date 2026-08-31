@@ -25,10 +25,13 @@ from app.api.vapt.schemas import (
     VaptImportListItem,
     VaptUploadResponse,
 )
-from app.core.middleware import protect, require_admin_or_soc_analyst
+from app.core.middleware import protect, require_admin_or_soc_analyst, require_soc_analyst, require_vapt_access
 from app.db.base import get_db
-from app.db.models import Organization, User, VaptImport, VaptRescanSchedule
+from app.db.models import Organization, User, VaptImport, VaptRescanSchedule, Region, OrganizationRegion
 from app.api.vapt import schedule_service
+
+# A client organization can request/be approved for up to this many VAPT regions.
+MAX_VAPT_REGIONS_PER_ORG = 5
 from app.core.redis_queue import RedisClient
 from app.core.websocket_manager import ws_manager
 from app.api.scanner.service import _validate_domain_dns
@@ -96,6 +99,7 @@ def _to_list_item(record: VaptImport, uploader_email: str | None = None) -> dict
         "risk_score": record.risk_score,
         "severity": record.severity,
         "severity_distribution": record.severity_distribution or {},
+        "region": record.region or "",
         "uploaded_by": str(record.uploaded_by) if record.uploaded_by else None,
         "uploaded_by_email": uploader_email,
         "status": record.status,
@@ -121,20 +125,285 @@ def _normalize_finding_status(status: str) -> str:
     return value
 
 
+def _get_org_region_status(db: Session, org_id: str | None, blocked: bool = False):
+    if not org_id:
+        return {
+            "vapt_access_enabled": False,
+            "vapt_blocked": blocked,
+            "approved_regions": [],
+            "pending_regions": [],
+            "available_regions": [],
+        }
+
+    active_regions = db.query(Region).filter(Region.is_active.is_(True)).order_by(Region.code.asc()).all()
+    org_region_rows = (
+        db.query(OrganizationRegion, Region)
+        .join(Region, OrganizationRegion.region_id == Region.region_id)
+        .filter(OrganizationRegion.org_id == org_id)
+        .all()
+    )
+    status_by_code = {
+        region.code: org_region.status
+        for org_region, region in org_region_rows
+    }
+
+    approved_regions = []
+    pending_regions = []
+    available_regions = []
+
+    for region in active_regions:
+        item = {"code": region.code, "name": region.name}
+        status = status_by_code.get(region.code)
+        if status == "approved":
+            approved_regions.append(item)
+        elif status == "pending":
+            pending_regions.append(item)
+        else:
+            available_regions.append(item)
+
+    approved_codes = [item["code"] for item in approved_regions]
+    pending_codes = [item["code"] for item in pending_regions]
+    available_codes = [item["code"] for item in available_regions]
+
+    return {
+        "vapt_access_enabled": bool(approved_regions) and not blocked,
+        "vapt_blocked": blocked,
+        "approved_regions": approved_regions,
+        "pending_regions": pending_regions,
+        "available_regions": available_regions,
+        "requested_regions": pending_codes,
+        "approved_region_codes": approved_codes,
+        "pending_region_codes": pending_codes,
+        "available_region_codes": available_codes,
+    }
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
+
+@router.post("/request-access")
+def request_vapt_access(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Create a pending request for one or more org-scoped regions.
+
+    Region codes + names are typed by the user at request time — nothing is
+    seeded or built-in. Each entry is either a code string or {code, name}.
+    """
+    region_values = payload.get("regions")
+    if region_values is None:
+        region_values = payload.get("region_codes")
+    if region_values is None:
+        region_values = payload.get("region")
+
+    if isinstance(region_values, str):
+        region_values = [region_values]
+    if isinstance(region_values, dict):
+        region_values = [region_values]
+
+    requested = []
+    for value in (region_values or []):
+        if isinstance(value, dict):
+            code = str(value.get("code") or value.get("region") or "").strip().upper()
+            name = str(value.get("name") or "").strip()
+        else:
+            code = str(value).strip().upper()
+            name = ""
+        if code:
+            requested.append({"code": code, "name": name})
+
+    if not requested:
+        raise HTTPException(status_code=400, detail="At least one region is required.")
+
+    org_id = current_user.org_id
+    if not org_id:
+        raise HTTPException(status_code=400, detail="This account is not linked to an organization.")
+
+    # A client org can have up to MAX_VAPT_REGIONS_PER_ORG requested/approved
+    # regions. Approved + pending rows count toward the cap; re-requesting an
+    # existing one is a no-op and never exceeds it.
+    existing_rows = (
+        db.query(OrganizationRegion)
+        .filter(
+            OrganizationRegion.org_id == org_id,
+            OrganizationRegion.status.in_(["approved", "pending"]),
+        )
+        .all()
+    )
+    existing_by_region = {row.region_id: row for row in existing_rows}
+
+    for entry in requested:
+        code = entry["code"]
+        name = entry["name"]
+
+        region = db.query(Region).filter(Region.code == code).first()
+        if region is None:
+            region = Region(code=code, name=name or code, is_active=True)
+            db.add(region)
+            db.flush()
+        elif name and name != region.name:
+            region.name = name
+            db.add(region)
+
+        org_region = existing_by_region.get(region.region_id)
+        if org_region is None:
+            if len(existing_by_region) >= MAX_VAPT_REGIONS_PER_ORG:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"You can request access to up to {MAX_VAPT_REGIONS_PER_ORG} regions. "
+                        "This organization has already reached that limit."
+                    ),
+                )
+            org_region = OrganizationRegion(org_id=org_id, region_id=region.region_id, status="pending")
+            db.add(org_region)
+            existing_by_region[region.region_id] = org_region
+        elif org_region.status == "approved":
+            continue
+        else:
+            org_region.status = "pending"
+            org_region.requested_at = datetime.now(timezone.utc)
+
+    db.commit()
+    return {
+        "success": True,
+        **_get_org_region_status(db, org_id),
+    }
+
+
+@router.get("/access-status")
+def get_vapt_access_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    return {
+        **_get_org_region_status(db, current_user.org_id, blocked=bool(getattr(current_user, "vapt_blocked", False))),
+        "region": getattr(db.query(Organization).filter(Organization.org_id == current_user.org_id).first(), "region", None) if current_user.org_id else None,
+    }
+
+
+@router.post("/admin/approve-access")
+def approve_vapt_access(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Admin approves or rejects a region for a specific org."""
+    org_id = str(payload.get("org_id") or "").strip() or None
+    user_id = str(payload.get("user_id") or "").strip() or None
+    region_code = str(payload.get("region") or payload.get("region_code") or "").strip().upper()
+    approved = bool(payload.get("approved", True))
+
+    if not region_code:
+        raise HTTPException(status_code=400, detail="Region code is required.")
+
+    if org_id is None and user_id:
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+        org_id = user.org_id
+
+    if not org_id:
+        raise HTTPException(status_code=400, detail="org_id is required.")
+
+    region = db.query(Region).filter(Region.code == region_code, Region.is_active.is_(True)).first()
+    if not region:
+        raise HTTPException(status_code=404, detail=f"Unknown region code: {region_code}")
+
+    org_region = (
+        db.query(OrganizationRegion)
+        .filter(OrganizationRegion.org_id == org_id, OrganizationRegion.region_id == region.region_id)
+        .first()
+    )
+    if not org_region:
+        org_region = OrganizationRegion(org_id=org_id, region_id=region.region_id, status="pending")
+        db.add(org_region)
+
+    org_region.status = "approved" if approved else "rejected"
+    org_region.reviewed_at = datetime.now(timezone.utc)
+    org_region.reviewed_by = current_user.user_id
+    db.commit()
+    db.refresh(org_region)
+
+    return {
+        "success": True,
+        "org_id": org_id,
+        "region": region.code,
+        "status": org_region.status,
+        **_get_org_region_status(db, org_id),
+    }
+
+
+@router.get("/admin/requests")
+def list_vapt_access_requests(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """List all orgs with pending VAPT region requests."""
+    pending_rows = (
+        db.query(OrganizationRegion, Organization, Region)
+        .join(Organization, OrganizationRegion.org_id == Organization.org_id)
+        .join(Region, OrganizationRegion.region_id == Region.region_id)
+        .filter(OrganizationRegion.status == "pending")
+        .order_by(OrganizationRegion.requested_at.desc())
+        .all()
+    )
+
+    result = {}
+    for org_region, org, region in pending_rows:
+        org_entry = result.setdefault(
+            org.org_id,
+            {
+                "org_id": org.org_id,
+                "domain": org.domain,
+                "user_id": org.user_id,
+                "email": db.query(User).filter(User.user_id == org.user_id).first().email if db.query(User).filter(User.user_id == org.user_id).first() else None,
+                "requested_regions": [],
+                "approved_regions": [],
+            },
+        )
+        org_entry["requested_regions"].append(region.code)
+
+    approved_rows = (
+        db.query(OrganizationRegion, Organization, Region)
+        .join(Organization, OrganizationRegion.org_id == Organization.org_id)
+        .join(Region, OrganizationRegion.region_id == Region.region_id)
+        .filter(OrganizationRegion.status == "approved")
+        .all()
+    )
+    for org_region, org, region in approved_rows:
+        result.setdefault(
+            org.org_id,
+            {
+                "org_id": org.org_id,
+                "domain": org.domain,
+                "user_id": org.user_id,
+                "email": db.query(User).filter(User.user_id == org.user_id).first().email if db.query(User).filter(User.user_id == org.user_id).first() else None,
+                "requested_regions": [],
+                "approved_regions": [],
+            },
+        )
+        result[org.org_id]["approved_regions"].append(region.code)
+
+    return list(result.values())
+
+
 
 @router.post("/upload", response_model=VaptUploadResponse)
 async def upload_vapt_report(
     file: UploadFile = File(...),
     org_id: str | None = Form(None),
+    region: str | None = Form(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_or_soc_analyst),
+    current_user: User = Depends(require_soc_analyst),
 ):
     """Upload a .nessus / .xml / .csv / .xlsx export — parses, scores, stores.
 
-    Only admins and SOC analysts upload reports. The report is published to the
-    selected organization (``org_id`` form field) so the client org can consume
-    it read-only.
+    Only SOC analysts upload reports (platform admins manage users and approvals).
+    The report is published to the selected organization (``org_id`` form field)
+    so the client org can consume it read-only, and tagged with the ``region``
+    it was assessed in.
     """
     if not org_id:
         raise HTTPException(
@@ -145,6 +414,13 @@ async def upload_vapt_report(
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found.")
     target_org_id = org.org_id
+
+    # Optional region tag: must match an active region code (e.g. ACC-IND).
+    region = (region or "").strip().upper()
+    if region:
+        known_region = db.query(Region).filter(Region.code == region, Region.is_active.is_(True)).first()
+        if not known_region:
+            raise HTTPException(status_code=400, detail=f"Unknown region code: {region}")
 
     filename = file.filename or "unnamed"
     ext = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
@@ -179,6 +455,7 @@ async def upload_vapt_report(
     record = VaptImport(
         org_id=target_org_id,
         uploaded_by=current_user.user_id,
+        region=region or "",
         file_name=filename,
         file_format=file_format,
         source_tool=source_tool,
@@ -200,7 +477,7 @@ async def upload_vapt_report(
 @router.get("/imports", response_model=list[VaptImportListItem])
 def list_vapt_imports(
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_vapt_access),
 ):
     """List the org's VAPT imports (newest first)."""
     if not current_user.org_id:
@@ -225,7 +502,7 @@ def list_vapt_imports(
 def get_vapt_import(
     import_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_vapt_access),
 ):
     """Full detail of one import, including all normalized findings."""
     if not current_user.org_id:
@@ -242,7 +519,7 @@ def get_vapt_import(
 def download_vapt_report(
     import_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_vapt_access),
 ):
     """Download the detailed VAPT PDF report."""
     if not current_user.org_id:
@@ -277,7 +554,7 @@ def update_vapt_finding_status(
     finding_id: str,
     payload: VaptFindingStatusUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_vapt_access),
 ):
     """Update the workflow status and comment for one imported finding."""
     if not current_user.org_id:
@@ -325,7 +602,7 @@ def update_vapt_finding_status(
 def submit_vapt_import(
     import_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_vapt_access),
 ):
     """Submit a VAPT report to the SOC analyst after findings are updated."""
     if not current_user.org_id:
@@ -359,7 +636,7 @@ async def schedule_vapt_rescan(
     import_id: str,
     body: RescanScheduleRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_vapt_access),
 ):
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     # only allow owners/admins to schedule rescans
@@ -555,7 +832,7 @@ async def admin_request_new_date(
 def list_vapt_rescan_schedules(
     import_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_vapt_access),
 ):
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     if current_user.org_id != record.org_id:
@@ -579,7 +856,7 @@ def cancel_vapt_rescan_schedule(
     import_id: str,
     schedule_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_vapt_access),
 ):
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     if current_user.org_id != record.org_id:
@@ -611,7 +888,7 @@ async def rescan_vapt_now(
     import_id: str,
     payload: dict | None = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_vapt_access),
 ):
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     if current_user.org_id != record.org_id:

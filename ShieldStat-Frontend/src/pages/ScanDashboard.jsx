@@ -117,7 +117,7 @@ function countFindingsBySeverityBucket(allCategories) {
   return { high, medium, low };
 }
 
-function computeBreachSusceptibility({ score, totalFindings, allCategories }) {
+function computeBreachSusceptibility({ score, allCategories }) {
   const { high, medium } = countFindingsBySeverityBucket(allCategories);
   let risk = (100 - score) * 0.6;
   risk += high * 4;

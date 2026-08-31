@@ -56,6 +56,14 @@ function PeriodChip({ active, onClick, children }) {
 
 export default function SocAnalystVaptReports() {
   const navigate = useNavigate();
+  const [currentUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("user") || "null");
+    } catch {
+      return null;
+    }
+  });
+  const canUpload = currentUser?.role === "soc_analyst";
   const [imports, setImports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -92,7 +100,7 @@ export default function SocAnalystVaptReports() {
       if (!token) return;
       const data = await getAdminVaptRescanRequests(token);
       setRescanRequests(Array.isArray(data) ? data : []);
-    } catch (err) {
+    } catch {
       // ignore; keep current rescan state until next successful refresh
     }
   }, []);
@@ -111,7 +119,7 @@ export default function SocAnalystVaptReports() {
           if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested"].includes(message.event)) {
             refreshRescanRequests();
           }
-        } catch (err) {
+        } catch {
           // ignore invalid websocket payload
         }
       };
@@ -228,13 +236,15 @@ export default function SocAnalystVaptReports() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => navigate("/vapt")}
-              className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95"
-            >
-              <FileUp size={15} /> Upload Report
-            </button>
+            {canUpload && (
+              <button
+                type="button"
+                onClick={() => navigate("/admin/vapt-upload")}
+                className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95"
+              >
+                <FileUp size={15} /> Upload Report
+              </button>
+            )}
             <span className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400">
               <ShieldCheck size={15} />
               Library view is read-only

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { registerScanTask, getProfile, getWebSocketUrl, addDomain, getActiveScan } from "../services/api";
 
 const EVENT_PROGRESS_MAP = {
@@ -119,6 +119,20 @@ if (typeof window !== "undefined") {
     syncGlobalStateFromStorage();
     notifyListeners();
   });
+
+  window.addEventListener("scan-state-cleared", () => {
+    globalDomain = "";
+    globalIsScanRunning = false;
+    globalScanProgress = 0;
+    globalTargetProgress = 10;
+    globalScanError = null;
+    globalScanStage = "Preparing scan";
+    globalScanMessage = "Waiting for live updates";
+    localStorage.removeItem(SCAN_STATE_STORAGE_KEY);
+    sessionStorage.removeItem(SCAN_STATE_STORAGE_KEY);
+    clearGlobalInterval();
+    notifyListeners();
+  });
 }
 
 // Immediately resume interval if restored as running
@@ -227,7 +241,7 @@ async function startGlobalScan(domainStr) {
           setGlobalScanStage("Scan complete");
           setGlobalScanMessage("Scan completed successfully");
         }
-      } catch (e) {
+      } catch {
         // ignore
       }
     };
@@ -380,7 +394,7 @@ function NewScan() {
         if (profile?.org_id) {
           setOrgId(profile.org_id);
         }
-      } catch { }
+      } catch { /* ignore profile fetch errors */ }
       setProfileLoaded(true);
     };
 
@@ -422,7 +436,7 @@ function NewScan() {
         window.__newScanCompleted = true;
         window.dispatchEvent(new Event("new-scan-complete"));
         navigate(`/scan-details?domain=${encodeURIComponent(trimmedDomain)}`);
-      } catch (e) {
+      } catch {
         // noop
       }
     }, 1000);
@@ -444,7 +458,7 @@ function NewScan() {
           setGlobalScanProgress(100);
           setGlobalTargetProgress(100);
         }
-      } catch (e) {
+      } catch {
         // silently ignore polling errors
       }
     };

@@ -34,12 +34,6 @@ func (c *CrtCTScanner) RunDiscoveryScanner(
 
 	null := core.Result{}
 
-	// crt.sh is a free, community-hosted service whose nginx edge frequently
-	// returns transient 502/503 errors when its (heavily loaded) Postgres
-	// backend is slow or rebuilding. The 502 is almost never about the query
-	// itself, so retry a couple of times with short backoff before giving up.
-	// A failed source is non-fatal anyway: the discovery pipeline logs the
-	// error and continues with the other sources (certspotter, subfinder, ...).
 	client := &http.Client{
 		Timeout: 20 * time.Second,
 	}

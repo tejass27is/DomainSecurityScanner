@@ -1,12 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, getScanSummaries, getTotalScans, createAdmin, deleteAdmin, createSocAnalyst, deleteSocAnalyst } from "../services/api";
+import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, blockVaptAccess, unblockVaptAccess, getScanSummaries, getTotalScans, createAdmin, deleteAdmin, createSocAnalyst, deleteSocAnalyst } from "../services/api";
 
 const ROLE_LABEL = {
   owner: "Owner",
   member: "Member",
   admin: "Admin",
-  marketing: "Marketing",
   soc_analyst: "SOC Analyst",
 };
 
@@ -69,6 +68,7 @@ function AdminUsers() {
   const [blacklisted, setBlacklisted] = useState([]);
   const [blacklistLoading, setBlacklistLoading] = useState(false);
   const [blocking, setBlocking] = useState(false);
+  const [vaptBlocking, setVaptBlocking] = useState(false);
   const [newAdminEmail, setNewAdminEmail] = useState("");
   const [creatingAdmin, setCreatingAdmin] = useState(false);
   const [newSocAnalystEmail, setNewSocAnalystEmail] = useState("");
@@ -152,6 +152,34 @@ function AdminUsers() {
       fetchUsers(); // Refresh users to update blocked status
     } catch (err) {
       showNotification(err.message, "error");
+    }
+  };
+
+  const handleBlockVapt = async (userId) => {
+    if (!userId) return;
+    setVaptBlocking(true);
+    try {
+      await blockVaptAccess(userId, localStorage.getItem("token"));
+      showNotification("VAPT access blocked for this user");
+      fetchUsers(); // Refresh users to update VAPT blocked status
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setVaptBlocking(false);
+    }
+  };
+
+  const handleUnblockVapt = async (userId) => {
+    if (!userId) return;
+    setVaptBlocking(true);
+    try {
+      await unblockVaptAccess(userId, localStorage.getItem("token"));
+      showNotification("VAPT access restored for this user");
+      fetchUsers(); // Refresh users to update VAPT blocked status
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setVaptBlocking(false);
     }
   };
 
@@ -821,10 +849,15 @@ function AdminUsers() {
                                           Active
                                         </span>
                                       )}
+                                      {u.vapt_blocked && (
+                                        <span className="px-2 py-0.5 bg-purple-100 text-purple-700 font-bold rounded-full uppercase">
+                                          VAPT Blocked
+                                        </span>
+                                      )}
                                     </div>
                                   </div>
 
-                                  <div className="w-full shrink-0 sm:w-auto">
+                                  <div className="flex w-full shrink-0 flex-wrap gap-2 sm:w-auto">
                                     {u.is_blacklisted ? (
                                       <button
                                         type="button"
@@ -842,6 +875,20 @@ function AdminUsers() {
                                         disabled={blocking}
                                       >
                                         Block
+                                      </button>
+                                    )}
+                                    {u.org_id && (
+                                      <button
+                                        type="button"
+                                        onClick={() => (u.vapt_blocked ? handleUnblockVapt(u.user_id) : handleBlockVapt(u.user_id))}
+                                        disabled={vaptBlocking}
+                                        className={`w-full rounded-lg px-4 py-2 text-sm font-semibold transition-all disabled:opacity-60 sm:w-auto ${
+                                          u.vapt_blocked
+                                            ? "border border-slate-200 bg-white text-slate-700 hover:border-purple-200 hover:bg-purple-50 hover:text-purple-700"
+                                            : "bg-purple-600 text-white shadow-sm hover:bg-purple-700"
+                                        }`}
+                                      >
+                                        {u.vapt_blocked ? "Unblock VAPT" : "Block VAPT"}
                                       </button>
                                     )}
                                   </div>

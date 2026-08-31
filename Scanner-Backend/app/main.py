@@ -14,7 +14,6 @@ from app.api.analyzer.routes import router as analyzer_router
 from app.api.fix.routes import router as fix_router
 from app.api.admin.routes import router as admin_router
 from app.api.malware.routes import router as malware_router
-from app.api.public.routes import router as public_router
 from app.db.base import SessionLocal
 from app.api.report_issue.routes import router as report_issue_router
 from app.api.vapt.routes import router as vapt_router
@@ -55,8 +54,6 @@ async def startup_event():
 
         from scripts.create_admin import create_admin_user
         create_admin_user()
-        from scripts.create_marketing import create_marketing_user
-        create_marketing_user()
     except RuntimeError as e:
         raise HTTPException(
             status_code=500,
@@ -113,7 +110,6 @@ app.include_router(fix_router)
 app.include_router(admin_router)
 app.include_router(webhook_scanner_router)
 app.include_router(malware_router)
-app.include_router(public_router)
 app.include_router(report_issue_router)
 app.include_router(vapt_router)
 

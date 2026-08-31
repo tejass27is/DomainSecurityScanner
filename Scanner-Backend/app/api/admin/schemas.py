@@ -6,6 +6,12 @@ class BlacklistEmailRequest(BaseModel):
     email: EmailStr
 
 
+class VaptBlockRequest(BaseModel):
+    """Block/unblock an individual user's VAPT access — by user_id or email."""
+    user_id: str | None = None
+    email: str | None = None
+
+
 class CreateAdminRequest(BaseModel):
     email: EmailStr
 

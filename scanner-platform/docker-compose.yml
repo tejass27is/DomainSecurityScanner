@@ -6,10 +6,22 @@ services:
     container_name: scanner-worker-main
     networks:
       - scanner-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - WORKER_TYPE=main
       - REDIS_ADDR=redis:6379
       - BACKEND_URL=http://backend:8000
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - SCANNER_IMAGE=${COMPOSE_PROJECT_NAME:-scanner-platform}-worker-main
+      - DOCKER_NETWORK=scanner-network
+      - USE_TEMPORARY_SCAN_CONTAINERS=true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
     deploy:
       replicas: 1
 
@@ -24,6 +36,13 @@ services:
       - WORKER_TYPE=fix
       - REDIS_ADDR=redis:6379
       - BACKEND_URL=http://backend:8000
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
     deploy:
       replicas: 1
 

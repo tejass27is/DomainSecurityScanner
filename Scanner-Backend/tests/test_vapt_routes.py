@@ -5,7 +5,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 from sqlalchemy.orm import Session
 
 from app.db.base import Base, engine
-from app.db.models import User, VaptImport
+from app.db.models import VaptImport
 from app.api.vapt.routes import _normalize_finding_status
 
 
@@ -96,3 +96,4 @@ def test_vapt_import_submit_sets_status_submitted():
         assert record.status == "submitted"
     finally:
         db.close()
+

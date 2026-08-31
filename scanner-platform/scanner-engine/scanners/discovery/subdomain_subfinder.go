@@ -62,17 +62,6 @@ func (s *SubdomainSubFinderScanner) RunDiscoveryScanner(
 		seen[sub] = struct{}{}
 
 		results = append(results, sub)
-		// results = append(results, core.Result{
-		// 	Scanner:  "subdomain_subfinder",
-		// 	Category: "discovery",
-		// 	Target:   domain,
-		// 	Data: map[string]string{
-		// 		"method":    "subfinder",
-		// 		"subdomain": sub,
-		// 	},
-		// 	Severity:  "info",
-		// 	Timestamp: time.Now(),
-		// })
 	}
 
 	if err := cmd.Wait(); err != nil {

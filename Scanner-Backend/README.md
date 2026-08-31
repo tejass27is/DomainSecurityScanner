@@ -30,8 +30,7 @@ Scanner-Backend/
 ├── app/
 │   ├── main.py                # FastAPI app, CORS, router registration, DB init
 │   ├── core/
-│   │   ├── middleware.py      # protect / require_admin / require_admin_or_marketing /
-│   │   │                      #   require_admin_or_soc_analyst guards
+│   │   ├── middleware.py      # protect / require_admin / require_admin_or_soc_analyst guards
 │   │   ├── cache.py           # Redis cache client
 │   │   ├── queue.py / redis_queue.py
 │   │   └── websocket_manager.py
@@ -64,7 +63,6 @@ Scanner-Backend/
 │       └── generate_scan_report_pdf.py / generate_assessment_pdf.py
 ├── scripts/
 │   ├── create_admin.py        # CLI: create default admin (ADMIN_EMAIL/PASSWORD)
-│   └── create_marketing.py
 ├── tests/                     # pytest (SQLite in-memory)
 └── .env.example               # every env var documented
 ```
@@ -74,7 +72,6 @@ Scanner-Backend/
 | Role | Guard | Access |
 |---|---|---|
 | `admin` | `require_admin` | All admin endpoints + platform-wide VAPT view |
-| `marketing` | `require_admin_or_marketing` | Public report requests |
 | `soc_analyst` | `require_admin_or_soc_analyst` + `protect` | **Uploads & publishes VAPT assessments** to client orgs, platform-wide read-only VAPT view, can delete imports |
 | `user` (*client*) | `protect` | Read-only access to published VAPT reports in their own org, can **mark findings Solved/Pending**, downloads PDFs, domain scanning. No upload/delete |
 
@@ -151,7 +148,6 @@ Flow:
 | POST | `/admin/personal-email/approve` · GET `/admin/personal-email` · DELETE `/admin/personal-email/{email}` | Personal-email invitations |
 | POST | `/admin/generate-promo` · GET `/admin/promo-codes` · POST `/admin/promo-codes/assign` · PUT `/admin/promo-codes/{code}/disable` · DELETE `/admin/promo-codes/{code}/delete` | Promo codes |
 | GET | `/admin/scans/summaries` · `/admin/scans/total` | Scan analytics |
-| GET | `/admin/report-requests` | Public report requests (admin + marketing) |
 | GET/POST | `/admin/subscription/plans` · PUT/DELETE `/admin/subscription/plans/{id}` | Subscription plans |
 | GET | `/admin/audit/logs` · `/admin/security/alerts` | Audit & security |
 

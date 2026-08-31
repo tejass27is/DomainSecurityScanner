@@ -8,7 +8,10 @@ import {
 import {
   uploadVaptReport,
   downloadVaptReport,
+  downloadVaptReportAdmin,
   getVaptOrganizations,
+  requestVaptAccess,
+  getVaptAccessStatus,
 } from "../services/api";
 import {
   SEVERITY_META,
@@ -161,9 +164,19 @@ export default function VaptUpload() {
   const [uploadError, setUploadError] = useState("");
   const [orgs, setOrgs] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState("");
+  const [selectedRegion, setSelectedRegion] = useState("");
   const [orgsError, setOrgsError] = useState("");
+  const [vaptAccessStatus, setVaptAccessStatus] = useState({
+    vapt_access_enabled: false,
+    requested_regions: [],
+    approved_regions: [],
+    available_regions: [],
+  });
+  const [accessCode, setAccessCode] = useState("");
+  const [accessName, setAccessName] = useState("");
+  const [requestSubmitting, setRequestSubmitting] = useState(false);
+  const [requestMessage, setRequestMessage] = useState("");
 
-  // Only admins and SOC analysts can import reports; clients are consumers.
   const [currentUser] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("user") || "null");
@@ -171,10 +184,49 @@ export default function VaptUpload() {
       return null;
     }
   });
-  const canUpload = Boolean(
-    currentUser && (currentUser.role === "admin" || currentUser.role === "soc_analyst"),
-  );
+  // Only SOC analysts upload VAPT reports — platform admins manage users/approvals
+  // and just view the library.
+  const canUpload = Boolean(currentUser && currentUser.role === "soc_analyst");
   const libraryPath = "/admin/vapt-reports";
+  const selectedOrg = orgs.find((o) => o.org_id === selectedOrgId) || null;
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token || canUpload) return;
+
+    const DEFAULT_STATUS = { vapt_access_enabled: false, requested_regions: [], approved_regions: [], available_regions: [] };
+
+    // Poll access status so that when the admin approves the request the user
+    // sees the unlocked option immediately, without needing to reload the page.
+    let cancelled = false;
+    const fetchStatus = () => {
+      getVaptAccessStatus(token)
+        .then((status) => {
+          if (cancelled) return;
+          const normalized = status || DEFAULT_STATUS;
+          setVaptAccessStatus((prev) =>
+            prev.vapt_access_enabled === normalized.vapt_access_enabled &&
+            (prev.requested_regions || []).join(",") === (normalized.requested_regions || []).join(",")
+              ? prev
+              : normalized,
+          );
+        })
+        .catch(() => {
+          // Keep the last known status on transient errors so an approved
+          // user isn't flicked back to the request screen.
+        });
+    };
+
+    fetchStatus();
+    const intervalId = setInterval(fetchStatus, 15000);
+    const onFocus = () => fetchStatus();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [canUpload]);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -184,6 +236,14 @@ export default function VaptUpload() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Approved view-only users land on the report library — they can see and
+  // download reports but never upload. Non-approved users stay on the request
+  // screen. This also fires when the status poll picks up an admin approval.
+  useEffect(() => {
+    if (canUpload || !vaptAccessStatus.vapt_access_enabled) return;
+    navigate("/vapt/reports", { replace: true });
+  }, [canUpload, vaptAccessStatus.vapt_access_enabled, navigate]);
+
   useEffect(() => {
     if (!canUpload) return;
     const token = localStorage.getItem("token");
@@ -192,6 +252,31 @@ export default function VaptUpload() {
       .then((data) => setOrgs(Array.isArray(data) ? data : []))
       .catch(() => setOrgsError("Could not load organizations. Please try again."));
   }, [canUpload]);
+
+  const submitVaptRequest = useCallback(async () => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    const code = (accessCode || "").trim().toUpperCase();
+    const name = (accessName || "").trim();
+    if (!code || !name) {
+      setRequestMessage("Please enter both the region code and region name (e.g. ACC-IND / Accenture India).");
+      return;
+    }
+    setRequestSubmitting(true);
+    setRequestMessage("");
+    try {
+      await requestVaptAccess([{ code, name }], token);
+      const nextStatus = await getVaptAccessStatus(token);
+      setVaptAccessStatus(nextStatus || { vapt_access_enabled: false, requested_regions: [], approved_regions: [], available_regions: [] });
+      setAccessCode("");
+      setAccessName("");
+      setRequestMessage(`VAPT request for ${code} (${name}) has been submitted. Please wait for admin approval.`);
+    } catch (err) {
+      setRequestMessage(err?.message || "Unable to submit VAPT request.");
+    } finally {
+      setRequestSubmitting(false);
+    }
+  }, [accessCode, accessName]);
 
   const handleFile = useCallback((file) => {
     setUploadError("");
@@ -211,6 +296,10 @@ export default function VaptUpload() {
       setUploadError("Please select the organization this report belongs to.");
       return;
     }
+    if (!selectedRegion) {
+      setUploadError("Please select the assessment region for this report.");
+      return;
+    }
     const token = localStorage.getItem("token");
     if (!token) return;
 
@@ -218,7 +307,7 @@ export default function VaptUpload() {
     setUploadError("");
     setProgressMsg("Parsing, scoring and normalizing findings…");
     try {
-      const result = await uploadVaptReport(selectedFile, token, selectedOrgId);
+      const result = await uploadVaptReport(selectedFile, token, selectedOrgId, selectedRegion);
       setPreview(result);
       setProgressMsg("");
     } catch (err) {
@@ -227,17 +316,112 @@ export default function VaptUpload() {
     } finally {
       setIsUploading(false);
     }
-  }, [selectedFile, isUploading, selectedOrgId]);
+  }, [selectedFile, isUploading, selectedOrgId, selectedRegion]);
 
   const handleDownloadPdf = useCallback(async () => {
     const token = localStorage.getItem("token");
     if (!token || !preview) return;
     try {
-      await downloadVaptReport(preview.import_id, token);
+      if (canUpload) {
+        // Staff publish to any org, so download via the platform-scoped endpoint
+        // (the org-scoped one is gated by VAPT approval and would 403/404 here).
+        await downloadVaptReportAdmin(preview.import_id, token);
+      } else {
+        await downloadVaptReport(preview.import_id, token);
+      }
     } catch (err) {
       setUploadError(err?.message || "Failed to download the PDF report.");
     }
-  }, [preview]);
+  }, [preview, canUpload]);
+
+  if (!canUpload && vaptAccessStatus.vapt_blocked) {
+    return (
+      <div className="mx-auto max-w-2xl rounded-[2rem] border border-red-200 bg-white p-8 shadow-sm dark:border-red-900 dark:bg-slate-900">
+        <div className="mb-6 flex items-center gap-3">
+          <span className="material-symbols-outlined text-red-600 dark:text-red-400">block</span>
+          <span className="text-xs font-black uppercase tracking-[0.28em] text-red-700 dark:text-red-400">VAPT access</span>
+        </div>
+        <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100">VAPT access blocked</h2>
+        <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
+          Your admin has blocked VAPT access for this account. Contact your admin if you believe
+          this is a mistake.
+        </p>
+      </div>
+    );
+  }
+
+  if (!canUpload && !vaptAccessStatus.vapt_access_enabled) {
+    return (
+      <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="mb-6 flex items-center gap-3">
+          <span className="material-symbols-outlined text-purple-600">fact_check</span>
+          <span className="text-xs font-black uppercase tracking-[0.28em] text-purple-700 dark:text-purple-400">VAPT access</span>
+        </div>
+        <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100">Request VAPT access</h2>
+        <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
+          Your account has not been approved for VAPT yet. Choose the region you need and send the request to the admin for approval.
+        </p>
+
+        <div className="mt-6 space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label htmlFor="vapt-access-code" className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                Region code
+              </label>
+              <input
+                id="vapt-access-code"
+                type="text"
+                value={accessCode}
+                onChange={(e) => setAccessCode(e.target.value.toUpperCase())}
+                placeholder="e.g. ACC-IND"
+                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 font-mono text-sm font-semibold uppercase tracking-wide text-slate-900 outline-none transition placeholder:font-sans placeholder:font-normal placeholder:normal-case placeholder:text-slate-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="vapt-access-name" className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                Region name
+              </label>
+              <input
+                id="vapt-access-name"
+                type="text"
+                value={accessName}
+                onChange={(e) => setAccessName(e.target.value)}
+                placeholder="e.g. Accenture India"
+                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              />
+            </div>
+          </div>
+          <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">
+            Code: <b className="text-slate-700 dark:text-slate-200">first 3 letters of your company</b> +{" "}
+            <b className="text-slate-700 dark:text-slate-200">“-”</b> + <b className="text-slate-700 dark:text-slate-200">region</b>. You type both the code and
+            the name yourself — nothing is preset. Example: <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-bold text-purple-700 dark:bg-slate-800 dark:text-purple-300">ACC-IND</code>{" "}
+            / <b className="text-slate-700 dark:text-slate-200">Accenture India</b>. Once submitted, the request is sent to your admin for approval.
+          </p>
+
+          <button
+            type="button"
+            onClick={submitVaptRequest}
+            disabled={requestSubmitting || !(accessCode || "").trim() || !(accessName || "").trim()}
+            className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-purple-500/15 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {requestSubmitting ? "Submitting request..." : "Send request"}
+          </button>
+
+          {requestMessage && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+              {requestMessage}
+            </div>
+          )}
+
+          {(vaptAccessStatus.requested_regions || []).length > 0 && !vaptAccessStatus.vapt_access_enabled && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+              Current request: <span className="font-bold">{(vaptAccessStatus.requested_regions || []).join(", ")}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const dist = preview?.severity_distribution || {};
   const totalReal = preview?.total_findings ?? 0;
@@ -314,7 +498,13 @@ export default function VaptUpload() {
               <select
                 id="vapt-target-org"
                 value={selectedOrgId}
-                onChange={(e) => setSelectedOrgId(e.target.value)}
+                onChange={(e) => {
+                  const orgId = e.target.value;
+                  setSelectedOrgId(orgId);
+                  const org = orgs.find((o) => o.org_id === orgId);
+                  const regions = org?.approved_regions || [];
+                  setSelectedRegion(regions[0] || "");
+                }}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
               >
                 <option value="">Select an organization…</option>
@@ -330,6 +520,39 @@ export default function VaptUpload() {
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                 The finished report is published to this organization — its users see it read-only.
               </p>
+
+              <div className="mt-4">
+                <label htmlFor="vapt-target-region" className="mb-2 block text-xs font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
+                  Assessment region
+                </label>
+                <select
+                  id="vapt-target-region"
+                  value={selectedRegion}
+                  onChange={(e) => setSelectedRegion(e.target.value)}
+                  disabled={!selectedOrgId}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                >
+                  {!selectedOrgId ? (
+                    <option value="">Select an organization first…</option>
+                  ) : (selectedOrg?.approved_regions || []).length === 0 ? (
+                    <option value="">No approved regions for this organization</option>
+                  ) : (
+                    (selectedOrg?.approved_regions || []).map((region) => {
+                      const code = typeof region === "string" ? region : region.code;
+                      const name = typeof region === "string" ? "" : region.name;
+                      return (
+                        <option key={code} value={code}>
+                          {code}{name ? ` - ${name}` : ""}
+                        </option>
+                      );
+                    })
+                  )}
+                </select>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  The region the assessment was performed in. The organization's users see reports
+                  filtered by their approved regions.
+                </p>
+              </div>
             </div>
 
             {selectedFile && !fileError && (

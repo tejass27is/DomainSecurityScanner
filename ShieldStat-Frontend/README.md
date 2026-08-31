@@ -20,7 +20,6 @@ The app routes users by `user.role` (from the login response):
 | Role | Landed on | Access |
 |---|---|---|
 | `admin` | `/admin` | Full admin panel |
-| `marketing` | `/admin` | Restricted to report-request pages |
 | `soc_analyst` | `/admin/vapt-reports` | **VAPT workspace** — uploads completed assessments (choosing the client organization), platform-wide library + PDF downloads |
 | `user` (client) | `/scan-dashboard` | **Domain Security Scanner** + published VAPT reports for their organization (view, solve, download — no upload) |
 
@@ -59,7 +58,7 @@ The app routes users by `user.role` (from the login response):
 | `VaptReport` | `/vapt/reports/:importId` | Report detail (clients mark findings Solved/Pending; admin/SOC library view is read-only) |
 | `SocAnalystVaptReports` | `/admin/vapt-reports` | SOC analyst workspace (upload + platform library) — client → year → month filter |
 | `AdminUsers` | `/admin/users` | User management + **SOC Analysts** create/delete section |
-| `AdminReports`, `AdminAudit`, `AdminSubscription`, `AdminPublicUsers` | `/admin/*` | Admin panels |
+| `AdminReports`, `AdminAudit`, `AdminSubscription` | `/admin/*` | Admin panels |
 | `Profile` | `/profile` | Profile / password / TOTP |
 | `PersonalInvitations` | — | Personal-email invitations |
 

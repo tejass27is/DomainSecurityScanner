@@ -18,6 +18,13 @@ class FakeQuery:
     def first(self):
         return self.result
 
+    def all(self):
+        if self.result is None:
+            return []
+        if isinstance(self.result, list):
+            return self.result
+        return [self.result]
+
 
 class FakeDB:
     def __init__(self, org_result=None, active_result=None):
@@ -59,3 +66,29 @@ def test_create_scan_task_to_queue_returns_success_when_queue_fails(monkeypatch)
     assert result["queue_status"] == "deferred"
     assert "warning" in result
     assert result["message"] == "Scan task registered successfully"
+
+
+def test_cancel_active_scans_for_org_sets_cancel_signal(monkeypatch):
+    active_scan = type("ActiveScan", (), {"domain": "example.com", "org_id": "org-1", "status": "running"})()
+    db = FakeDB(active_result=active_scan)
+
+    class FakeRedis:
+        def __init__(self):
+            self.values = {}
+            self.deleted = []
+
+        def set(self, key, value, ex=None):
+            self.values[key] = (value, ex)
+
+        def delete(self, key):
+            self.deleted.append(key)
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(scanner_service.redis_client, "redis", fake_redis)
+
+    scanner_service.cancel_active_scans_for_org(db, "org-1")
+
+    assert active_scan.status == "cancelled"
+    assert fake_redis.values["scan_cancel:org-1:example.com"] == ("1", 1800)
+    assert fake_redis.values["scan_cancel:org-1:example.com:example.com"] == ("1", 1800)
+    assert "scan_progress:org-1:example.com" in fake_redis.deleted

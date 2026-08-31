@@ -1,4 +1,4 @@
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import logo from "../assets/logo.svg";
 import logoWhite from "../assets/iSecurify Logo - White - Transparent.png";
@@ -21,11 +21,10 @@ function Sidebar({
   ],
 }) {
   const location = useLocation();
-  const navigate = useNavigate();
   const settingsRef = useRef(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
-  const [availableSlots, setAvailableSlots] = useState(0);
+  const [vaptAccessEnabled, setVaptAccessEnabled] = useState(false);
 
   // Keep the completion flag in-memory so it resets on full page reload.
   const [, setMalwareScanComplete] = useState(() =>
@@ -38,18 +37,24 @@ function Sidebar({
       if (!token) return;
       try {
         const profile = await getProfile(token);
-        const domains = profile?.domain ? (Array.isArray(profile.domain) ? profile.domain : [profile.domain]) : [];
-        const uniqueDomains = new Set(domains.map(d => d.trim().toLowerCase()).filter(Boolean));
-        const slots = Math.max(0, (profile?.max_domains || 0) - uniqueDomains.size);
-        setAvailableSlots(slots);
+        setVaptAccessEnabled(Boolean(profile?.vapt_access_enabled));
       } catch {
         return;
       }
     };
 
+    // Poll the profile (and refresh on tab focus) so that when the admin
+    // approves VAPT access the nav option appears without a page reload.
     fetchProfile();
     window.addEventListener("profile-updated", fetchProfile);
-    return () => window.removeEventListener("profile-updated", fetchProfile);
+    const intervalId = setInterval(fetchProfile, 15000);
+    const onFocus = () => fetchProfile();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("profile-updated", fetchProfile);
+      clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   useEffect(() => {
@@ -105,6 +110,13 @@ function Sidebar({
     setIsSettingsOpen(false);
     logoutAndRedirect();
   };
+
+  const visibleNavItems = (navItems || []).filter((item) => {
+    if (item.to === "/vapt/reports" || item.to === "/vapt") {
+      return vaptAccessEnabled;
+    }
+    return true;
+  });
 
   const baseClass =
     "relative flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-200 overflow-hidden lg:min-h-[48px]";
@@ -162,7 +174,7 @@ function Sidebar({
 
         {/* Menu */}
         <nav className="flex-1 space-y-2">
-          {navItems.map((item) => (
+          {visibleNavItems.map((item) => (
             <Link
               key={item.to}
               to={item.to}

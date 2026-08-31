@@ -1,13 +1,11 @@
 import { useEffect, useState } from "react";
 import { getAdminVaptRescanRequests, postAdminApproveReschedule, postAdminRequestNewDate } from "../services/api";
-import { useNavigate } from "react-router-dom";
 
 export default function AdminRescanRequests() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [proposedMap, setProposedMap] = useState({});
-  const navigate = useNavigate();
 
   const load = async () => {
     setLoading(true);

@@ -16,6 +16,7 @@ class VaptImportListItem(BaseModel):
     risk_score: int
     severity: str
     severity_distribution: dict[str, int]
+    region: str = ""
     created_at: Optional[datetime] = None
     # Uploader attribution (NULL for imports predating the column).
     uploaded_by: Optional[str] = None
@@ -38,3 +39,5 @@ class VaptUploadResponse(VaptImportDetail):
 class VaptFindingStatusUpdate(BaseModel):
     status: str
     comment: Optional[str] = None
+
+

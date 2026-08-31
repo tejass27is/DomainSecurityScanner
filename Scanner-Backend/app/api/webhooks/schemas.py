@@ -3,8 +3,10 @@ from typing import Any, Optional
 
 
 class ScannerWebhookRequest(BaseModel):
-    scan_id: str
-    target: str
+    scan_id: Optional[str] = None
+    org_id: Optional[str] = None
+    target: Optional[str] = None
+    domain: Optional[str] = None
     event: str
     status: str
     stage: Optional[str] = None
@@ -16,9 +18,11 @@ class ScannerWebhookRequest(BaseModel):
 
 
 class ScannerWebhookResultRequest(BaseModel):
-    target: str
+    target: Optional[str] = None
+    domain: Optional[str] = None
     data: Any
     scan_id: Optional[str] = None
+    org_id: Optional[str] = None
     status: Optional[str] = None
     progress: Optional[int] = None
     current_stage: Optional[str] = None

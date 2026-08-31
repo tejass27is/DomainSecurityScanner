@@ -36,7 +36,16 @@ async def register_scan_task(
 
 
 @router.get("/scanlist")
-async def get_scan_list():
+async def get_scan_list(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_owner)  # 🔐 REQUIRED: admin/owner access only
+):
+    """
+    Get list of queued scans.
+    
+    ✅ FIXED: Now requires owner/admin authentication
+    ⚠️ Note: Returns all scans for debugging. Consider filtering by org_id for multi-tenant safety.
+    """
     data = redis_client.redis.lrange("scan_queue", 0, -1)
     return [json.loads(item) for item in data]
 
@@ -62,7 +71,12 @@ async def cancel_scan_task(
         active_scan.status = "cancelled"
         db.commit()
 
-    await redis_client.redis.set(f"scan_cancel:{org_id}:{domain}", "1", ex=1800)
+    for key in [
+        f"scan_cancel:{org_id}:{domain}",
+        f"scan_cancel:{org_id}:{domain}:{domain}",
+    ]:
+        await redis_client.redis.set(key, "1", ex=1800)
+    await redis_client.redis.delete(f"scan_progress:{org_id}:{domain}")
     await ws_manager.send(org_id, {
         "event": "scan_cancel_requested",
         "org_id": org_id,
@@ -74,7 +88,16 @@ async def cancel_scan_task(
 
 
 @router.get("/clear")
-async def clear_scan_queue():
+async def clear_scan_queue(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_owner)  # 🔐 REQUIRED: admin/owner only
+):
+    """
+    Clear the entire scan queue.
+    
+    ✅ FIXED: Now requires owner/admin authentication
+    ⚠️ WARNING: Destructive operation. Consider limiting to admin-only with extra confirmation.
+    """
     redis_client.redis.delete("scan_queue")
     return {"message": "Scan queue cleared"}
 
@@ -82,17 +105,28 @@ async def clear_scan_queue():
 @router.get("/active")
 async def get_active_scan(
     domain: str,
-    org_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(protect)
 ):
+    """
+    Get active scan status for a domain in the authenticated user's organization.
+    
+    ✅ FIXED: org_id now comes from authenticated user (not query param)
+    """
     domain = domain.strip().lower()
+    org_id = user.org_id  # 🔐 Use authenticated org_id, not untrusted query param
+    
+    if not org_id:
+        raise HTTPException(status_code=400, detail="User not associated with organization")
+    
     try:
         active_scan = db.query(ActiveScan).filter(
             ActiveScan.domain == domain,
             ActiveScan.org_id == org_id,
         ).first()
-    except Exception:
+    except Exception as e:
+        logger = __import__('logging').getLogger(__name__)
+        logger.error(f"Error querying active scan: {str(e)}", exc_info=True)
         active_scan = None
 
     if not active_scan:

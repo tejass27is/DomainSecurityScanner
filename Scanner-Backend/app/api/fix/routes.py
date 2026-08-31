@@ -1,11 +1,14 @@
+import hashlib
+import hmac
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+import os
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
 from app.core.redis_queue import RedisClient
 from app.core.middleware import protect
 from app.db.base import get_db
-from app.db.models import User, ResolvedFinding
+from app.db.models import User, ResolvedFinding, PortFixRequest
 from app.api.fix.schemas import (
     FixRequest,
     FixSubmitResponse,
@@ -33,32 +36,34 @@ QUEUE_NAME = "fix_queue"
 
 
 @router.get("/status/{scan_id}")
-def get_fix_status(scan_id: str):
-    from sqlalchemy import text
-    from app.db.base import engine
-    
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT scan_id, status, is_open, port_number, host, updated_at FROM port_fix_requests WHERE scan_id = :scan_id LIMIT 1"),
-            {"scan_id": scan_id}
-        ).fetchone()
-    
-    if not result:
+def get_fix_status(
+    scan_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Fetch a fix request's status — scoped to the caller's organization."""
+    fix_request = db.query(PortFixRequest).filter(PortFixRequest.scan_id == scan_id).first()
+    if not fix_request:
         raise HTTPException(status_code=404, detail="Fix request not found")
-    
+
+    if current_user.role not in ("admin", "soc_analyst"):
+        if not current_user.org_id or current_user.org_id != fix_request.org_id:
+            raise HTTPException(status_code=403, detail="You can only view fix status for your own organization")
+
     return {
-        "scan_id": result.scan_id,
-        "status": result.status,
-        "is_open": result.is_open,
-        "port_number": result.port_number,
-        "host": result.host,
-        "updated_at": result.updated_at,
+        "scan_id": fix_request.scan_id,
+        "status": fix_request.status,
+        "is_open": fix_request.is_open,
+        "port_number": fix_request.port_number,
+        "host": fix_request.host,
+        "updated_at": fix_request.updated_at,
     }
 
 @router.post("/port")
 async def create_port_fix(
     payload: PortFixRequestSchema,
     db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
 ):
     """
     Queue a port fix job and return the scan_id for tracking.
@@ -74,6 +79,11 @@ async def create_port_fix(
     - 500: Server error
     """
     try:
+        # ✅ Organization scoping — only fix your own org's domains
+        if current_user.role not in ("admin", "soc_analyst"):
+            if not current_user.org_id or current_user.org_id != payload.org_id:
+                raise HTTPException(status_code=403, detail="You can only fix domains for your own organization")
+
         # ✅ Validate inputs first
         if not payload.domain:
             raise HTTPException(
@@ -165,8 +175,20 @@ async def submit_fix(
 @router.post("/result", response_model=FixResultResponse)
 def submit_fix_result(
     request: FixResultRequest, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    x_webhook_signature: str | None = Header(None),
 ):
+    # 🔐 Verify webhook signature when WEBHOOK_SECRET is configured — the Go
+    # worker signs every payload with the shared secret.
+    secret = os.getenv("WEBHOOK_SECRET", "")
+    if secret:
+        payload_bytes = request.model_dump_json().encode()
+        if not x_webhook_signature or not x_webhook_signature.startswith("sha256="):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        computed = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(computed, x_webhook_signature[7:]):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
     try:
         from app.api.fix.service import apply_fix_result
         
@@ -212,6 +234,7 @@ def health_check():
 async def verify_header(
     payload: HeaderVerifyRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
 ):
     """
     Directly verify whether a security header is now present on a subdomain.
@@ -226,6 +249,9 @@ async def verify_header(
         - domain_score / severity (updated if fix confirmed)
     """
     try:
+        if current_user.role not in ("admin", "soc_analyst"):
+            if not current_user.org_id or current_user.org_id != payload.org_id:
+                raise HTTPException(status_code=403, detail="You can only verify fixes for your own organization")
         result = await verify_header_fix(
             org_id=payload.org_id,
             domain=payload.domain,
@@ -249,6 +275,7 @@ async def verify_header(
 async def verify_tls(
     payload: TlsVerifyRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
 ):
     """
     Directly verify whether a TLS issue is now resolved on a subdomain.
@@ -263,6 +290,9 @@ async def verify_tls(
         - domain_score / severity (updated if fix confirmed)
     """
     try:
+        if current_user.role not in ("admin", "soc_analyst"):
+            if not current_user.org_id or current_user.org_id != payload.org_id:
+                raise HTTPException(status_code=403, detail="You can only verify fixes for your own organization")
         result = await verify_tls_fix(
             org_id=payload.org_id,
             domain=payload.domain,
@@ -295,8 +325,12 @@ async def get_fix_recommendation(payload: RecommendationRequest):
 def save_resolved_finding(
     payload: dict,
     db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
 ):
     """Save a verified/resolved finding to the database."""
+    if current_user.role not in ("admin", "soc_analyst"):
+        if not current_user.org_id or current_user.org_id != payload.get("org_id"):
+            raise HTTPException(status_code=403, detail="You can only save resolved findings for your own organization")
     existing = db.query(ResolvedFinding).filter(
         ResolvedFinding.org_id == payload["org_id"],
         ResolvedFinding.domain == payload["domain"],
@@ -323,11 +357,13 @@ def save_resolved_finding(
 def get_resolved_findings(
     domain: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
 ):
-    """Get all resolved findings for a domain."""
-    findings = db.query(ResolvedFinding).filter(
-        ResolvedFinding.domain == domain,
-    ).order_by(ResolvedFinding.resolved_at.desc()).all()
+    """Get all resolved findings for a domain — scoped to the caller's organization."""
+    q = db.query(ResolvedFinding).filter(ResolvedFinding.domain == domain)
+    if current_user.role not in ("admin", "soc_analyst") and current_user.org_id:
+        q = q.filter(ResolvedFinding.org_id == current_user.org_id)
+    findings = q.order_by(ResolvedFinding.resolved_at.desc()).all()
 
     return [
         {

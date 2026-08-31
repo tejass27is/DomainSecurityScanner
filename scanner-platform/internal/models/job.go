@@ -4,6 +4,7 @@ import "time"
 
 type ScanJob struct {
 	ScanID          string         `json:"scan_id"`
+	OrgID           string         `json:"org_id,omitempty"`
 	Target          string         `json:"target"`
 	Status          string         `json:"status,omitempty"`
 	Progress        int            `json:"progress,omitempty"`
@@ -38,26 +39,27 @@ type FixScanResult struct {
 	Data   interface{} `json:"data"`
 }
 type ScanNotification struct {
-	ScanID         string         `json:"scan_id"`
-	Target         string         `json:"target"`
-	Event          string         `json:"event"`
-	Status         string         `json:"status"`
-	Stage          string         `json:"stage,omitempty"`
-	Progress       int            `json:"progress,omitempty"`
-	Message        string         `json:"message,omitempty"`
-	EvidenceCount  int            `json:"evidence_count,omitempty"`
-	Evidence       []map[string]any `json:"evidence,omitempty"`
-	Checkpoint     map[string]any `json:"checkpoint,omitempty"`
+	ScanID        string           `json:"scan_id"`
+	Target        string           `json:"target"`
+	Event         string           `json:"event"`
+	Status        string           `json:"status"`
+	Stage         string           `json:"stage,omitempty"`
+	Progress      int              `json:"progress,omitempty"`
+	Message       string           `json:"message,omitempty"`
+	EvidenceCount int              `json:"evidence_count,omitempty"`
+	Evidence      []map[string]any `json:"evidence,omitempty"`
+	Checkpoint    map[string]any   `json:"checkpoint,omitempty"`
 }
 
 type ScanResult struct {
-	ScanID      string         `json:"scan_id"`
-	Target      string         `json:"target"`
-	Status      string         `json:"status"`
-	Data        any            `json:"data"`
-	Timestamp   time.Time      `json:"timestamp"`
-	Evidence    []map[string]any `json:"evidence,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	Progress    int            `json:"progress,omitempty"`
-	CurrentStage string        `json:"current_stage,omitempty"`
+	ScanID       string           `json:"scan_id"`
+	OrgID        string           `json:"org_id,omitempty"`
+	Target       string           `json:"target"`
+	Status       string           `json:"status"`
+	Data         any              `json:"data"`
+	Timestamp    time.Time        `json:"timestamp"`
+	Evidence     []map[string]any `json:"evidence,omitempty"`
+	Metadata     map[string]any   `json:"metadata,omitempty"`
+	Progress     int              `json:"progress,omitempty"`
+	CurrentStage string           `json:"current_stage,omitempty"`
 }

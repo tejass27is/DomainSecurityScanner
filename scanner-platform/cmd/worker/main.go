@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"scanner-platform/internal/models"
@@ -27,6 +28,21 @@ func main() {
 	scan_type := os.Getenv("WORKER_TYPE")
 	if scan_type == "" {
 		scan_type = "main"
+	}
+
+	if target := strings.TrimSpace(os.Getenv("SCAN_TARGET")); target != "" {
+		scanID := strings.TrimSpace(os.Getenv("SCAN_ID"))
+		if scanID == "" {
+			scanID = "single-domain-scan"
+		}
+		log.Printf("Launching single-domain scan for %s (%s)", target, scanID)
+		result, err := worker.RunMain(ctx, &models.ScanJob{ScanID: scanID, Target: target})
+		if err != nil {
+			log.Printf("Single-domain scan failed for %s: %v", target, err)
+			os.Exit(1)
+		}
+		fmt.Printf("Single-domain scan completed: %v\n", result)
+		return
 	}
 
 	fq := queue.NewFixQueue(addr)
@@ -55,7 +71,8 @@ func main() {
 			var job *models.ScanJob
 			job, err = mq.PopMainQueue(ctx)
 			if err == nil {
-				result, err = worker.RunMain(ctx, job)
+				err = worker.RunTemporaryScanContainer(ctx, job)
+				result = map[string]string{"status": "container_run_complete", "target": job.Target}
 			}
 		}
 

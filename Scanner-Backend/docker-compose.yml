@@ -10,6 +10,11 @@ services:
       - "54322:5432" # 🌐 Public access on 54322
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - scanner-network
 
@@ -19,6 +24,11 @@ services:
     #    command: redis-server --requirepass ${REDIS_PASSWORD}   # 🔐 MUST for public
     ports:
       - "6379:6379" # 🌐 Public access
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     networks:
       - scanner-network
 
@@ -33,6 +43,7 @@ services:
       - REDIS_PORT=${REDIS_PORT}
       - QUTTERA_API_KEY=${QUTTERA_API_KEY}
       - JWT_SECRET=${JWT_SECRET}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
       - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY}
       - QUTTERA_BASE_URL=${QUTTERA_BASE_URL}
       - FRONTEND_URL=${FRONTEND_URL}
@@ -62,6 +73,12 @@ services:
       - VAPT_MAX_FILE_SIZE_MB=${VAPT_MAX_FILE_SIZE_MB:-25}
     volumes:
       - .:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     depends_on:
       - postgres
       - redis

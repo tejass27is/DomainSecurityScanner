@@ -14,7 +14,8 @@ RUN apk add --no-cache \
     libpcap-dev \
     make \
     pkgconfig \
-    libstdc++
+    libstdc++ \
+    docker-cli
 
 WORKDIR /app
 

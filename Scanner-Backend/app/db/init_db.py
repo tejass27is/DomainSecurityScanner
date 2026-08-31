@@ -16,6 +16,9 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64) NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS is_totp_enabled BOOLEAN NOT NULL DEFAULT false"))
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false"))
+        conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS vapt_blocked BOOLEAN NOT NULL DEFAULT false"))
+        conn.execute(text("ALTER TABLE IF EXISTS organizations ADD COLUMN IF NOT EXISTS region VARCHAR(20) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS region VARCHAR(20) NOT NULL DEFAULT ''"))
         conn.execute(text("ALTER TABLE IF EXISTS promo_codes ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NOT NULL DEFAULT now()"))
         conn.execute(text("ALTER TABLE IF EXISTS promo_codes ADD COLUMN IF NOT EXISTS privilege_revoked BOOLEAN NOT NULL DEFAULT false"))
         conn.execute(text("ALTER TABLE IF EXISTS personal_email_invitations ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL"))
@@ -30,6 +33,10 @@ def init_tables():
         conn.execute(text("DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='public_report_requests' AND column_name='created_at' AND data_type='timestamp without time zone') THEN ALTER TABLE public_report_requests ALTER COLUMN created_at TYPE timestamptz USING created_at AT TIME ZONE 'UTC'; END IF; END $$;"))
         conn.execute(text("ALTER TABLE IF EXISTS public_report_requests ADD COLUMN IF NOT EXISTS first_name VARCHAR(255) NOT NULL DEFAULT ''"))
         conn.execute(text("ALTER TABLE IF EXISTS public_report_requests ADD COLUMN IF NOT EXISTS last_name VARCHAR(255) NOT NULL DEFAULT ''"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS regions (region_id SERIAL PRIMARY KEY, code VARCHAR(30) NOT NULL UNIQUE, name VARCHAR(100) NOT NULL, description TEXT NULL, is_active BOOLEAN NOT NULL DEFAULT true)"))
+        # NOTE: No regions are seeded — region codes + names are typed by users
+        # when they request VAPT access, so nothing is built-in from the developer side.
+        conn.execute(text("CREATE TABLE IF NOT EXISTS organization_regions (id SERIAL PRIMARY KEY, org_id VARCHAR(36) NOT NULL REFERENCES organizations(org_id), region_id INTEGER NOT NULL REFERENCES regions(region_id), status VARCHAR(20) NOT NULL DEFAULT 'pending', requested_at TIMESTAMPTZ NOT NULL DEFAULT now(), reviewed_at TIMESTAMPTZ NULL, reviewed_by VARCHAR(36) NULL REFERENCES users(user_id), CONSTRAINT uq_org_region UNIQUE (org_id, region_id))"))
 
         # ── vapt_imports ──────────────────────────────────────────────────────
         # Tables created by an earlier schema shipped a NOT NULL `status` column

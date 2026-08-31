@@ -17,7 +17,7 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
   const isSocAnalyst = currentUser?.role === "soc_analyst";
   const navItems = isSocAnalyst
     ? [
-        { to: "/vapt", label: "Upload Report", icon: "upload_file" },
+        { to: "/admin/vapt-upload", label: "Upload Report", icon: "upload_file" },
         { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
       ]
     : undefined;

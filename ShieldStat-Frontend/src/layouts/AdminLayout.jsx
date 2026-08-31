@@ -19,17 +19,13 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
     return <Navigate to="/auth" replace />;
   }
 
-  if (currentUser.role !== "admin" && currentUser.role !== "marketing" && currentUser.role !== "soc_analyst") {
+  if (currentUser.role !== "admin" && currentUser.role !== "soc_analyst") {
     return <Navigate to="/scan-dashboard" replace />;
   }
 
-  const isMarketing = currentUser.role === "marketing";
   const isSocAnalyst = currentUser.role === "soc_analyst";
 
-  // Marketing team only has access to the public reports page.
-  if (isMarketing && (location.pathname === "/admin" || location.pathname === "/admin/")) {
-    return <Navigate to="/admin/public-users" replace />;
-  }
+
 
   // SOC analysts only have read-only access to the platform VAPT report library.
   // Guard every admin path except the VAPT library, rescan requests page, and profile.
@@ -37,9 +33,16 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
     isSocAnalyst &&
     location.pathname !== "/admin/vapt-reports" &&
     !location.pathname.startsWith("/admin/vapt-reports/") &&
+    location.pathname !== "/admin/vapt-upload" &&
     location.pathname !== "/admin/rescan-requests" &&
     location.pathname !== "/admin/profile"
   ) {
+    return <Navigate to="/admin/vapt-reports" replace />;
+  }
+
+  // Uploading VAPT reports is a SOC-analyst job — platform admins no longer
+  // have an upload section, so keep them away from the upload route too.
+  if (!isSocAnalyst && location.pathname === "/admin/vapt-upload") {
     return <Navigate to="/admin/vapt-reports" replace />;
   }
 
@@ -59,19 +62,18 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
         isDarkMode={isDarkMode}
         onToggleDarkMode={onToggleDarkMode}
         navItems={
-          isMarketing
-            ? [{ to: "/admin/public-users", label: "Public Reports", icon: "person_search" }]
-            : isSocAnalyst
+          isSocAnalyst
             ? [
-                { to: "/vapt", label: "Upload Report", icon: "upload_file" },
+                { to: "/admin/vapt-upload", label: "Upload Report", icon: "upload_file" },
                 { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
               ]
             : [
                 { to: "/admin", label: "User Management", icon: "group" },
-                { to: "/admin/public-users", label: "Public User", icon: "person_search" },
                 { to: "/admin/subscription", label: "Subscription Management", icon: "payments" },
                 { to: "/admin/audit", label: "Audit & Security", icon: "shield" },
                 { to: "/admin/reports", label: "Reported Issues", icon: "flag" },
+                { to: "/admin/vapt-access-requests", label: "VAPT Access Requests", icon: "verified_user" },
+                { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
               ]
         }
       />

@@ -130,7 +130,7 @@ function AuthPage() {
                return;
             }
 
-            if (data.user?.role === "admin" || data.user?.role === "marketing" || data.user?.role === "soc_analyst") {
+            if (data.user?.role === "admin" || data.user?.role === "soc_analyst") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -185,7 +185,7 @@ function AuthPage() {
 
          setTimeout(() => {
             const user = JSON.parse(localStorage.getItem("user") || "null");
-            if (user?.role === "admin" || user?.role === "marketing" || user?.role === "soc_analyst") {
+            if (user?.role === "admin" || user?.role === "soc_analyst") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -280,7 +280,7 @@ function AuthPage() {
                return;
             }
 
-            if (data.user?.role === "admin" || data.user?.role === "marketing" || data.user?.role === "soc_analyst") {
+            if (data.user?.role === "admin" || data.user?.role === "soc_analyst") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -320,7 +320,7 @@ function AuthPage() {
                return;
             }
 
-            if (data.user?.role === "admin" || data.user?.role === "marketing" || data.user?.role === "soc_analyst") {
+            if (data.user?.role === "admin" || data.user?.role === "soc_analyst") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");
@@ -438,7 +438,7 @@ function AuthPage() {
                return;
             }
 
-            if (data.user?.role === "admin" || data.user?.role === "marketing" || data.user?.role === "soc_analyst") {
+            if (data.user?.role === "admin" || data.user?.role === "soc_analyst") {
                navigate("/admin");
             } else {
                navigate("/scan-dashboard");

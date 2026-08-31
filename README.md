@@ -25,7 +25,6 @@ All data is organization-isolated with role-based access control.
    - [Pages](#pages)
    - [Environment Variables](#frontend-environment-variables)
 7. [Scanner Engine (scanner-platform)](#scanner-engine-scanner-platform)
-8. [Public Domain Scan (public-domain-scan)](#public-domain-scan-public-domain-scan)
 
 ---
 
@@ -36,7 +35,6 @@ All data is organization-isolated with role-based access control.
 | **Backend API** | `Scanner-Backend/` | FastAPI · SQLAlchemy · PostgreSQL · Redis | Auth, domain scanning orchestration, VAPT import engine, admin/SOC analyst management, email (SMTP), audit logs |
 | **Scanner Engine** | `scanner-platform/` | Go · Redis · Webhooks | Distributed domain scanner (subdomain discovery, TLS, HTTP, DNS, mail security, ports) |
 | **Admin/User Frontend** | `ShieldStat-Frontend/` | React 18 · Vite · Tailwind CSS | Dashboards, domain scanner, VAPT upload + published report library, admin panel, SOC analyst panel |
-| **Public Domain Scan** | `public-domain-scan/` | React · Vite | Public-facing domain scan landing app |
 
 ---
 
@@ -45,7 +43,6 @@ All data is organization-isolated with role-based access control.
 | Role | Scope | Capabilities |
 |---|---|---|
 | **Admin** (`admin`) | Platform-wide | Everything — user management, SOC analyst & admin provisioning, blacklist, promo codes, subscriptions, audit logs, platform-wide VAPT view |
-| **Marketing** (`marketing`) | Platform-wide | Public report requests |
 | **SOC Analyst** (`soc_analyst`) | Platform-wide | **Uploads completed VAPT assessments** (.nessus / .xml / .csv / .xlsx), chooses the target client organization, publishes assessments to it, and can view/download every report platform-wide. Performs assessments with external tools **outside the platform** |
 | **User** (`user`) — *client* | Own organization | Read-only access to all published assessment data (executive summary, risk score, vulnerability details, remediation recommendations, historical reports, downloadable PDFs), can **mark findings as Solved / Pending**, and runs the **Domain Security Scanner** on their own domains. Cannot upload or delete VAPT reports |
 
@@ -110,8 +107,7 @@ Scanner-Backend/
 ├── app/
 │   ├── main.py                # FastAPI app, CORS, router registration, DB init
 │   ├── core/
-│   │   ├── middleware.py      # protect / require_admin / require_admin_or_marketing /
-│   │   │                      #   require_admin_or_soc_analyst guards
+│   │   ├── middleware.py      # protect / require_admin / require_admin_or_soc_analyst guards
 │   │   ├── cache.py · queue.py / redis_queue.py · websocket_manager.py
 │   ├── db/
 │   │   ├── models.py          # SQLAlchemy models (users, orgs, vapt_imports, ...)
@@ -134,7 +130,6 @@ Scanner-Backend/
 │       └── generate_scan_report_pdf.py / generate_assessment_pdf.py
 ├── scripts/
 │   ├── create_admin.py        # CLI: create default admin (ADMIN_EMAIL/PASSWORD)
-│   └── create_marketing.py
 ├── tests/                     # pytest (SQLite in-memory)
 └── .env.example               # every env var documented
 ```
@@ -188,7 +183,6 @@ API docs: `http://localhost:8000/docs` (Swagger).
 | POST | `/admin/personal-email/approve` · GET `/admin/personal-email` · DELETE `/admin/personal-email/{email}` | Personal-email invitations |
 | POST | `/admin/generate-promo` · GET `/admin/promo-codes` · POST `/admin/promo-codes/assign` · PUT `/admin/promo-codes/{code}/disable` · DELETE `/admin/promo-codes/{code}/delete` | Promo codes |
 | GET | `/admin/scans/summaries` · `/admin/scans/total` | Scan analytics |
-| GET | `/admin/report-requests` | Public report requests (admin + marketing) |
 | GET/POST | `/admin/subscription/plans` · PUT/DELETE `/admin/subscription/plans/{id}` | Subscription plans |
 | GET | `/admin/audit/logs` · `/admin/security/alerts` | Audit & security |
 
@@ -248,7 +242,6 @@ The app routes users by `user.role` (from the login response):
 | Role | Landed on | Access |
 |---|---|---|
 | `admin` | `/admin` | Full admin panel |
-| `marketing` | `/admin` | Restricted to report-request pages |
 | `soc_analyst` | `/admin/vapt-reports` | **VAPT workspace** — uploads completed assessments (choosing the client organization), platform-wide library + PDF downloads |
 | `user` (client) | `/scan-dashboard` | **Domain Security Scanner** + published VAPT reports for their organization (view, solve, download — no upload) |
 
@@ -278,7 +271,7 @@ The filter logic lives in `src/utils/vaptReportFilter.js` and is unit-tested wit
 | `VaptReport` | `/vapt/reports/:importId` | Report detail (clients mark findings **Solved/Pending**; admin/SOC library view is read-only) |
 | `SocAnalystVaptReports` | `/admin/vapt-reports` | SOC analyst workspace (Upload button + platform-wide library) — filter **client first, then year** (current year by default) and month |
 | `AdminUsers` | `/admin` | User management + **SOC Analysts** create/delete section |
-| `AdminReports`, `AdminAudit`, `AdminSubscription`, `AdminPublicUsers` | `/admin/*` | Admin panels |
+| `AdminReports`, `AdminAudit`, `AdminSubscription` | `/admin/*` | Admin panels |
 | `Profile` | `/profile` | Profile / password / TOTP |
 | `PersonalInvitations` | — | Personal-email invitations |
 
@@ -302,19 +295,13 @@ Go-based distributed scanner that performs the actual domain scans: subdomain di
 
 ---
 
-## Public Domain Scan (public-domain-scan)
-
-A lightweight, public-facing React app that lets anyone run a quick domain scan and request a report by email. See `public-domain-scan/README.md`.
-
----
-
 ## Security
 
 - Business-email registration only (blocklist of public domains via `PUBLIC_EMAIL_DOMAINS`), optional domain validation.
 - Login → optional TOTP (QR setup / verification) → optional OTP fallback.
 - Lockout after repeated failed attempts.
 - **`must_change_password`** — provisioned admin/SOC accounts must set their own password on first login.
-- JWT auth + role-based guards (`protect`, `require_admin`, `require_admin_or_marketing`, `require_admin_or_soc_analyst`).
+- JWT auth + role-based guards (`protect`, `require_admin`, `require_admin_or_soc_analyst`).
 - Organization-level data isolation (every VAPT import is org-scoped; clients never see another org's data).
 - Audit logging of admin actions and security alerts.
 - reCAPTCHA on auth forms.

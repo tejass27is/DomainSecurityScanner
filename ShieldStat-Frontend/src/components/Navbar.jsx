@@ -16,7 +16,7 @@ function Navbar({ onOpenSidebar, isDarkMode }) {
         const uniqueDomains = new Set(domains.map(d => d.trim().toLowerCase()).filter(Boolean));
         const slots = Math.max(0, (profile?.max_domains || 0) - uniqueDomains.size);
         setAvailableSlots(slots);
-      } catch (err) { }
+      } catch { /* ignore profile fetch errors */ }
     };
 
     fetchProfile();

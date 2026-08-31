@@ -54,7 +54,7 @@ function AdminSubscription() {
       };
 
       return new Intl.DateTimeFormat(undefined, options).format(date);
-    } catch (error) {
+    } catch {
       return "—";
     }
   };

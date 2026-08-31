@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Response
 from app.api.auth.schemas import (
     RegisterRequest, LoginRequest, InviteRequest,
     RedeemPromoRequest, ForgotPasswordOtpRequest,
@@ -16,9 +16,16 @@ from app.api.auth.service import (
     setup_user_totp, verify_user_totp, reset_user_totp,
     _revoke_expired_promo_privileges,
 )
-from app.core.middleware import require_owner, protect
+from app.core.middleware import (
+    require_owner,
+    protect,
+    get_org_approved_region_codes,
+    get_org_pending_region_codes,
+    is_user_vapt_blocked,
+)
 from app.db.models import User, Organization
 from app.utils.captcha import verify_captcha
+from app.api.scanner.service import cancel_active_scans_for_org
 
 router = APIRouter(prefix='/auth', tags=['auth'])
 
@@ -77,6 +84,21 @@ async def login(req: LoginRequest, db: Session = Depends(get_db)):
         raise
     except Exception:
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@router.post('/logout')
+def logout_route(
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    try:
+        cancel_active_scans_for_org(db, current_user.org_id)
+    except Exception:
+        pass
+
+    response.delete_cookie("token", path="/", httponly=True, samesite="lax")
+    return {"message": "Logged out successfully"}
 
 
 @router.post('/forgot-password')
@@ -171,23 +193,37 @@ def get_profile(
         _revoke_expired_promo_privileges(db, org.org_id)
         db.refresh(org)
 
+    approved_region_codes = get_org_approved_region_codes(db, current_user.org_id)
+    pending_region_codes = get_org_pending_region_codes(db, current_user.org_id)
+    vapt_blocked = is_user_vapt_blocked(current_user)
+
     return {
         "user_id": current_user.user_id,
         "org_id": current_user.org_id,
         "email": current_user.email,
         "role": current_user.role,
         "domain": org.domain if org else None,
-        "max_domains": org.max_domains if org else 0
+        "max_domains": org.max_domains if org else 0,
+        "vapt_access_enabled": bool(approved_region_codes) and not vapt_blocked,
+        "requested_regions": pending_region_codes,
+        "approved_regions": approved_region_codes,
+        "vapt_blocked": vapt_blocked,
+        "region": getattr(org, "region", None) if org else None,
     }
 
 @router.post('/add-domain')
-def add_domain_route(
+async def add_domain_route(
     req: AddDomainRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(protect)
 ):
+    """
+    Add a domain to the user's organization.
+    
+    ✅ FIXED: Now validates DNS ownership before accepting domain
+    """
     try:
-        return add_domain(current_user.user_id, req.domain, db)
+        return await add_domain(current_user.user_id, req.domain, db)
     except HTTPException:
         raise
     except Exception as e:

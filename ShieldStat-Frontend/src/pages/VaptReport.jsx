@@ -5,7 +5,7 @@ import {
   Globe, Layers, Server, Info, FileText, Lock, Activity, ExternalLink,
   ShieldAlert, Bug, FilterX, Database, Wrench, Clock, CheckCircle2,
 } from "lucide-react";
-import { getVaptImport, getVaptImportAdmin, downloadVaptReport, downloadVaptReportAdmin, updateVaptFindingStatus, submitVaptImport, postVaptRescanSchedule, postVaptRescanScheduleAdmin, deleteVaptImport, deleteVaptImportAdmin } from "../services/api";
+import { getVaptImport, getVaptImportAdmin, updateVaptFindingStatus, submitVaptImport, deleteVaptImport, deleteVaptImportAdmin, getVaptAccessStatus } from "../services/api";
 import { getVaptRescanSchedules, postAdminApproveReschedule, postAdminRequestNewDate } from "../services/api";
 import RescanModal from "../components/RescanModal";
 import {
@@ -15,7 +15,6 @@ import {
   riskTone,
   fmtDate,
   fmtCvss,
-  formatSource,
   formatLabel,
 } from "../utils/vaptReport";
 
@@ -524,7 +523,7 @@ export default function VaptReport() {
       setRescanLoading(true);
       const schedules = await getVaptRescanSchedules(importId, token);
       setRescanSchedules(Array.isArray(schedules) ? schedules : []);
-    } catch (err) {
+    } catch {
       // ignore; separate admin UI surfaces errors
     } finally {
       setRescanLoading(false);
@@ -542,6 +541,16 @@ export default function VaptReport() {
       setLoading(true);
       setError("");
       try {
+        const profile = JSON.parse(localStorage.getItem("user") || "null");
+        const isStaff = profile?.role === "admin" || profile?.role === "soc_analyst";
+        if (!isPlatformView && !isStaff) {
+          const status = await getVaptAccessStatus(token);
+          if (!status?.vapt_access_enabled) {
+            if (!cancelled) navigate("/vapt", { replace: true });
+            return;
+          }
+        }
+
         const data = isPlatformView
           ? await getVaptImportAdmin(importId, token)
           : await getVaptImport(importId, token);
@@ -557,20 +566,6 @@ export default function VaptReport() {
     })();
     return () => { cancelled = true; };
   }, [importId, isPlatformView, navigate, refreshRescanSchedules]);
-
-  const handleDownloadPdf = useCallback(async () => {
-    const token = localStorage.getItem("token");
-    if (!token || !record) return;
-    try {
-      if (isPlatformView) {
-        await downloadVaptReportAdmin(record.import_id, token);
-      } else {
-        await downloadVaptReport(record.import_id, token);
-      }
-    } catch (err) {
-      setError(err?.message || "Failed to download the report.");
-    }
-  }, [isPlatformView, record]);
 
   const handleDraftChange = useCallback((findingId, changes) => {
     const key = String(findingId);
@@ -1269,7 +1264,7 @@ export default function VaptReport() {
         onClose={() => setShowRescanModal(false)}
         importId={record?.import_id}
         adminMode={isPlatformView}
-        onScheduled={async (res) => {
+        onScheduled={async () => {
           await refreshRescanSchedules();
           setToast({ text: 'Rescan scheduled', type: 'success' });
         }}

@@ -165,8 +165,13 @@ def get_score(
 @router.delete("/delete_score/{org_id}")
 def delete_score(
     org_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
 ):
+    """Delete a scan score — only the owning organization's members or admins."""
+    if current_user.role not in ("admin", "soc_analyst"):
+        if not current_user.org_id or current_user.org_id != org_id:
+            raise HTTPException(status_code=403, detail="You can only delete scores for your own organization")
     score = db.query(ScanSummary).filter(
         ScanSummary.org_id == org_id
     ).first()

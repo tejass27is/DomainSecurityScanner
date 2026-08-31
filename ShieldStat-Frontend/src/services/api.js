@@ -129,7 +129,9 @@ export function verifyEmail(token) {
 }
 
 export function getProfile(token) {
-  return request("/auth/profile", { token });
+  // skipCache so access flags (e.g. VAPT approval/block) reflect immediately
+  // in the sidebar instead of being served from the 30s request cache.
+  return request("/auth/profile", { token, skipCache: true });
 }
 
 export function forgotPassword(email) {
@@ -306,7 +308,12 @@ export function getIpReputation(ip, token) {
 
 export function getWebSocketUrl(orgId) {
   const base = API_BASE.replace(/^http/, "ws");
-  return `${base}/webhooks/ws/${orgId}`;
+  // The backend WebSocket endpoint validates the JWT (see _verify_ws_token),
+  // so the token must be passed as a query param — browsers can't set custom
+  // headers on a raw WebSocket connection.
+  const token = localStorage.getItem("token") || "";
+  const url = `${base}/webhooks/ws/${orgId}`;
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url;
 }
 
 // ─── Admin ────────────────────────────────────────────────────────────────────
@@ -431,6 +438,24 @@ export async function unblockUserByEmail(email, token) {
   });
 }
 
+// ─── VAPT access block/unblock (per-user) ────────────────────────────────────
+
+export function blockVaptAccess(userId, token) {
+  return request("/admin/vapt/block", {
+    method: "POST",
+    body: { user_id: userId },
+    token,
+  });
+}
+
+export function unblockVaptAccess(userId, token) {
+  return request("/admin/vapt/unblock", {
+    method: "POST",
+    body: { user_id: userId },
+    token,
+  });
+}
+
 /** GET /admin/blacklist — returns { blacklisted_emails: [{ email, blocked_by?, created_at? }, ...] } */
 export async function getBlacklistedEmails(token) {
   const data = await request("/admin/blacklist", { token });
@@ -451,10 +476,6 @@ export function getTotalScans(token) {
   return request("/admin/scans/total", { token });
 }
 
-export function getPublicReportRequests(token, search = "") {
-  const query = search ? `?search=${encodeURIComponent(search)}` : "";
-  return request(`/admin/report-requests${query}`, { token });
-}
 
 export function getAuditLogs(token) {
   return request("/admin/audit/logs", { token });
@@ -553,7 +574,7 @@ export function getFixStatus(scanId, token) {
 
 
 
-export function verifyHeaderFix({ orgId, domain, subdomain, fixType, userId }) {
+export function verifyHeaderFix({ orgId, domain, subdomain, fixType, userId }, token) {
   return request("/fix/verify-header", {
     method: "POST",
     body: {
@@ -563,10 +584,11 @@ export function verifyHeaderFix({ orgId, domain, subdomain, fixType, userId }) {
       fix_type: fixType,
       user_id: userId ?? null,
     },
+    token,
   });
 }
 
-export function verifyTlsFix({ orgId, domain, subdomain, fixType, userId }) {
+export function verifyTlsFix({ orgId, domain, subdomain, fixType, userId }, token) {
   return request("/fix/verify-tls", {
     method: "POST",
     body: {
@@ -576,6 +598,7 @@ export function verifyTlsFix({ orgId, domain, subdomain, fixType, userId }) {
       fix_type: fixType,
       user_id: userId ?? null,
     },
+    token,
   });
 }
 
@@ -630,11 +653,14 @@ export function reportIssue({ domain, subdomain, rule, severity, issueType, mess
 
 // ─── VAPT Report Import ───────────────────────────────────────────────────────
 
-export async function uploadVaptReport(file, token, orgId = null) {
+export async function uploadVaptReport(file, token, orgId = null, region = null) {
   const formData = new FormData();
   formData.append("file", file);
   if (orgId) {
     formData.append("org_id", orgId);
+  }
+  if (region) {
+    formData.append("region", region);
   }
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const urls = loopbackVariants("/vapt/upload");
@@ -682,6 +708,32 @@ export async function uploadVaptReport(file, token, orgId = null) {
     "by the backend CORS settings. If the backend runs in Docker, restart " +
     "Docker Desktop if the connection keeps getting dropped.",
   );
+}
+
+export function requestVaptAccess(regions, token) {
+  // Handle both single region (string) and multiple regions (array)
+  const regionArray = Array.isArray(regions) ? regions : [regions];
+  return request("/vapt/request-access", {
+    method: "POST",
+    body: { regions: regionArray },
+    token,
+  });
+}
+
+export function getVaptAccessStatus(token) {
+  return request("/vapt/access-status", { token, skipCache: true });
+}
+
+export function getAdminVaptAccessRequests(token) {
+  return request("/vapt/admin/requests", { token, skipCache: true });
+}
+
+export function approveVaptAccessRequest(orgId, region, approved, token) {
+  return request("/vapt/admin/approve-access", {
+    method: "POST",
+    body: { org_id: orgId, region, approved },
+    token,
+  });
 }
 
 export function getVaptImports(token) {

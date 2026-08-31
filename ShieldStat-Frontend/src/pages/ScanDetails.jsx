@@ -504,9 +504,10 @@ function FixGuideModal({ rule, host, orgId, domain, onClose, onScoreUpdate }) {
   const handleVerify = async () => {
     setVerifying(true);
     setVerifyResult(null);
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     try {
       const fn = TLS_FIX_TYPES.has(fixType) ? verifyTlsFix : verifyHeaderFix;
-      const res = await fn({ orgId, domain, subdomain, fixType });
+      const res = await fn({ orgId, domain, subdomain, fixType }, token);
       setVerifyResult(res);
       if ((res.header_present || res.tls_ok) && res.domain_score != null) {
         onScoreUpdate?.(res.domain_score, res.severity, rule, subdomain);
@@ -953,7 +954,8 @@ function ResolvedPanel({ domain, refresh }) {
   useEffect(() => {
     if (!domain) return;
     setLoading(true);
-    getResolvedFindings(domain)
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    getResolvedFindings(domain, token)
       .then((data) => setResolved(data || []))
       .catch(() => setResolved([]))
       .finally(() => setLoading(false));

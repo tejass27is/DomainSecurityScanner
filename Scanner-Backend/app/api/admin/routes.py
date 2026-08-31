@@ -11,10 +11,13 @@ from app.api.admin.schemas import (
     CreateSocAnalystRequest,
     GeneratePromoCodeRequest,
     PersonalEmailApprovalRequest,
+    VaptBlockRequest,
 )
 from app.api.admin.service import (
     assign_promo_code_to_user,
     block_email,
+    block_vapt_access,
+    unblock_vapt_access,
     create_personal_email_invitation,
     create_subscription_plan,
     delete_admin,
@@ -30,7 +33,6 @@ from app.api.admin.service import (
     get_scan_summaries,
     get_security_alerts,
     get_subscription_plans,
-    get_public_report_requests,
     get_total_scans,
     get_users_by_org,
     provision_admin_account,
@@ -42,7 +44,11 @@ from app.api.admin.service import (
 from app.api.vapt.report_generator import generate_vapt_report_pdf
 from app.api.vapt.routes import _to_detail, _to_list_item, _uploader_email_map
 from app.api.vapt import schedule_service
-from app.core.middleware import require_admin, require_admin_or_marketing, require_admin_or_soc_analyst
+from app.core.middleware import (
+    require_admin,
+    require_admin_or_soc_analyst,
+    get_org_approved_regions,
+)
 from app.core.websocket_manager import ws_manager
 from app.db.base import get_db
 from app.db.models import Organization, User, VaptImport
@@ -414,7 +420,11 @@ def list_vapt_organizations(
             value = ", ".join(str(d) for d in value if d)
         elif not isinstance(value, str):
             value = str(value) if value is not None else None
-        result.append({"org_id": org.org_id, "domain": value or None})
+        result.append({
+            "org_id": org.org_id,
+            "domain": value or None,
+            "approved_regions": get_org_approved_regions(db, org.org_id),
+        })
     return result
 
 
@@ -446,6 +456,30 @@ def list_blacklisted_emails(
     return get_blacklisted_emails(db)
 
 
+@router.post("/vapt/block")
+def block_vapt_access_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Block an individual user from accessing VAPT (reversible)."""
+    identifier = req.user_id or req.email
+    return block_vapt_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
+@router.post("/vapt/unblock")
+def unblock_vapt_access_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Restore an individual user's VAPT access."""
+    identifier = req.user_id or req.email
+    return unblock_vapt_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
 @router.get("/scans/summaries")
 def list_scan_summaries(
     db: Session = Depends(get_db),
@@ -461,14 +495,6 @@ def get_scans_total(
 ):
     return get_total_scans(db)
 
-
-@router.get("/report-requests")
-def list_public_report_requests(
-    search: str | None = None,
-    db: Session = Depends(get_db),
-    _current_admin: User = Depends(require_admin_or_marketing),
-):
-    return get_public_report_requests(db, search=search)
 
 
 @router.get("/subscription/plans")

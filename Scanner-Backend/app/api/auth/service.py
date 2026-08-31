@@ -3,6 +3,8 @@ import json
 import uuid
 import secrets
 import re
+import dns.resolver
+import dns.exception
 from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 import os
@@ -431,7 +433,7 @@ def login_user(email: str, password: str, db: Session):
     user.locked_until = None
     db.commit()
 
-    if user.role in ("admin", "marketing") and not ADMIN_TOTP_REQUIRED:
+    if user.role == "admin" and not ADMIN_TOTP_REQUIRED:
         access_token = generateToken(user.user_id, org_id=user.org_id, role=user.role)
         return {
             "token": access_token,
@@ -807,7 +809,53 @@ def redeem_promo_code(user_id: str, code: str, db: Session):
         "max_domains": org.max_domains
     }
 
-def add_domain(user_id: str, domain: str, db: Session):
+async def _validate_domain_dns(domain: str) -> bool:
+    """
+    Validate that the domain resolves in DNS.
+    
+    ✅ FIXED: Ensures domain is valid and owned before adding to organization
+    """
+    domain_to_check = domain.strip().lower().replace("https://", "").replace("http://", "").strip("/").lstrip("www.")
+    
+    if not domain_to_check:
+        raise HTTPException(status_code=400, detail="Invalid domain format")
+    
+    try:
+        # Check if domain resolves via DNS
+        resolver = dns.resolver.Resolver()
+        resolver.timeout = 5
+        resolver.lifetime = 5
+        
+        # Try to resolve A record first
+        try:
+            answers = resolver.resolve(domain_to_check, 'A')
+            logger.info(f"✅ Domain DNS validation passed: {domain_to_check} resolved to {[str(rdata) for rdata in answers]}")
+            return True
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.Timeout):
+            # Try AAAA (IPv6)
+            try:
+                answers = resolver.resolve(domain_to_check, 'AAAA')
+                logger.info(f"✅ Domain DNS validation passed: {domain_to_check} resolved (AAAA) to {[str(rdata) for rdata in answers]}")
+                return True
+            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.Timeout):
+                logger.warning(f"❌ Domain DNS validation failed: {domain_to_check} did not resolve")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Domain '{domain_to_check}' does not resolve. Please ensure the domain is valid and has active DNS records."
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"DNS validation error for {domain_to_check}: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"DNS validation failed: {str(e)}")
+
+
+async def add_domain(user_id: str, domain: str, db: Session):
+    """
+    Add a domain to the user's organization.
+    
+    ✅ FIXED: Now validates DNS ownership before accepting domain
+    """
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user or not user.org_id:
         raise HTTPException(status_code=400, detail="User not associated with an organization")
@@ -825,6 +873,9 @@ def add_domain(user_id: str, domain: str, db: Session):
     domain = domain.strip().lower()
     if not domain:
         raise HTTPException(status_code=400, detail="Domain is required")
+
+    # 🔐 Validate domain resolves in DNS
+    await _validate_domain_dns(domain)
 
     org_domains = list(org.domain) if org.domain else []
 

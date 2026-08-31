@@ -11,15 +11,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.auth.service import hashPassword, verifyPassword
-from sqlalchemy import or_
-
 from app.db.models import (
     AuditLog,
     Blacklist,
     Organization,
     PersonalEmailInvitation,
     PromoCode,
-    PublicReportRequest,
     ScanScoreHistory,
     ScanSummary,
     SecurityAlert,
@@ -51,6 +48,7 @@ def _serialize_user(user: User, blocked_emails: set[str]) -> dict:
         "role": user.role,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "is_blacklisted": user.email.lower() in blocked_emails,
+        "vapt_blocked": bool(getattr(user, "vapt_blocked", False)),
         "email_verified": bool(user.email_verified),
     }
 
@@ -543,6 +541,70 @@ def unblock_email(email: str, db: Session, current_admin: User | None = None, ip
     }
 
 
+def _get_user_for_vapt_action(identifier: str, db: Session) -> User:
+    identifier = (identifier or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="user_id or email is required")
+    user = db.query(User).filter(User.user_id == identifier).first()
+    if not user:
+        user = db.query(User).filter(User.email == identifier.lower()).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+def block_vapt_access(
+    identifier: str,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    """Revoke an individual user's VAPT access (reversible)."""
+    user = _get_user_for_vapt_action(identifier, db)
+    if user.user_id == current_admin.user_id:
+        raise HTTPException(status_code=400, detail="Admin cannot block their own VAPT access")
+    user.vapt_blocked = True
+    db.add(user)
+    db.commit()
+    _record_audit_log(
+        db,
+        admin=current_admin,
+        action="VAPT_ACCESS_BLOCKED",
+        target_type="user",
+        target_id=user.user_id,
+        details={"email": user.email, "status": "blocked"},
+        ip_address=ip_address,
+        public_ip=public_ip,
+    )
+    return {"success": True, "user_id": user.user_id, "email": user.email, "vapt_blocked": True}
+
+
+def unblock_vapt_access(
+    identifier: str,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    """Restore an individual user's VAPT access."""
+    user = _get_user_for_vapt_action(identifier, db)
+    user.vapt_blocked = False
+    db.add(user)
+    db.commit()
+    _record_audit_log(
+        db,
+        admin=current_admin,
+        action="VAPT_ACCESS_UNBLOCKED",
+        target_type="user",
+        target_id=user.user_id,
+        details={"email": user.email, "status": "unblocked"},
+        ip_address=ip_address,
+        public_ip=public_ip,
+    )
+    return {"success": True, "user_id": user.user_id, "email": user.email, "vapt_blocked": False}
+
+
 def get_blacklisted_emails(db: Session) -> list[dict]:
     blocked_users = db.query(Blacklist).order_by(Blacklist.created_at.desc()).all()
 
@@ -725,73 +787,6 @@ def get_scan_summaries(db: Session) -> list[dict]:
 def get_total_scans(db: Session) -> dict:
     total_scans = db.query(ScanScoreHistory).count()
     return {"total_scans": total_scans}
-
-
-def create_public_report_request(
-    db: Session,
-    email: str,
-    domain: str,
-    first_name: str,
-    last_name: str,
-    report_payload: dict | None = None,
-) -> PublicReportRequest:
-    normalized_email = _normalize_email(email)
-    normalized_domain = domain.strip().lower() if domain else ""
-    normalized_first_name = first_name.strip() if first_name else ""
-    normalized_last_name = last_name.strip() if last_name else ""
-
-    if not normalized_email or not normalized_domain or not normalized_first_name or not normalized_last_name:
-        raise HTTPException(status_code=400, detail="Email, first name, last name, and domain are required")
-
-    record = PublicReportRequest(
-        first_name=normalized_first_name,
-        last_name=normalized_last_name,
-        email=normalized_email,
-        domain=normalized_domain,
-        report_payload=report_payload or {},
-        created_at=datetime.now(timezone.utc),
-    )
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-    return record
-
-
-def _format_timestamp_to_utc_iso(timestamp: datetime | None) -> str | None:
-    if not timestamp:
-        return None
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-    return timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def get_public_report_requests(db: Session, search: str | None = None) -> list[dict]:
-    query = db.query(PublicReportRequest).order_by(PublicReportRequest.created_at.desc())
-
-    if search and search.strip():
-        needle = f"%{search.strip().lower()}%"
-        query = query.filter(
-            or_(
-                PublicReportRequest.email.ilike(needle),
-                PublicReportRequest.domain.ilike(needle),
-                PublicReportRequest.first_name.ilike(needle),
-                PublicReportRequest.last_name.ilike(needle),
-            )
-        )
-
-    rows = query.all()
-    return [
-        {
-            "id": row.id,
-            "first_name": row.first_name,
-            "last_name": row.last_name,
-            "email": row.email,
-            "domain": row.domain,
-            "report_payload": row.report_payload or {},
-            "created_at": _format_timestamp_to_utc_iso(row.created_at),
-        }
-        for row in rows
-    ]
 
 
 def get_audit_logs(db: Session) -> list[dict]:

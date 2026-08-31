@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, Integer, Boolean, ForeignKey, TIMESTAMP, Index, DateTime, Float
+from sqlalchemy import Column, String, Text, Integer, Boolean, ForeignKey, TIMESTAMP, Index, DateTime, Float, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy import JSON
 from sqlalchemy.sql import func
@@ -22,6 +22,34 @@ class Organization(Base):
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False)
     domain = Column(JSON, nullable=True)
     max_domains = Column(Integer, default=1, nullable=False)
+    region = Column(String(20), nullable=True)
+
+
+class Region(Base):
+    __tablename__ = "regions"
+
+    region_id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(30), unique=True, nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default="true")
+
+
+class OrganizationRegion(Base):
+    __tablename__ = "organization_regions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False, index=True)
+    region_id = Column(Integer, ForeignKey("regions.region_id"), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending")
+    requested_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+    reviewed_at = Column(TIMESTAMP, nullable=True)
+    reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "region_id", name="uq_org_region"),
+    )
+
 
 class User(Base):
     __tablename__ = "users"
@@ -39,6 +67,9 @@ class User(Base):
     verification_token        = Column(String(255), unique=True, nullable=True)
     verification_expires_at   = Column(TIMESTAMP, nullable=True)
     pending_registration_domain = Column(Text, nullable=True)
+    # Admin can revoke an individual user's VAPT access without touching the
+    # org-level approvals in organization_regions (reversible via unblock).
+    vapt_blocked              = Column(Boolean, nullable=False, server_default="false")
 
     # ── NEW: TOTP columns ─────────────────────────────────────────────────────
     totp_secret     = Column(String(64), nullable=True)
@@ -79,21 +110,6 @@ class PersonalEmailInvitation(Base):
     expires_at = Column(TIMESTAMP, nullable=True)
     notes = Column(Text, nullable=True)
 
-
-class PublicReportRequest(Base):
-    __tablename__ = "public_report_requests"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    first_name = Column(String(255), nullable=False, default="")
-    last_name = Column(String(255), nullable=False, default="")
-    email = Column(String(255), nullable=False, index=True)
-    domain = Column(Text, nullable=False, index=True)
-    report_payload = Column(JSON, nullable=False, default={})
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    __table_args__ = (
-        Index("idx_public_report_requests_created", "created_at"),
-    )
 
 
 class PasswordResetOTP(Base):
@@ -357,6 +373,7 @@ class VaptImport(Base):
     # (which shipped a NOT NULL `status` column). Imports are stored fully
     # normalized, so the value is always "completed" at insert time.
     status = Column(String(20), nullable=False, default="completed", server_default="'completed'")
+    region = Column(String(20), nullable=False, default="")
     total_findings = Column(Integer, nullable=False, default=0)
     unique_hosts = Column(Integer, nullable=False, default=0)
     risk_score = Column(Integer, nullable=False, default=0)  # 0-100 risk index
