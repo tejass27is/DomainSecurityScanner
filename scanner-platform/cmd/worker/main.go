@@ -23,7 +23,7 @@ func main() {
 	ctx := context.Background()
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
-		addr = "localhost:6379"
+		log.Fatal("REDIS_ADDR environment variable is not set. Set it to your Redis server address (e.g. redis:6379).")
 	}
 	scan_type := os.Getenv("WORKER_TYPE")
 	if scan_type == "" {

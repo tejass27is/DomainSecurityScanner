@@ -116,8 +116,11 @@ export default function SocAnalystVaptReports() {
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested"].includes(message.event)) {
+          if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_rescan_reminder", "routine_scan_booked"].includes(message.event)) {
             refreshRescanRequests();
+          }
+          if (["report_published", "client_review_completed"].includes(message.event)) {
+            loadImports();
           }
         } catch {
           // ignore invalid websocket payload
@@ -494,8 +497,8 @@ export default function SocAnalystVaptReports() {
                         </td>
                         <td className="px-6 py-4">
                           <span className={`inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold ${
-                            item.status === "submitted"
-                              ? "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
+                            item.status === "client_completed"
+                              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
                               : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
                           }`}>
                             {item.status ? item.status.replace("_", " ") : "published"}

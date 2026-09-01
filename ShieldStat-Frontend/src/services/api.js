@@ -1,19 +1,19 @@
-const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_BACKEND_URL;
+if (!API_BASE) {
+  throw new Error(
+    "VITE_BACKEND_URL is not set. " +
+    "Add VITE_BACKEND_URL to your .env file (e.g. VITE_BACKEND_URL=https://api.yourdomain.com)"
+  );
+}
 const requestCache = new Map();
 const CACHE_TTL_MS = 30000;
 
-function loopbackVariants(endpoint) {
-  const urls = [`${API_BASE}${endpoint}`];
-  if (/\/\/localhost(?=:|$)/i.test(API_BASE)) {
-    urls.push(`${API_BASE.replace(/\/\/localhost/i, "//127.0.0.1")}${endpoint}`);
-  } else if (/\/\/127\.0\.0\.1(?=:|$)/.test(API_BASE)) {
-    urls.push(`${API_BASE.replace(/\/\/127\.0\.0\.1/i, "//localhost")}${endpoint}`);
-  }
-  return urls;
+function buildUrl(endpoint) {
+  return `${API_BASE}${endpoint}`;
 }
 
 
-const LOOPBACK_TIMEOUT_MS = import.meta.env.DEV ? 180000 : 0;
+const DEV_TIMEOUT_MS = import.meta.env.DEV ? 180000 : 0;
 const OPTIONAL_ENRICHMENTS_ENABLED =
   import.meta.env.PROD || import.meta.env.VITE_ENABLE_OPTIONAL_ENRICHMENTS === "true";
 
@@ -663,51 +663,37 @@ export async function uploadVaptReport(file, token, orgId = null, region = null)
     formData.append("region", region);
   }
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const urls = loopbackVariants("/vapt/upload");
+  const url = buildUrl("/vapt/upload");
 
-  for (const url of urls) {
-    let res;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: formData,
-        // Don't hang forever if a proxied connection wedges mid-upload (dev only).
-        signal: LOOPBACK_TIMEOUT_MS ? AbortSignal.timeout(LOOPBACK_TIMEOUT_MS) : undefined,
-      });
-    } catch (err) {
-      if (err?.name === "AbortError") {
-        // Deliberately NOT retried: the server may already have received the
-        // full body and be importing it — retrying could create a duplicate.
-        throw new Error(`Upload timed out — the server took too long to respond at ${url}.`);
-      }
-      // fetch only rejects here on a network-level failure (server unreachable,
-      // CORS preflight blocked, mixed content, or a proxy dropping the upload).
-      // Try the other loopback address before giving up. Note: in the rare case
-      // the server stored the import but the response was dropped, a retry could
-      // create a duplicate import — the backend dedupe by file hash would close
-      // that window if it ever becomes a problem.
-      continue;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: formData,
+      signal: DEV_TIMEOUT_MS ? AbortSignal.timeout(DEV_TIMEOUT_MS) : undefined,
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Upload timed out — the server took too long to respond at ${url}.`);
     }
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      const detail = data?.detail;
-      throw new Error(
-        detail
-          ? `Import failed: ${detail}`
-          : `Import failed (HTTP ${res.status}) — the server rejected the file.`,
-      );
-    }
-    return res.json();
+    throw new Error(
+      `Network error: could not reach the import server at ${url}. ` +
+      "Check that the backend is running and that this site's origin is allowed " +
+      "by the backend CORS settings."
+    );
   }
 
-  throw new Error(
-    `Network error: could not reach the import server at ${urls.join(" or ")}. ` +
-    "Check that the backend is running and that this site's origin is allowed " +
-    "by the backend CORS settings. If the backend runs in Docker, restart " +
-    "Docker Desktop if the connection keeps getting dropped.",
-  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    const detail = data?.detail;
+    throw new Error(
+      detail
+        ? `Import failed: ${detail}`
+        : `Import failed (HTTP ${res.status}) — the server rejected the file.`,
+    );
+  }
+  return res.json();
 }
 
 export function requestVaptAccess(regions, token) {
@@ -746,39 +732,34 @@ export function getVaptImport(importId, token) {
 }
 
 async function _downloadVaptPdf(basePath, importId, token) {
-  const urls = loopbackVariants(`${basePath}/${encodeURIComponent(importId)}/report`);
+  const url = buildUrl(`${basePath}/${encodeURIComponent(importId)}/report`);
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
-  for (const url of urls) {
-    let res;
-    try {
-      res = await fetch(url, { headers, signal: LOOPBACK_TIMEOUT_MS ? AbortSignal.timeout(90000) : undefined });
-    } catch (err) {
-      if (err?.name === "AbortError") {
-        throw new Error(`Report download timed out at ${url}.`);
-      }
-      continue;
+  let res;
+  try {
+    res = await fetch(url, { headers, signal: DEV_TIMEOUT_MS ? AbortSignal.timeout(90000) : undefined });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Report download timed out at ${url}.`);
     }
-    if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      throw new Error(data?.detail || `Failed to download report (${res.status})`);
-    }
-    const blob = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = blobUrl;
-    link.download = `vapt-report-${importId.slice(0, 8)}.pdf`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(blobUrl);
-    return;
+    throw new Error(
+      `Network error: could not reach the report server at ${url}. ` +
+      "Check that the backend is running and CORS allows this site.",
+    );
   }
-
-  throw new Error(
-    `Network error: could not reach the report server at ${urls.join(" or ")}. ` +
-    "Check that the backend is running and CORS allows this site.",
-  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || `Failed to download report (${res.status})`);
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = `vapt-report-${importId.slice(0, 8)}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(blobUrl);
 }
 
 export function downloadVaptReport(importId, token) {
@@ -862,6 +843,46 @@ export function deleteVaptRescanSchedule(importId, scheduleId, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}`, { method: "DELETE", token });
 }
 
+export function acceptRescanDate(importId, scheduleId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/accept`, { method: "POST", token });
+}
+
+export function rejectRescanDate(importId, scheduleId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/reject`, { method: "POST", token });
+}
+
 export function postVaptRescanNow(importId, body, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-now`, { method: "POST", body, token });
+}
+
+// ─── VAPT Onboarding ────────────────────────────────────────────────────────
+
+export function getVaptOnboarding(token) {
+  return request("/vapt/onboarding", { token, skipCache: true });
+}
+
+export function updateVaptOnboarding(fields, token) {
+  return request("/vapt/onboarding", { method: "PATCH", body: fields, token });
+}
+
+export function getHasCompletedScans(token) {
+  return request("/vapt/has-completed-scans", { token, skipCache: true });
+}
+
+// ─── Routine Scan Slots ─────────────────────────────────────────────────────
+
+export function getVaptScanSlots(token) {
+  return request("/vapt/scan-slots", { token, skipCache: true });
+}
+
+export function bookVaptScanSlot(slotId, token) {
+  return request(`/vapt/scan-slots/${encodeURIComponent(slotId)}/book`, { method: "POST", token });
+}
+
+export function getAdminVaptScanSlots(token) {
+  return request("/vapt/admin/scan-slots", { token, skipCache: true });
+}
+
+export function createVaptScanSlot(body, token) {
+  return request("/vapt/admin/scan-slots", { method: "POST", body, token });
 }

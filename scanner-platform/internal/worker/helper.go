@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -19,19 +20,15 @@ import (
 
 const (
 	defaultScannerImage       = "scanner-worker-main"
-	defaultBackendURL         = "http://backend:8000"
-	defaultRedisAddr          = "redis:6379"
 	defaultDockerNetwork      = "scanner-network"
 	defaultSingleDomainScanID = "single-domain-scan"
 )
 
 func getBackendBaseURL() (string, error) {
 	configured := strings.TrimSpace(os.Getenv("BACKEND_URL"))
-
 	if configured == "" {
-		return "", fmt.Errorf("BACKEND_URL is not configured")
+		return "", fmt.Errorf("BACKEND_URL environment variable is not set. Set it to your backend URL (e.g. http://backend:8000).")
 	}
-
 	return strings.TrimRight(configured, "/"), nil
 }
 
@@ -40,10 +37,10 @@ func buildTemporaryScanContainerArgs(scanID string, domain string, imageName str
 		imageName = defaultScannerImage
 	}
 	if strings.TrimSpace(backendURL) == "" {
-		backendURL = defaultBackendURL
+		log.Fatal("backendURL must not be empty")
 	}
 	if strings.TrimSpace(redisAddr) == "" {
-		redisAddr = defaultRedisAddr
+		log.Fatal("redisAddr must not be empty")
 	}
 	if strings.TrimSpace(networkName) == "" {
 		networkName = defaultDockerNetwork
@@ -93,11 +90,11 @@ func RunTemporaryScanContainer(ctx context.Context, job *models.ScanJob) error {
 	}
 	backendURL := strings.TrimSpace(os.Getenv("BACKEND_URL"))
 	if backendURL == "" {
-		backendURL = defaultBackendURL
+		log.Fatal("BACKEND_URL environment variable is not set. Set it to your backend URL (e.g. http://backend:8000).")
 	}
 	redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
 	if redisAddr == "" {
-		redisAddr = defaultRedisAddr
+		log.Fatal("REDIS_ADDR environment variable is not set. Set it to your Redis server address (e.g. redis:6379).")
 	}
 	networkName := strings.TrimSpace(os.Getenv("DOCKER_NETWORK"))
 	if networkName == "" {

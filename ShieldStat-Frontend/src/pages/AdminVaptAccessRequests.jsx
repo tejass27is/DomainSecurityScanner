@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { Loader2, CheckCircle2, XCircle, Clock } from "lucide-react";
 import { getAdminVaptAccessRequests, approveVaptAccessRequest } from "../services/api";
+import ConfirmModal from "../components/ConfirmModal";
 
 export default function AdminVaptAccessRequests() {
   const navigate = useNavigate();
@@ -10,6 +11,7 @@ export default function AdminVaptAccessRequests() {
   const [error, setError] = useState("");
   const [actionLoading, setActionLoading] = useState({});
   const [toast, setToast] = useState(null);
+  const [confirmModal, setConfirmModal] = useState({ open: false, type: "approve", orgId: null, region: null });
 
   const loadRequests = async () => {
     setLoading(true);
@@ -33,36 +35,38 @@ export default function AdminVaptAccessRequests() {
     loadRequests();
   }, []);
 
-  const handleApprove = async (orgId, region) => {
-    if (!confirm(`Approve VAPT access for ${region}?`)) return;
+  const executeAction = useCallback(async (orgId, region, approved) => {
     const key = `${orgId}-${region}`;
     setActionLoading((prev) => ({ ...prev, [key]: true }));
     try {
       const token = localStorage.getItem("token");
-      await approveVaptAccessRequest(orgId, region, true, token);
-      setToast({ text: `VAPT access approved for ${region}`, type: "success" });
+      await approveVaptAccessRequest(orgId, region, approved, token);
+      setToast({
+        text: approved
+          ? `VAPT access approved for ${region}`
+          : `VAPT access request denied for ${region}`,
+        type: "success",
+      });
       await loadRequests();
     } catch (err) {
-      setToast({ text: err?.message || "Failed to approve request", type: "error" });
+      setToast({ text: err?.message || "Failed to process request", type: "error" });
     } finally {
       setActionLoading((prev) => ({ ...prev, [key]: false }));
     }
+  }, []);
+
+  const handleApprove = (orgId, region) => {
+    setConfirmModal({ open: true, type: "approve", orgId, region });
   };
 
-  const handleDeny = async (orgId, region) => {
-    if (!confirm(`Deny VAPT access request for ${region}?`)) return;
-    const key = `${orgId}-${region}`;
-    setActionLoading((prev) => ({ ...prev, [key]: true }));
-    try {
-      const token = localStorage.getItem("token");
-      await approveVaptAccessRequest(orgId, region, false, token);
-      setToast({ text: `VAPT access request denied for ${region}`, type: "success" });
-      await loadRequests();
-    } catch (err) {
-      setToast({ text: err?.message || "Failed to deny request", type: "error" });
-    } finally {
-      setActionLoading((prev) => ({ ...prev, [key]: false }));
-    }
+  const handleDeny = (orgId, region) => {
+    setConfirmModal({ open: true, type: "deny", orgId, region });
+  };
+
+  const handleConfirmAction = async () => {
+    const { orgId, region, type } = confirmModal;
+    await executeAction(orgId, region, type === "approve");
+    setConfirmModal({ open: false, type: "approve", orgId: null, region: null });
   };
 
   useEffect(() => {
@@ -85,6 +89,17 @@ export default function AdminVaptAccessRequests() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-10">
+        <ConfirmModal
+          open={confirmModal.open}
+          onClose={() => setConfirmModal({ open: false, type: "approve", orgId: null, region: null })}
+          onConfirm={handleConfirmAction}
+          title={confirmModal.type === "approve" ? "Approve VAPT Access" : "Deny VAPT Access"}
+          message={confirmModal.type === "approve" ? `Are you sure you want to approve VAPT access for ${confirmModal.region}? The user will be able to upload and manage VAPT reports for this region.` : `Are you sure you want to deny the VAPT access request for ${confirmModal.region}? The user will not be able to access VAPT features for this region.`}
+          confirmLabel={confirmModal.type === "approve" ? "Approve" : "Deny"}
+          variant={confirmModal.type === "approve" ? "primary" : "danger"}
+          loading={confirmModal.open && actionLoading[`${confirmModal.orgId}-${confirmModal.region}`]}
+        />
+
         {toast?.text && (
           <div
             role="status"
@@ -163,7 +178,7 @@ export default function AdminVaptAccessRequests() {
                   <div className="grid gap-2">
                     {request.requested_regions.map((region) => {
                       const isApproved = request.approved_regions && request.approved_regions.includes(region);
-                      const key = `${request.user_id}-${region}`;
+                      const key = `${request.org_id}-${region}`;
                       const isLoading = actionLoading[key];
 
                       return (

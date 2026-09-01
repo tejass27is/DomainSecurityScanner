@@ -260,9 +260,9 @@ async def websocket_endpoint(websocket: WebSocket, org_id: str, token: str | Non
         # The "platform" channel is reserved for platform-wide notifications
         # (SOC analysts / admins have no org of their own, so org_id is null).
         if str(org_id).strip() == "platform":
-            if role not in ("admin", "soc_analyst"):
+            if role not in ("admin", "soc_analyst", "owner"):
                 logger.warning(f"WebSocket platform channel denied for role={role}")
-                await websocket.close(code=1008, reason="Unauthorized: platform channel requires an admin or SOC analyst")
+                await websocket.close(code=1008, reason="Unauthorized: platform channel requires an admin, SOC analyst, or owner")
                 return
         else:
             if not user_org_id or str(user_org_id).strip() != org_id.strip():

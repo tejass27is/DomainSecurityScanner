@@ -280,8 +280,11 @@ async def schedule_vapt_rescan_admin(
 
     try:
         scheduled_at = datetime.fromisoformat(body.scheduled_at)
+        # Always normalize to UTC: naive = assume UTC, aware = convert
         if scheduled_at.tzinfo is None:
             scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+        else:
+            scheduled_at = scheduled_at.astimezone(timezone.utc)
     except Exception:
         raise HTTPException(status_code=400, detail="scheduled_at must be an ISO8601 datetime")
 

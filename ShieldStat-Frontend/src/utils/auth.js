@@ -1,4 +1,10 @@
-const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_BACKEND_URL;
+if (!API_BASE) {
+  throw new Error(
+    "VITE_BACKEND_URL is not set. " +
+    "Add VITE_BACKEND_URL to your .env file (e.g. VITE_BACKEND_URL=https://api.yourdomain.com)"
+  );
+}
 
 export function clearAuthSession() {
   localStorage.removeItem("user");

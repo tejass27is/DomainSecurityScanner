@@ -389,6 +389,66 @@ class VaptImport(Base):
     )
 
 
+class VaptOnboardingChecklist(Base):
+    """One-time onboarding checklist for an org's first VAPT experience.
+
+    Once all required fields are completed the org never sees it again.
+    Stored per org, PATCHed per field with autosave.
+    """
+
+    __tablename__ = "vapt_onboarding_checklists"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String(36), ForeignKey("organizations.org_id"), unique=True, nullable=False)
+
+    # Scope / IP ranges the org wants assessed
+    scope_ip_ranges = Column(Text, nullable=True)
+    # Authorization confirmation (boolean) or URL/path to uploaded letter
+    authorization_confirmed = Column(Boolean, nullable=False, server_default="false")
+    authorization_letter_url = Column(Text, nullable=True)
+    # Technical contact name + email + phone
+    tech_contact_name = Column(String(255), nullable=True)
+    tech_contact_email = Column(String(255), nullable=True)
+    tech_contact_phone = Column(String(50), nullable=True)
+    # Preferred testing window (e.g. "Weekdays 10PM-6AM EST")
+    testing_window = Column(Text, nullable=True)
+    # Systems explicitly out of scope
+    out_of_scope_systems = Column(Text, nullable=True)
+
+    completed_at = Column(TIMESTAMP, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_vapt_onboarding_org", "org_id"),
+    )
+
+
+class VaptScanSlot(Base):
+    """SOC-published availability slots for routine next-month scans.
+
+    SOC creates slots ahead of time; orgs pick one to confirm.
+    """
+
+    __tablename__ = "vapt_scan_slots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=True)
+    # NULL org_id = open slot any org can claim
+    scheduled_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    created_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    status = Column(String(20), nullable=False, default="available")  # available | booked | completed
+    booked_by_org = Column(String(36), ForeignKey("organizations.org_id"), nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_vapt_scan_slot_status", "status"),
+        Index("idx_vapt_scan_slot_scheduled", "scheduled_at"),
+    )
+
+
 class VaptRescanSchedule(Base):
     __tablename__ = "vapt_rescan_schedules"
 
@@ -397,12 +457,14 @@ class VaptRescanSchedule(Base):
     org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
     created_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
     hosts = Column(JSON, nullable=True)  # list of host strings to rescan
-    scheduled_at = Column(TIMESTAMP, nullable=False)
+    scheduled_at = Column(TIMESTAMP(timezone=True), nullable=False)
     recurrence = Column(JSON, nullable=True)
+    note = Column(Text, nullable=True)
     status = Column(String(20), nullable=False, default="scheduled")
+    error_message = Column(Text, nullable=True)  # populated when status = "failed"
     notified = Column(Boolean, nullable=False, server_default="false")
-    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
-    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     __table_args__ = (
         Index("idx_vapt_rescan_org", "org_id"),

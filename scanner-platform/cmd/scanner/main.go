@@ -20,7 +20,7 @@ func main() {
 
 	// Domain comes from the CLI arg (README documents `go run cmd/scanner/main.go <domain>`);
 	// fall back to a default only for convenience.
-	domain_name := "www.isecurify.co"
+	domain_name := "officebeacon.com"
 	if len(os.Args) > 1 {
 		domain_name = os.Args[1]
 	}

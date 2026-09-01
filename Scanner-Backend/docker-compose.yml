@@ -71,10 +71,13 @@ services:
       - LOCKOUT_DURATION_MINUTES=${LOCKOUT_DURATION_MINUTES:-30}
       - PUBLIC_EMAIL_DOMAINS=${PUBLIC_EMAIL_DOMAINS}
       - VAPT_MAX_FILE_SIZE_MB=${VAPT_MAX_FILE_SIZE_MB:-25}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-8000}
     volumes:
       - .:/app
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-8000}/health"]
       interval: 30s
       timeout: 10s
       retries: 3

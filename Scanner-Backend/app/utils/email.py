@@ -535,3 +535,99 @@ def send_account_locked_email(to_email: str, locked_until_iso: str, attempts: in
     _smtp_send(msg)
 
     return True
+
+
+def send_client_review_completed_email(
+    to_email: str,
+    org_id: str,
+    file_name: str,
+    solved_count: int,
+    total_findings: int,
+    import_id: str,
+):
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured.")
+    if not FRONTEND_URL:
+        raise ValueError("FRONTEND_URL must be configured.")
+
+    report_link = f"{FRONTEND_URL.rstrip('/')}/admin/vapt-reports/{import_id}"
+    subject = f"Client completed review: {file_name}"
+    html_content = f"""
+    <!DOCTYPE html><html><head><style>
+        body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #f4f6f9; padding: 40px 0; }}
+        .container {{ max-width: 560px; margin: 0 auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); overflow: hidden; }}
+        .header {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 32px; text-align: center; }}
+        .header h1 {{ color: #fff; margin: 0; font-size: 22px; }}
+        .body {{ padding: 32px; color: #333; line-height: 1.6; }}
+        .btn {{ display: inline-block; background: linear-gradient(135deg, #0f3460, #533483); color: #fff !important; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-weight: 600; margin: 20px 0; }}
+        .stat {{ background: #f0fdf4; border-radius: 8px; padding: 16px; margin: 16px 0; border-left: 4px solid #16a34a; }}
+        .stat strong {{ color: #16a34a; }}
+        .footer {{ padding: 20px 32px; background: #f8f9fa; color: #888; font-size: 12px; text-align: center; }}
+    </style></head><body>
+        <div class="container">
+            <div class="header"><h1>VAPT Client Review Completed</h1></div>
+            <div class="body">
+                <p>Hello,</p>
+                <p>The client completed their review of <strong>{file_name}</strong>.</p>
+                <div class="stat"><p><strong>{solved_count}</strong> of <strong>{total_findings}</strong> findings confirmed resolved</p></div>
+                <p style="text-align: center;"><a href="{report_link}" class="btn">View Report</a></p>
+            </div>
+            <div class="footer">&copy; Domain Scanner</div>
+        </div>
+    </body></html>
+    """
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["To"] = to_email
+    plain = f"Client completed review of {file_name}. {solved_count}/{total_findings} findings resolved. Report: {report_link}"
+    msg.attach(MIMEText(plain, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+    _smtp_send(msg)
+    return True
+
+
+def send_rescan_failed_email(
+    to_email: str,
+    org_id: str,
+    file_name: str,
+    error_message: str,
+    import_id: str,
+):
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured.")
+    if not FRONTEND_URL:
+        raise ValueError("FRONTEND_URL must be configured.")
+
+    report_link = f"{FRONTEND_URL.rstrip('/')}/admin/vapt-reports/{import_id}"
+    subject = f"VAPT scan failed: {file_name}"
+    html_content = f"""
+    <!DOCTYPE html><html><head><style>
+        body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #f4f6f9; padding: 40px 0; }}
+        .container {{ max-width: 560px; margin: 0 auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); overflow: hidden; }}
+        .header {{ background: linear-gradient(135deg, #7f1d1d 0%, #991b1b 100%); padding: 32px; text-align: center; }}
+        .header h1 {{ color: #fff; margin: 0; font-size: 22px; }}
+        .body {{ padding: 32px; color: #333; line-height: 1.6; }}
+        .btn {{ display: inline-block; background: linear-gradient(135deg, #0f3460, #533483); color: #fff !important; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-weight: 600; margin: 20px 0; }}
+        .error {{ background: #fef2f2; border-radius: 8px; padding: 16px; margin: 16px 0; border-left: 4px solid #dc2626; color: #991b1b; }}
+        .footer {{ padding: 20px 32px; background: #f8f9fa; color: #888; font-size: 12px; text-align: center; }}
+    </style></head><body>
+        <div class="container">
+            <div class="header"><h1>VAPT Scan Failed</h1></div>
+            <div class="body">
+                <p>Hello,</p>
+                <p>A verification scan for <strong>{file_name}</strong> has failed.</p>
+                <div class="error"><p>Error: {error_message}</p></div>
+                <p style="text-align: center;"><a href="{report_link}" class="btn">View Report</a></p>
+            </div>
+            <div class="footer">&copy; Domain Scanner</div>
+        </div>
+    </body></html>
+    """
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["To"] = to_email
+    plain = f"Scan failed for {file_name}. Error: {error_message}. Report: {report_link}"
+    msg.attach(MIMEText(plain, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+    _smtp_send(msg)
+    return True

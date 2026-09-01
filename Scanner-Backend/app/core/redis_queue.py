@@ -12,7 +12,12 @@ class RedisClient:
         decode_responses: bool = True,
     ):
         configured_host = host or os.getenv("REDIS_HOST")
-        self.host = configured_host or "localhost"
+        if not configured_host:
+            raise ValueError(
+                "REDIS_HOST environment variable is not set. "
+                "Set it to your Redis server address (e.g. redis, localhost:6379)."
+            )
+        self.host = configured_host
         port = port if port is not None else int(os.getenv("REDIS_PORT", "6379"))
         password = os.getenv("REDIS_PASSWORD") or None
 
@@ -43,11 +48,6 @@ class RedisClient:
         try:
             return await operation(self.redis, *args, **kwargs)
         except Exception:
-            if self.host not in {"localhost", "127.0.0.1"}:
-                fallback_client = self._build_client("localhost")
-                self.redis = fallback_client
-                self.host = "localhost"
-                return await operation(self.redis, *args, **kwargs)
             raise
 
     async def PushToQueue(self, queue_name: str = "scan_queue", data: dict = {}):

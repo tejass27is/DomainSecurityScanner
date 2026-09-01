@@ -12,6 +12,9 @@ import {
   getVaptOrganizations,
   requestVaptAccess,
   getVaptAccessStatus,
+  getVaptOnboarding,
+  updateVaptOnboarding,
+  getHasCompletedScans,
 } from "../services/api";
 import {
   SEVERITY_META,
@@ -172,6 +175,10 @@ export default function VaptUpload() {
     approved_regions: [],
     available_regions: [],
   });
+  const [onboarding, setOnboarding] = useState(null);
+  const [onboardingComplete, setOnboardingComplete] = useState(true); // default true to not block
+  const [hasScans, setHasScans] = useState(true); // default true to not block
+  const [onboardingSaving, setOnboardingSaving] = useState(false);
   const [accessCode, setAccessCode] = useState("");
   const [accessName, setAccessName] = useState("");
   const [requestSubmitting, setRequestSubmitting] = useState(false);
@@ -243,6 +250,28 @@ export default function VaptUpload() {
     if (canUpload || !vaptAccessStatus.vapt_access_enabled) return;
     navigate("/vapt/reports", { replace: true });
   }, [canUpload, vaptAccessStatus.vapt_access_enabled, navigate]);
+
+  // Check onboarding status for org users (not SOC analysts)
+  useEffect(() => {
+    if (canUpload) return; // SOC analysts skip onboarding
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    (async () => {
+      try {
+        const [onbData, scanData] = await Promise.all([
+          getVaptOnboarding(token),
+          getHasCompletedScans(token),
+        ]);
+        setOnboarding(onbData);
+        setOnboardingComplete(!!onbData?.completed);
+        setHasScans(!!scanData?.has_completed_scans);
+      } catch {
+        // If onboarding endpoint doesn't exist yet, allow through
+        setOnboardingComplete(true);
+        setHasScans(true);
+      }
+    })();
+  }, [canUpload]);
 
   useEffect(() => {
     if (!canUpload) return;
@@ -432,6 +461,132 @@ export default function VaptUpload() {
 
   const previewRows = (preview?.findings || []).slice(0, 12);
 
+  // ── Onboarding checklist for first-time org users ──
+  const handleOnboardingChange = useCallback(async (field, value) => {
+    setOnboardingSaving(true);
+    try {
+      const token = localStorage.getItem("token");
+      const updated = await updateVaptOnboarding({ [field]: value }, token);
+      setOnboarding(updated);
+      setOnboardingComplete(!!updated?.completed);
+    } catch (err) {
+      // ignore autosave errors
+    } finally {
+      setOnboardingSaving(false);
+    }
+  }, []);
+
+  if (!canUpload && !hasScans && onboarding && !onboardingComplete) {
+    return (
+      <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="mb-6 flex items-center gap-3">
+          <span className="material-symbols-outlined text-purple-600">fact_check</span>
+          <span className="text-xs font-black uppercase tracking-[0.28em] text-purple-700 dark:text-purple-400">First-time setup</span>
+        </div>
+        <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100">VAPT Onboarding Checklist</h2>
+        <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
+          Complete this one-time checklist so your security team knows how to scope and schedule your first scan.
+        </p>
+
+        <div className="mt-8 space-y-5">
+          {/* Scope / IP ranges */}
+          <div className="space-y-2">
+            <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Scope / IP ranges to assess *</label>
+            <textarea
+              rows={3}
+              value={onboarding.scope_ip_ranges || ""}
+              onChange={(e) => handleOnboardingChange("scope_ip_ranges", e.target.value)}
+              placeholder="e.g. 10.0.0.0/8, 192.168.1.0/24, app.example.com"
+              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+            />
+          </div>
+
+          {/* Authorization confirmation */}
+          <div className="space-y-2">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!onboarding.authorization_confirmed}
+                onChange={(e) => handleOnboardingChange("authorization_confirmed", e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-purple-600 focus:ring-purple-500"
+              />
+              <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">I confirm we have written authorization to perform security testing *</span>
+            </label>
+          </div>
+
+          {/* Technical contact */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Technical contact name *</label>
+              <input
+                type="text"
+                value={onboarding.tech_contact_name || ""}
+                onChange={(e) => handleOnboardingChange("tech_contact_name", e.target.value)}
+                placeholder="Full name"
+                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Technical contact email *</label>
+              <input
+                type="email"
+                value={onboarding.tech_contact_email || ""}
+                onChange={(e) => handleOnboardingChange("tech_contact_email", e.target.value)}
+                placeholder="email@company.com"
+                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Technical contact phone (optional)</label>
+            <input
+              type="tel"
+              value={onboarding.tech_contact_phone || ""}
+              onChange={(e) => handleOnboardingChange("tech_contact_phone", e.target.value)}
+              placeholder="Phone number"
+              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+            />
+          </div>
+
+          {/* Testing window */}
+          <div className="space-y-2">
+            <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Preferred testing window *</label>
+            <input
+              type="text"
+              value={onboarding.testing_window || ""}
+              onChange={(e) => handleOnboardingChange("testing_window", e.target.value)}
+              placeholder="e.g. Weekdays 10PM-6AM EST"
+              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+            />
+          </div>
+
+          {/* Out of scope */}
+          <div className="space-y-2">
+            <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Out-of-scope systems (optional)</label>
+            <textarea
+              rows={2}
+              value={onboarding.out_of_scope_systems || ""}
+              onChange={(e) => handleOnboardingChange("out_of_scope_systems", e.target.value)}
+              placeholder="e.g. Production databases, payment gateway"
+              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+            />
+          </div>
+
+          {onboardingSaving && (
+            <p className="text-xs text-slate-400">Saving…</p>
+          )}
+        </div>
+
+        <div className="mt-8 rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400">
+          {onboardingComplete
+            ? "✅ Checklist completed! Your security team can now schedule your first scan."
+            : "Complete all required fields (*) above to finish onboarding. Changes save automatically."
+          }
+        </div>
+      </div>
+    );
+  }
+
   if (!canUpload) {
     return (
       <div className="flex min-h-screen items-center justify-center p-6 text-slate-900 dark:text-slate-100">
@@ -503,7 +658,8 @@ export default function VaptUpload() {
                   setSelectedOrgId(orgId);
                   const org = orgs.find((o) => o.org_id === orgId);
                   const regions = org?.approved_regions || [];
-                  setSelectedRegion(regions[0] || "");
+                  const firstRegion = regions[0];
+                  setSelectedRegion(typeof firstRegion === "string" ? firstRegion : firstRegion?.code || "");
                 }}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
               >

@@ -27,7 +27,7 @@ from app.api.vapt.schemas import (
 )
 from app.core.middleware import protect, require_admin_or_soc_analyst, require_soc_analyst, require_vapt_access
 from app.db.base import get_db
-from app.db.models import Organization, User, VaptImport, VaptRescanSchedule, Region, OrganizationRegion
+from app.db.models import Organization, User, VaptImport, VaptRescanSchedule, VaptOnboardingChecklist, VaptScanSlot, Region, OrganizationRegion
 from app.api.vapt import schedule_service
 
 # A client organization can request/be approved for up to this many VAPT regions.
@@ -43,6 +43,108 @@ from typing import List
 
 router = APIRouter(prefix="/vapt", tags=["VAPT"])
 VALID_VAPT_FINDING_STATUSES = {"pending", "solved", "ignore", "false_positive"}
+
+
+# ─── Onboarding Checklist ────────────────────────────────────────────────────
+
+ONBOARDING_REQUIRED_FIELDS = ["scope_ip_ranges", "authorization_confirmed", "tech_contact_name", "tech_contact_email", "testing_window"]
+
+
+def _get_onboarding_or_create(db: Session, org_id: str) -> VaptOnboardingChecklist:
+    record = db.query(VaptOnboardingChecklist).filter(VaptOnboardingChecklist.org_id == org_id).first()
+    if not record:
+        record = VaptOnboardingChecklist(org_id=org_id)
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    return record
+
+
+def _is_onboarding_complete(record: VaptOnboardingChecklist) -> bool:
+    if not record:
+        return False
+    for field in ONBOARDING_REQUIRED_FIELDS:
+        val = getattr(record, field, None)
+        if val is None or val == "" or val is False:
+            return False
+    return True
+
+
+def _onboarding_to_dict(record: VaptOnboardingChecklist) -> dict:
+    return {
+        "org_id": record.org_id,
+        "scope_ip_ranges": record.scope_ip_ranges or "",
+        "authorization_confirmed": bool(record.authorization_confirmed),
+        "authorization_letter_url": record.authorization_letter_url or "",
+        "tech_contact_name": record.tech_contact_name or "",
+        "tech_contact_email": record.tech_contact_email or "",
+        "tech_contact_phone": record.tech_contact_phone or "",
+        "testing_window": record.testing_window or "",
+        "out_of_scope_systems": record.out_of_scope_systems or "",
+        "completed": bool(record.completed_at),
+        "completed_at": record.completed_at,
+    }
+
+
+@router.get("/onboarding")
+def get_onboarding_checklist(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Get or create the onboarding checklist for the user's org."""
+    if not current_user.org_id:
+        raise HTTPException(status_code=400, detail="No organization linked.")
+    # Check if org has any completed scans
+    scan_count = db.query(VaptImport).filter(
+        VaptImport.org_id == current_user.org_id
+    ).count()
+    record = _get_onboarding_or_create(db, current_user.org_id)
+    return {
+        **_onboarding_to_dict(record),
+        "has_completed_scans": scan_count > 0,
+    }
+
+
+@router.patch("/onboarding")
+def update_onboarding_checklist(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """PATCH individual fields of the onboarding checklist (autosave per field)."""
+    if not current_user.org_id:
+        raise HTTPException(status_code=400, detail="No organization linked.")
+    if current_user.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only org owners/admins can edit onboarding.")
+
+    record = _get_onboarding_or_create(db, current_user.org_id)
+    ALLOWED_FIELDS = {
+        "scope_ip_ranges", "authorization_confirmed", "authorization_letter_url",
+        "tech_contact_name", "tech_contact_email", "tech_contact_phone",
+        "testing_window", "out_of_scope_systems",
+    }
+    for key, value in payload.items():
+        if key in ALLOWED_FIELDS:
+            setattr(record, key, value)
+
+    # Auto-complete if all required fields are filled
+    if _is_onboarding_complete(record) and not record.completed_at:
+        record.completed_at = datetime.now(timezone.utc)
+        # Audit log for onboarding completion
+        try:
+            _record_audit_log(db, current_user, "VAPT_ONBOARDING_COMPLETED", "vapt_onboarding", current_user.org_id, {
+                "org_id": current_user.org_id,
+            })
+        except Exception:
+            pass
+    # If user un-fills a required field, re-open
+    if record.completed_at and not _is_onboarding_complete(record):
+        record.completed_at = None
+
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return _onboarding_to_dict(record)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -114,6 +216,20 @@ def _to_detail(record: VaptImport, uploader_email: str | None = None) -> dict:
         "summary": record.summary or {},
         "findings": record.findings or [],
     }
+
+
+def _to_utc_ts(dt) -> int:
+    """Safely convert a datetime (aware or naive) to a UTC epoch timestamp.
+
+    PostgreSQL TIMESTAMP columns may strip timezone info on round-trip, so
+    values read back from the DB can be naive even though they were stored as
+    UTC. This helper treats any naive datetime as UTC.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return int(dt.timestamp())
 
 
 def _normalize_finding_status(status: str) -> str:
@@ -390,6 +506,195 @@ def list_vapt_access_requests(
 
 
 
+@router.get("/has-completed-scans")
+def has_completed_scans(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Check whether the org has any completed VAPT scans (first-time check)."""
+    if not current_user.org_id:
+        return {"has_completed_scans": False}
+    scan_count = db.query(VaptImport).filter(
+        VaptImport.org_id == current_user.org_id
+    ).count()
+    onboarding = db.query(VaptOnboardingChecklist).filter(
+        VaptOnboardingChecklist.org_id == current_user.org_id
+    ).first()
+    return {
+        "has_completed_scans": scan_count > 0,
+        "onboarding_completed": bool(onboarding and onboarding.completed_at),
+    }
+
+
+# ─── Routine Scan Slots ──────────────────────────────────────────────────────
+
+@router.get("/scan-slots")
+def list_available_scan_slots(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """List available routine scan slots the user's org can book."""
+    from datetime import datetime as _dt
+    now = _dt.now(timezone.utc)
+    slots = (
+        db.query(VaptScanSlot)
+        .filter(
+            VaptScanSlot.status == "available",
+            VaptScanSlot.scheduled_at > now,
+            (VaptScanSlot.org_id == None) | (VaptScanSlot.org_id == current_user.org_id),
+        )
+        .order_by(VaptScanSlot.scheduled_at.asc())
+        .all()
+    )
+    return [
+        {
+            "id": str(s.id),
+            "scheduled_at": s.scheduled_at,
+            "note": s.note or "",
+            "status": s.status,
+        }
+        for s in slots
+    ]
+
+
+@router.post("/scan-slots/{slot_id}/book")
+async def book_scan_slot(
+    slot_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """User books a routine scan slot. Creates a rescan schedule so the scheduler picks it up."""
+    if not current_user.org_id:
+        raise HTTPException(status_code=400, detail="No organization linked.")
+    slot = db.query(VaptScanSlot).filter(VaptScanSlot.id == slot_id).first()
+    if not slot:
+        raise HTTPException(status_code=404, detail="Slot not found.")
+    if slot.status != "available":
+        raise HTTPException(status_code=400, detail="This slot is no longer available.")
+
+    slot.status = "booked"
+    slot.booked_by_org = current_user.org_id
+    db.add(slot)
+    db.commit()
+
+    # Create a rescan schedule so the scheduler will execute it
+    from app.db.models import VaptImport as _VI
+    latest_import = (
+        db.query(_VI)
+        .filter(_VI.org_id == current_user.org_id)
+        .order_by(_VI.created_at.desc())
+        .first()
+    )
+    schedule = None
+    if latest_import:
+        schedule = await schedule_service.create_schedule(
+            db, latest_import, current_user, slot.scheduled_at,
+            note=f"Routine scan booked via slot {slot.id}",
+        )
+
+    # Notify SOC
+    try:
+        await ws_manager.send("platform", {
+            "event": "routine_scan_booked",
+            "slot_id": str(slot.id),
+            "org_id": current_user.org_id,
+            "scheduled_at": slot.scheduled_at.isoformat(),
+            "schedule_id": str(schedule.id) if schedule else None,
+        })
+    except Exception:
+        pass
+
+    return {"success": True, "slot_id": slot_id, "schedule_id": str(schedule.id) if schedule else None}
+
+
+@router.post("/auto-prompt-routine-scan")
+def auto_prompt_routine_scan(
+    import_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_vapt_access),
+):
+    """Check if this report is client_completed and if a routine scan prompt is needed."""
+    if not current_user.org_id:
+        raise HTTPException(status_code=400, detail="No organization linked.")
+    record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    if record.status != "client_completed":
+        return {"prompt_needed": False, "reason": "Report not yet completed by client"}
+
+    # Check if there's already a scheduled scan for this import
+    existing = db.query(VaptRescanSchedule).filter(
+        VaptRescanSchedule.import_id == record.import_id,
+        VaptRescanSchedule.status.in_(["scheduled", "requested", "approved", "running"]),
+    ).first()
+    if existing:
+        return {"prompt_needed": False, "reason": "Scan already scheduled"}
+
+    # Check for available slots
+    from datetime import datetime as _dt
+    now = _dt.now(timezone.utc)
+    available_slots = db.query(VaptScanSlot).filter(
+        VaptScanSlot.status == "available",
+        VaptScanSlot.scheduled_at > now,
+    ).count()
+
+    return {
+        "prompt_needed": True,
+        "available_slots": available_slots,
+        "message": f"Your previous report is completed. {available_slots} scan slots are available." if available_slots else "Your previous report is completed. SOC will publish new scan slots soon.",
+    }
+
+
+# ─── Admin: scan slot management ─────────────────────────────────────────────
+
+@router.post("/admin/scan-slots")
+async def create_scan_slot(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """SOC/admin creates a routine scan slot."""
+    try:
+        scheduled_at = datetime.fromisoformat(payload.get("scheduled_at", ""))
+        # Always normalize to UTC: naive = assume UTC, aware = convert
+        if scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+        else:
+            scheduled_at = scheduled_at.astimezone(timezone.utc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="scheduled_at must be an ISO8601 datetime")
+
+    slot = VaptScanSlot(
+        scheduled_at=scheduled_at,
+        created_by=current_user.user_id,
+        org_id=payload.get("org_id"),
+        note=payload.get("note", ""),
+    )
+    db.add(slot)
+    db.commit()
+    db.refresh(slot)
+    return {"success": True, "slot_id": str(slot.id)}
+
+
+@router.get("/admin/scan-slots")
+def list_all_scan_slots(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """List all scan slots (SOC/admin view)."""
+    slots = db.query(VaptScanSlot).order_by(VaptScanSlot.scheduled_at.asc()).all()
+    return [
+        {
+            "id": str(s.id),
+            "scheduled_at": s.scheduled_at,
+            "status": s.status,
+            "org_id": s.org_id,
+            "booked_by_org": s.booked_by_org,
+            "note": s.note or "",
+            "created_at": s.created_at,
+        }
+        for s in slots
+    ]
+
+
 @router.post("/upload", response_model=VaptUploadResponse)
 async def upload_vapt_report(
     file: UploadFile = File(...),
@@ -471,6 +776,25 @@ async def upload_vapt_report(
     db.add(record)
     db.commit()
     db.refresh(record)
+
+    # Notify the org that a new report is published
+    try:
+        await ws_manager.send(target_org_id, {
+            "event": "report_published",
+            "import_id": str(record.import_id),
+            "file_name": filename,
+            "risk_score": record.risk_score,
+            "severity": record.severity,
+        })
+        await ws_manager.send("platform", {
+            "event": "report_published",
+            "org_id": target_org_id,
+            "import_id": str(record.import_id),
+            "file_name": filename,
+        })
+    except Exception:
+        pass
+
     return _to_detail(record, uploader_email=current_user.email)
 
 
@@ -599,12 +923,16 @@ def update_vapt_finding_status(
 
 
 @router.post("/imports/{import_id}/submit")
-def submit_vapt_import(
+async def submit_vapt_import(
     import_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_vapt_access),
 ):
-    """Submit a VAPT report to the SOC analyst after findings are updated."""
+    """User submits a VAPT report after triaging all findings.
+
+    Requires every finding to be marked (no pending left).
+    Status flips to client_completed and SOC gets a live notification.
+    """
     if not current_user.org_id:
         raise HTTPException(
             status_code=400,
@@ -612,15 +940,66 @@ def submit_vapt_import(
         )
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     findings = record.findings or []
-    # Allow submission even if some findings remain pending. Previously the
-    # API rejected submissions with any pending findings; this restriction
-    # was relaxed so orgs can submit the import immediately and let SOC
-    # handle verification/triage asynchronously.
-    record.status = "submitted"
+
+    # Completion gate: all findings must be triaged
+    VALID_TRIAGED = {"solved", "ignore", "false_positive"}
+    pending = [f for f in findings if (f.get("status") or "pending") not in VALID_TRIAGED]
+    if pending:
+        raise HTTPException(
+            status_code=400,
+            detail=f"All findings must be triaged before submitting. {len(pending)} finding(s) still pending.",
+        )
+
+    # Count solved findings for the completion summary
+    solved_count = sum(1 for f in findings if (f.get("status") or "") == "solved")
+
+    record.status = "client_completed"
     db.add(record)
     db.commit()
     db.refresh(record)
-    return {"success": True, "status": record.status}
+
+    # Live notification to SOC
+    try:
+        await ws_manager.send("platform", {
+            "event": "client_review_completed",
+            "import_id": str(record.import_id),
+            "org_id": record.org_id,
+            "total_findings": len(findings),
+            "solved_count": solved_count,
+            "message": f"Client completed review: {solved_count} of {len(findings)} findings confirmed resolved",
+        })
+    except Exception:
+        pass
+
+    # Email notification to SOC analysts
+    try:
+        from app.utils.email import send_client_review_completed_email
+        soc_emails = [u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email]
+        for email in soc_emails:
+            try:
+                send_client_review_completed_email(
+                    to_email=email,
+                    org_id=record.org_id,
+                    file_name=record.file_name,
+                    solved_count=solved_count,
+                    total_findings=len(findings),
+                    import_id=str(record.import_id),
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Audit log
+    try:
+        _record_audit_log(db, current_user, "VAPT_CLIENT_REVIEW_COMPLETED", "vapt_import", str(record.import_id), {
+            "total_findings": len(findings),
+            "solved_count": solved_count,
+        })
+    except Exception:
+        pass
+
+    return {"success": True, "status": record.status, "solved_count": solved_count, "total_findings": len(findings)}
 
 
 
@@ -646,15 +1025,24 @@ async def schedule_vapt_rescan(
     if current_user.role not in ("owner", "admin"):
         raise HTTPException(status_code=403, detail="Only owners or admins can schedule rescans")
 
+    # Gate: verification scan only unlocks after client_completed
+    if record.status != "client_completed":
+        raise HTTPException(
+            status_code=400,
+            detail="A verification scan can only be scheduled after the report has been submitted and completed by the client.",
+        )
+
     try:
         scheduled_at = datetime.fromisoformat(body.scheduled_at)
+        # Always normalize to UTC: naive = assume UTC, aware = convert
         if scheduled_at.tzinfo is None:
             scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+        else:
+            scheduled_at = scheduled_at.astimezone(timezone.utc)
     except Exception:
         raise HTTPException(status_code=400, detail="scheduled_at must be an ISO8601 datetime")
 
-    from datetime import datetime as _dt
-    if scheduled_at <= _dt.now(timezone.utc):
+    if scheduled_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="scheduled_at must be in the future")
 
     # optional: validate hosts format
@@ -707,12 +1095,12 @@ def list_admin_rescan_requests(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_soc_analyst),
 ):
-    """List pending rescan requests for SOC/admin panel."""
-    # return schedules with status scheduled or requested
+    """List rescan requests for SOC/admin panel."""
+    # return schedules with any active or recent status
     schedules = (
         db.query(VaptRescanSchedule)
-        .filter(VaptRescanSchedule.status.in_(["scheduled", "requested"]))
-        .order_by(VaptRescanSchedule.scheduled_at.asc())
+        .filter(VaptRescanSchedule.status.in_(["scheduled", "requested", "approved", "running", "completed", "failed"]))
+        .order_by(VaptRescanSchedule.scheduled_at.desc())
         .all()
     )
     org_ids = {s.org_id for s in schedules}
@@ -740,6 +1128,7 @@ def list_admin_rescan_requests(
             "requested_by": user.email if user else None,
             "scheduled_at": s.scheduled_at,
             "status": s.status,
+            "error_message": getattr(s, 'error_message', None),
             "created_at": s.created_at,
         })
     return out
@@ -763,6 +1152,14 @@ async def admin_approve_reschedule(
     schedule.status = "approved"
     db.add(schedule)
     db.commit()
+
+    # Enqueue the scan job into the Redis ZSET so the scheduler executes it
+    try:
+        rc = RedisClient()
+        score = _to_utc_ts(schedule.scheduled_at)
+        await rc.redis.zadd("vapt_rescan_zset", {str(schedule.id): score})
+    except Exception:
+        pass
 
     # notify org via websocket and create an alert
     try:
@@ -797,13 +1194,21 @@ async def admin_request_new_date(
 
     try:
         proposed = datetime.fromisoformat(body.proposed_at)
+        # Always normalize to UTC: naive = assume UTC, aware = convert
         if proposed.tzinfo is None:
             proposed = proposed.replace(tzinfo=timezone.utc)
+        else:
+            proposed = proposed.astimezone(timezone.utc)
     except Exception:
         raise HTTPException(status_code=400, detail="proposed_at must be an ISO8601 datetime")
 
+    if proposed <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="proposed_at must be in the future")
+
     # update scheduled_at to proposed and mark as requested
     schedule.scheduled_at = proposed
+    if body.note is not None:
+        schedule.note = body.note.strip() or None
     schedule.status = "requested"
     db.add(schedule)
     db.commit()
@@ -815,8 +1220,16 @@ async def admin_request_new_date(
         pass
 
     try:
-        await ws_manager.send(schedule.org_id, {"event": "vapt_rescan_date_requested", "import_id": str(schedule.import_id), "schedule_id": str(schedule.id), "proposed_at": proposed.isoformat()})
-        await ws_manager.send("platform", {"event": "vapt_rescan_date_requested", "import_id": str(schedule.import_id), "schedule_id": str(schedule.id), "org_id": schedule.org_id, "proposed_at": proposed.isoformat()})
+        payload = {
+            "event": "vapt_rescan_date_requested",
+            "import_id": str(schedule.import_id),
+            "schedule_id": str(schedule.id),
+            "org_id": schedule.org_id,
+            "proposed_at": proposed.isoformat(),
+            "note": schedule.note,
+        }
+        await ws_manager.send(schedule.org_id, payload)
+        await ws_manager.send("platform", payload)
     except Exception:
         pass
 
@@ -825,7 +1238,13 @@ async def admin_request_new_date(
     except Exception:
         pass
 
-    return {"success": True, "schedule_id": schedule_id, "proposed_at": proposed.isoformat()}
+    return {
+        "success": True,
+        "schedule_id": schedule_id,
+        "proposed_at": proposed.isoformat(),
+        "note": schedule.note,
+        "status": schedule.status,
+    }
 
 
 @router.get("/imports/{import_id}/rescan-schedule")
@@ -839,6 +1258,14 @@ def list_vapt_rescan_schedules(
         raise HTTPException(status_code=403, detail="Not authorized")
 
     schedules = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.import_id == record.import_id).order_by(VaptRescanSchedule.scheduled_at.asc()).all()
+
+    # Build a list of findings that were solved in this import (eligible for verification)
+    findings = record.findings or []
+    solved_findings = [
+        {"id": f.get("id"), "title": f.get("title", "Untitled"), "severity_label": f.get("severity_label", "")}
+        for f in findings if (f.get("status") or "") == "solved"
+    ]
+
     return [
         {
             "id": str(s.id),
@@ -846,6 +1273,9 @@ def list_vapt_rescan_schedules(
             "hosts": s.hosts or [],
             "status": s.status,
             "created_at": s.created_at,
+            "note": s.note if hasattr(s, 'note') else None,
+            "error_message": s.error_message if hasattr(s, 'error_message') else None,
+            "being_retested": solved_findings if s.status in ("scheduled", "approved", "running") else [],
         }
         for s in schedules
     ]
@@ -877,6 +1307,109 @@ def cancel_vapt_rescan_schedule(
             await rc.redis.zrem("vapt_rescan_zset", str(schedule_id))
         import asyncio
         asyncio.create_task(_remove())
+    except Exception:
+        pass
+
+    return {"success": True, "schedule_id": schedule_id}
+
+
+@router.post("/imports/{import_id}/rescan-schedule/{schedule_id}/accept")
+async def accept_proposed_date(
+    import_id: str,
+    schedule_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_vapt_access),
+):
+    """User accepts a date proposed by SOC (status: requested → approved + enqueue)."""
+    record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    if current_user.org_id != record.org_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    schedule = db.query(VaptRescanSchedule).filter(
+        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.import_id == record.import_id,
+    ).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    if schedule.status != "requested":
+        raise HTTPException(status_code=400, detail="This schedule is not awaiting acceptance.")
+
+    schedule.status = "approved"
+    db.add(schedule)
+    db.commit()
+
+    # Enqueue into Redis ZSET for the scheduler
+    try:
+        rc = RedisClient()
+        score = _to_utc_ts(schedule.scheduled_at)
+        await rc.redis.zadd("vapt_rescan_zset", {str(schedule.id): score})
+    except Exception:
+        pass
+
+    # Notify SOC
+    try:
+        await ws_manager.send("platform", {
+            "event": "vapt_rescan_approved",
+            "import_id": str(schedule.import_id),
+            "schedule_id": str(schedule.id),
+            "org_id": schedule.org_id,
+        })
+    except Exception:
+        pass
+
+    try:
+        _record_audit_log(db, current_user, "VAPT_RESCAN_ACCEPTED", "vapt_rescan_schedule", str(schedule.id), {"import_id": str(schedule.import_id)})
+    except Exception:
+        pass
+
+    return {"success": True, "schedule_id": schedule_id}
+
+
+@router.post("/imports/{import_id}/rescan-schedule/{schedule_id}/reject")
+async def reject_proposed_date(
+    import_id: str,
+    schedule_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_vapt_access),
+):
+    """User rejects a date proposed by SOC (cancels the schedule)."""
+    record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    if current_user.org_id != record.org_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    schedule = db.query(VaptRescanSchedule).filter(
+        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.import_id == record.import_id,
+    ).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    if schedule.status != "requested":
+        raise HTTPException(status_code=400, detail="This schedule is not awaiting acceptance.")
+
+    schedule.status = "cancelled"
+    db.add(schedule)
+    db.commit()
+
+    # Remove from Redis ZSET
+    try:
+        rc = RedisClient()
+        await rc.redis.zrem("vapt_rescan_zset", str(schedule_id))
+    except Exception:
+        pass
+
+    # Notify SOC
+    try:
+        await ws_manager.send("platform", {
+            "event": "vapt_rescan_rejected",
+            "import_id": str(schedule.import_id),
+            "schedule_id": str(schedule.id),
+            "org_id": schedule.org_id,
+        })
+    except Exception:
+        pass
+
+    try:
+        _record_audit_log(db, current_user, "VAPT_RESCAN_REJECTED", "vapt_rescan_schedule", str(schedule.id), {"import_id": str(schedule.import_id)})
     except Exception:
         pass
 

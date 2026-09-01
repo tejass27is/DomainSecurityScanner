@@ -67,21 +67,34 @@ async def startup_event():
     cleanup_thread.start()
 
 # CORS
-# CORS configuration
+# CORS configuration — accepts both CORS_ORIGINS and FRONTEND_URL.
+# FRONTEND_URL is automatically added to the allowed origins so you only
+# need to set one env var for the frontend URL.
+
 cors_origins_raw = os.getenv("CORS_ORIGINS", "")
+frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
 
-cors_origins = [
-    origin.strip().rstrip("/")
-    for origin in cors_origins_raw.split(",")
-    if origin.strip()
-]
+# Collect unique origins from both sources
+cors_origins_set: set[str] = set()
 
-# Local development fallback
-if not cors_origins:
-    cors_origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ]
+if cors_origins_raw:
+    for origin in cors_origins_raw.split(","):
+        origin = origin.strip().rstrip("/")
+        if origin:
+            cors_origins_set.add(origin)
+
+if frontend_url:
+    cors_origins_set.add(frontend_url)
+
+if not cors_origins_set:
+    raise ValueError(
+        "Neither CORS_ORIGINS nor FRONTEND_URL is set. "
+        "Set CORS_ORIGINS to a comma-separated list of allowed origins, "
+        "or set FRONTEND_URL to your frontend URL (e.g. http://localhost:5173)."
+    )
+
+cors_origins = sorted(cors_origins_set)
+print(f"[CORS] Allowed origins: {cors_origins}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -115,4 +128,12 @@ app.include_router(vapt_router)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    _host = os.getenv("HOST")
+    if not _host:
+        raise RuntimeError("HOST environment variable is not set. Set it to your desired bind address (e.g. 0.0.0.0).")
+    _port_raw = os.getenv("PORT")
+    if not _port_raw:
+        raise RuntimeError("PORT environment variable is not set. Set it to your desired port (e.g. 8000).")
+    _port = int(_port_raw)
+    _reload = os.getenv("RELOAD", "true").lower() in {"1", "true", "yes"}
+    uvicorn.run("main:app", host=_host, port=_port, reload=_reload)

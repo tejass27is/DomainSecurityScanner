@@ -8,6 +8,7 @@ import {
   getVaptImports,
   downloadVaptReport,
   getVaptAccessStatus,
+  getWebSocketUrl,
 } from "../services/api";
 import {
   severityMeta,
@@ -121,6 +122,30 @@ export default function VaptReports() {
 
     checkAccess();
   }, [loadImports, navigate]);
+
+  // ── WebSocket listener for rescan events ──
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.WebSocket) return;
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    let cancelled = false;
+    const ws = new WebSocket(getWebSocketUrl("platform"));
+    ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed"].includes(message.event)) {
+          if (!cancelled) loadImports();
+        }
+      } catch {
+        // ignore invalid payload
+      }
+    };
+    return () => {
+      cancelled = true;
+      ws.close();
+    };
+  }, [loadImports]);
 
   const handleDownload = useCallback(async (importId) => {
     const token = localStorage.getItem("token");

@@ -22,6 +22,7 @@ async def create_schedule(db: Session, import_record: VaptImport, user, schedule
         hosts=hosts or [],
         scheduled_at=scheduled_at,
         recurrence=recurrence,
+        note=note,
         status="scheduled",
     )
     db.add(schedule)
@@ -29,8 +30,12 @@ async def create_schedule(db: Session, import_record: VaptImport, user, schedule
     db.refresh(schedule)
 
     # Add to Redis sorted set for scheduler workers
+    # Normalize to UTC before scoring: naive = treat as UTC, aware = convert
     key = "vapt_rescan_zset"
-    score = int(scheduled_at.replace(tzinfo=timezone.utc).timestamp())
+    if scheduled_at.tzinfo is None:
+        score = int(scheduled_at.replace(tzinfo=timezone.utc).timestamp())
+    else:
+        score = int(scheduled_at.astimezone(timezone.utc).timestamp())
     try:
         await redis_client.redis.zadd(key, {str(schedule.id): score})
     except Exception:
