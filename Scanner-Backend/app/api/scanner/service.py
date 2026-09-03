@@ -42,7 +42,7 @@ def _validate_domain_dns(domain: str) -> tuple[bool, str]:
         return False, f"Could not resolve '{domain}'. Verify the domain name is correct."
 
 
-async def create_scan_task_to_queue(db: Session, domain: str, org_id: str):
+async def create_scan_task_to_queue(db: Session, domain: str, org_id: str, schedule_id: str | None = None):
     try:
         domain = domain.strip().lower()
         if not domain:
@@ -78,6 +78,8 @@ async def create_scan_task_to_queue(db: Session, domain: str, org_id: str):
             "domain": domain,
             "target": domain,
         }
+        if schedule_id:
+            scan_job["schedule_id"] = str(schedule_id)
 
         queue_status = "queued"
         warning_message = None

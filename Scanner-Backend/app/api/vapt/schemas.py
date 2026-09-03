@@ -22,6 +22,8 @@ class VaptImportListItem(BaseModel):
     uploaded_by: Optional[str] = None
     uploaded_by_email: Optional[str] = None
     status: Optional[str] = None
+    lifecycle_status: str = "report_published"
+    cycle_number: int = 1
 
 
 class VaptImportDetail(VaptImportListItem):

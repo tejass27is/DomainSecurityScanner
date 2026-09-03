@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Clock, FileText, Globe, User, Loader2 } from "lucide-react";
-import { getAdminVaptRescanRequests, postAdminApproveReschedule, postAdminRequestNewDate } from "../services/api";
+import { getAdminVaptRescanRequests, postAdminApproveReschedule, postAdminRequestNewDate, postAdminVerificationDecision } from "../services/api";
 import ConfirmModal from "../components/ConfirmModal";
 
 export default function AdminRescanRequests() {
@@ -8,6 +8,7 @@ export default function AdminRescanRequests() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [proposedMap, setProposedMap] = useState({});
+  const [datePickerOpen, setDatePickerOpen] = useState({});
   const [actionLoading, setActionLoading] = useState({});
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState({ open: false, scheduleId: null, action: null });
@@ -45,7 +46,7 @@ export default function AdminRescanRequests() {
       const token = localStorage.getItem("token");
       if (action === "approve") {
         await postAdminApproveReschedule(scheduleId, token);
-        setToast({ text: "Rescan approved and queued for execution", type: "success" });
+        setToast({ text: "Rescan approved; SOC can upload the manual verification result", type: "success" });
       } else if (action === "request-date") {
         const proposed = proposedMap[scheduleId];
         if (!proposed) {
@@ -74,6 +75,22 @@ export default function AdminRescanRequests() {
     setConfirmModal({ open: true, scheduleId: id, action: "request-date" });
   };
 
+  const handleDecision = async (id, outcome) => {
+    setActionLoading((p) => ({ ...p, [id]: true }));
+    try {
+      const token = localStorage.getItem("token");
+      const nextDueAt = outcome === "closed" ? window.prompt("Enter next VAPT due date/time (ISO 8601):") : null;
+      if (outcome === "closed" && !nextDueAt) return;
+      await postAdminVerificationDecision(id, outcome, "", token, nextDueAt);
+      setToast({ text: outcome === "closed" ? "VAPT cycle closed" : "VAPT reopened for remediation", type: "success" });
+      await load();
+    } catch (err) {
+      setToast({ text: err?.message || "Decision could not be saved", type: "error" });
+    } finally {
+      setActionLoading((p) => ({ ...p, [id]: false }));
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-10">
@@ -84,7 +101,7 @@ export default function AdminRescanRequests() {
           title={confirmModal.action === "approve" ? "Approve Rescan" : "Propose New Date"}
           message={
             confirmModal.action === "approve"
-              ? "Approve this rescan request? The scan will be queued for automatic execution at the scheduled time."
+              ? "Approve this rescan request? The SOC team will perform the retest manually and upload the verification result."
               : `Propose ${proposedMap[confirmModal.scheduleId] ? new Date(proposedMap[confirmModal.scheduleId]).toLocaleString() : "this date"} to the user? They will be notified and can accept or reject it.`
           }
           confirmLabel={confirmModal.action === "approve" ? "Approve" : "Propose Date"}
@@ -152,13 +169,13 @@ export default function AdminRescanRequests() {
                       <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${
                         r.status === "failed"
                           ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
-                          : r.status === "completed"
+                          : ["completed", "completed_with_errors", "failed"].includes(r.status)
                           ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400"
                           : r.status === "scheduled"
                           ? "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-400"
                           : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400"
                       }`}>
-                        {r.status === "failed" ? "Failed" : r.status === "completed" ? "Completed" : r.status === "scheduled" ? "Awaiting approval" : "Date proposed"}
+                        {r.status === "failed" ? "Failed" : r.status === "completed_with_errors" ? "Completed with errors" : r.status === "completed" ? "Completed" : r.status === "scheduled" ? "Awaiting approval" : "Date proposed"}
                       </span>
                       {r.error_message && (
                         <span className="text-xs text-red-600 dark:text-red-400">{r.error_message}</span>
@@ -172,31 +189,69 @@ export default function AdminRescanRequests() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="datetime-local"
-                        value={proposedMap[r.id] || ""}
-                        onChange={(e) => setProposedMap((m) => ({ ...m, [r.id]: e.target.value }))}
-                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-                      />
-                    </div>
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        onClick={() => handleApprove(r.id)}
-                        disabled={actionLoading[r.id]}
-                        className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400 dark:hover:bg-emerald-950/60"
-                      >
-                        {actionLoading[r.id] ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => handleRequestDate(r.id)}
-                        disabled={actionLoading[r.id] || !proposedMap[r.id]}
-                        className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400 dark:hover:bg-amber-950/60"
-                      >
-                        <Clock size={14} />
-                        Propose new date
-                      </button>
+                      {["completed", "completed_with_errors", "failed"].includes(r.status) && r.verification_outcome === "pending" ? (
+                        <>
+                          <button
+                            onClick={() => handleDecision(r.id, "closed")}
+                            disabled={actionLoading[r.id]}
+                            className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400"
+                          >
+                            <CheckCircle2 size={14} /> Close VAPT
+                          </button>
+                          <button
+                            onClick={() => handleDecision(r.id, "reopened")}
+                            disabled={actionLoading[r.id]}
+                            className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400"
+                          >
+                            <Clock size={14} /> Reopen remediation
+                          </button>
+                        </>
+                      ) : r.status === "approved" ? (
+                        <a
+                          href={`/admin/vapt-upload?verification_schedule=${encodeURIComponent(r.id)}`}
+                          className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400"
+                        >
+                          <CheckCircle2 size={14} /> Upload manual verification
+                        </a>
+                      ) : (r.status === "scheduled" || r.status === "requested") ? (
+                        <>
+                          <button
+                            onClick={() => handleApprove(r.id)}
+                            disabled={actionLoading[r.id]}
+                            className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400 dark:hover:bg-emerald-950/60"
+                          >
+                            {actionLoading[r.id] ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDatePickerOpen((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}
+                            className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400 dark:hover:bg-amber-950/60"
+                          >
+                            <Clock size={14} />
+                            {datePickerOpen[r.id] ? "Cancel" : "Propose new date"}
+                          </button>
+                          {datePickerOpen[r.id] && (
+                            <div className="mt-3 flex w-full flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+                              <input
+                                type="datetime-local"
+                                value={proposedMap[r.id] || ""}
+                                onChange={(e) => setProposedMap((m) => ({ ...m, [r.id]: e.target.value }))}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleRequestDate(r.id)}
+                                disabled={actionLoading[r.id] || !proposedMap[r.id]}
+                                className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:opacity-50"
+                              >
+                                Send new date
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      ) : null}
                     </div>
                   </div>
                 </div>

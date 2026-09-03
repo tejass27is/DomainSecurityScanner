@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft, Download, Search, ChevronDown, AlertCircle,
-  Globe, Layers, Server, Info, FileText, Lock, Activity, ExternalLink,
-  ShieldAlert, Bug, FilterX, Database, Wrench, Clock, CheckCircle2, Calendar,
+  ArrowLeft, Download, Search, AlertCircle,
+  Globe, Layers, Info, FileText, Lock, Activity,
+  ShieldAlert, FilterX, Database, Clock, CheckCircle2,
 } from "lucide-react";
-import { getVaptImport, getVaptImportAdmin, updateVaptFindingStatus, submitVaptImport, deleteVaptImport, deleteVaptImportAdmin, getVaptAccessStatus, getWebSocketUrl, getHasCompletedScans, getVaptScanSlots, bookVaptScanSlot } from "../services/api";
-import { getVaptRescanSchedules, postAdminApproveReschedule, postAdminRequestNewDate, acceptRescanDate, rejectRescanDate } from "../services/api";
+import { getVaptImport, getVaptImportAdmin, updateVaptFindingStatus, submitVaptImport, deleteVaptImport, deleteVaptImportAdmin, getVaptAccessStatus, getWebSocketUrl, downloadVaptVerificationReport, downloadVaptVerificationReportAdmin, postAdminRemediationReview, requestRescanDateChange, updateVerificationFindingStatus, submitVerificationReview } from "../services/api";
+import { downloadVaptClosureBundle, downloadVaptReportExcel, downloadVaptVerificationReportExcel, downloadVaptReportAdminExcel, downloadVaptVerificationReportAdminExcel, logSupportOffered, postAdminCloseWithoutVerification, postClientNextVaptDueDate } from "../services/api";
+import { getVaptRescanSchedules, postAdminApproveReschedule, postAdminRequestNewDate, postAdminVerificationDecision, acceptRescanDate, rejectRescanDate } from "../services/api";
 import RescanModal from "../components/RescanModal";
 import {
   SEVERITY_META,
@@ -30,6 +31,7 @@ const STATUS_LABEL = {
   submitted: "Submitted",
   client_completed: "Client Completed",
   failed: "Failed",
+  completed_with_errors: "Completed with errors",
   approved: "Approved",
   rescheduled: "New date requested",
 };
@@ -43,9 +45,38 @@ const STATUS_BADGE = {
   false_positive: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-400 dark:border-purple-900",
   client_completed: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900",
   failed: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900",
+  completed_with_errors: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900",
   approved: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900",
   rescheduled: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-400 dark:border-sky-900",
 };
+
+const LIFECYCLE_LABEL = {
+  report_published: "Initial report published",
+  awaiting_soc_remediation_acceptance: "Remediation review in progress",
+  revalidation_required: "Client remediation complete — re-validation required",
+  revalidation_scheduled: "Re-validation scheduled",
+  revalidation_verification_pending: "Verification complete — SOC decision required",
+  closure_pending_client_due_date: "SOC approved closure — due date required",
+  closed: "VAPT cycle closed",
+  remediation_required: "Remediation required",
+};
+
+function getClosureBlockReason(record, schedule) {
+  if (!record) return "";
+  const blocking = new Set(["critical", "high", "medium"]);
+  const remainingKeys = new Set((schedule?.result_data?.remaining_findings || []).map((finding) => `${finding.plugin_id || finding.title}|${finding.port ?? ""}|${finding.protocol || ""}`));
+  const blockers = (record.findings || []).filter((finding) => {
+    const severity = String(finding.severity_label || finding.severity || "").toLowerCase();
+    const key = `${finding.plugin_id || finding.title}|${finding.port ?? ""}|${finding.protocol || ""}`;
+    const unresolved = schedule
+      ? remainingKeys.has(key) || ["pending", "ignore", "false_positive"].includes(String(finding.status || "pending").toLowerCase())
+      : String(finding.status || "pending").toLowerCase() !== "solved";
+    return unresolved && blocking.has(severity);
+  });
+  if (!blockers.length) return "";
+  const severities = [...new Set(blockers.map((finding) => String(finding.severity_label || finding.severity).toLowerCase()))];
+  return `Cannot close — unresolved ${severities.join(", ")} findings remain.`;
+}
 
 // ─── Animated risk gauge ──────────────────────────────────────────────────────
 
@@ -288,7 +319,9 @@ function Section({ icon, title, children }) {
 function RescanRequestsPanel({
   schedules,
   loading,
+  closureBlockReason,
   onApprove,
+  onDecision,
   onToggleNewDate,
   onUpdateDraft,
   onSubmitNewDate,
@@ -334,7 +367,30 @@ function RescanRequestsPanel({
                   </td>
                   <td className="px-4 py-3 text-[12px] text-slate-600 dark:text-slate-300">{s.note || "—"}</td>
                   <td className="px-4 py-3">
-                    {isActionable ? (
+                    {["completed", "completed_with_errors", "failed"].includes(s.status) && s.verification_outcome === "pending" ? (
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onDecision(s.id, "closed")}
+                          disabled={actionLoading[s.id] || Boolean(closureBlockReason)}
+                          title={closureBlockReason || "Close VAPT cycle"}
+                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                        >
+                          Close VAPT
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDecision(s.id, "reopened")}
+                          disabled={actionLoading[s.id]}
+                          className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-60 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400"
+                        >
+                          Reopen remediation
+                        </button>
+                        {closureBlockReason && (
+                          <p className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{closureBlockReason}</p>
+                        )}
+                      </div>
+                    ) : isActionable ? (
                       <div className="space-y-3">
                         <div className="flex flex-wrap gap-2">
                           <button
@@ -402,9 +458,9 @@ function RescanRequestsPanel({
   );
 }
 
-function RescanTimeline({ schedules, record }) {
+function RescanTimeline({ schedules, record, isPlatformView }) {
   if (!schedules || schedules.length === 0) return null;
-  const icons = { scheduled: Clock, approved: CheckCircle2, running: Activity, completed: CheckCircle2, requested: Clock, cancelled: AlertCircle, failed: AlertCircle };
+  const icons = { scheduled: Clock, approved: CheckCircle2, completed: CheckCircle2, requested: Clock, cancelled: AlertCircle, failed: AlertCircle };
   return (
     <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
       <p className="mb-4 text-xs font-black uppercase tracking-wider text-slate-400">Scan Timeline</p>
@@ -427,8 +483,8 @@ function RescanTimeline({ schedules, record }) {
         )}
         {schedules.map((s, i) => {
           const Icon = icons[s.status] || Clock;
-          const isActive = ["scheduled", "approved", "running", "requested"].includes(s.status);
-          const isDone = s.status === "completed";
+          const isActive = ["scheduled", "approved", "requested"].includes(s.status);
+          const isDone = ["completed", "completed_with_errors", "failed"].includes(s.status);
           const isFailed = s.status === "failed";
           const colorClass = isFailed ? "bg-red-100 text-red-600 dark:bg-red-950/40 dark:text-red-400"
             : isDone ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400"
@@ -454,7 +510,12 @@ function RescanTimeline({ schedules, record }) {
                 )}
                 {s.being_retested && s.being_retested.length > 0 && (
                   <p className="mt-1 text-[11px] text-sky-600 dark:text-sky-400">
-                    Re-testing {s.being_retested.length} finding(s): {s.being_retested.map(f => f.title).join(", ")}
+                    Re-testing {s.being_retested.length} finding(s)
+                  </p>
+                )}
+                {["completed", "completed_with_errors", "failed"].includes(s.status) && (
+                  <p className={`mt-2 text-xs font-bold ${s.verification_outcome === "closed" ? "text-emerald-600 dark:text-emerald-400" : s.verification_outcome === "reopened" ? "text-amber-600 dark:text-amber-400" : "text-slate-500 dark:text-slate-400"}`}>
+                    {s.status === "failed" ? "Verification upload failed — SOC review required" : s.status === "completed_with_errors" ? "Completed with remaining findings — SOC review required" : s.verification_outcome === "closed" ? "VAPT cycle closed" : s.verification_outcome === "reopened" ? "Reopened — remediation required" : "Awaiting SOC verification decision"}
                   </p>
                 )}
               </div>
@@ -520,12 +581,12 @@ function NotificationPanel({ record, schedules, isPlatformView }) {
         title: "Scan approved",
         description: `SOC approved the next scan for ${fmtDate(next.scheduled_at)}. ${next.note ? `Note: ${next.note}` : ""}`,
       });
-    } else if (status === "completed") {
+    } else if (["completed", "completed_with_errors", "failed"].includes(status)) {
       items.push({
         key: "completed-scan",
         icon: CheckCircle2,
-        title: "Verification scan completed",
-        description: next.message || `Verification scan completed for ${fmtDate(next.scheduled_at)}.`,
+        title: status === "completed_with_errors" ? "Verification completed with target errors" : "Verification scan completed",
+        description: next.message || (status === "completed_with_errors" ? "Some targets failed. SOC review is required before closing this cycle." : `Verification scan completed for ${fmtDate(next.scheduled_at)}.`),
       });
     } else {
       items.push({
@@ -565,6 +626,330 @@ function NotificationPanel({ record, schedules, isPlatformView }) {
   );
 }
 
+// ─── Report view switcher tabs ───────────────────────────────────────────────
+
+function ReportSwitcherTabs({ selectedReport, onSelect, initialCount, verificationSchedules, record }) {
+  const tabs = [
+    { key: "initial", label: "Initial Report", count: initialCount },
+    ...verificationSchedules.map((s, i) => {
+      const result = s.result_data || {};
+      const fixed = (result.fixed_findings || []).length;
+      const remaining = (result.remaining_findings || []).length;
+      return {
+        key: s.id,
+        label: `Verification ${i + 1}`,
+        count: fixed + remaining,
+        status: s.status,
+        fixed,
+        remaining,
+      };
+    }),
+  ];
+
+  return (
+    <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <p className="mb-3 text-xs font-black uppercase tracking-[0.25em] text-slate-400">
+        Report view
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {tabs.map((tab) => {
+          const active = selectedReport === tab.key;
+          const isVerification = tab.key !== "initial";
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => onSelect(tab.key)}
+              className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98] ${
+                active
+                  ? "border-purple-600 bg-purple-600 text-white shadow-sm"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-purple-700 dark:hover:text-purple-400"
+              }`}
+            >
+              {isVerification && (
+                <FileText size={14} className={active ? "text-purple-200" : "text-slate-400"} />
+              )}
+              {tab.label}
+              {isVerification ? (
+                <span className={`ml-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                  active ? "bg-purple-500 text-white" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                }`}>
+                  {tab.fixed}✓ {tab.remaining}✗
+                </span>
+              ) : (
+                <span className={`ml-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                  active ? "bg-purple-500 text-white" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                }`}>
+                  {tab.count} findings
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Full finding-table for a single verification schedule ────────────────────
+// Renders all verification findings in the same table layout as the initial
+// report, with an additional Status column showing fixed / unresolved / pending.
+
+function VerificationReportTable({ schedule, record, isPlatformView }) {
+  const [drafts, setDrafts] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const result = schedule.result_data || {};
+  const fixed = (result.fixed_findings || []).map((f) => ({ ...f, _verificationStatus: "fixed" }));
+  const remaining = (result.remaining_findings || []).map((f) => ({ ...f, _verificationStatus: "unresolved" }));
+  const allFindings = [...fixed, ...remaining];
+  const scheduleIndex = record?._scheduleIndex ?? 0;
+  const downloadPdf = isPlatformView ? downloadVaptVerificationReportAdmin : downloadVaptVerificationReport;
+  const downloadExcelFn = isPlatformView ? downloadVaptVerificationReportAdminExcel : downloadVaptVerificationReportExcel;
+  const reviewComplete = result.client_review_status === "client_completed";
+
+  const updateDraft = (findingId, field, value) => setDrafts((prev) => ({ ...prev, [findingId]: { ...prev[findingId], [field]: value } }));
+  const saveReview = async () => {
+    setSaving(true);
+    setMessage("");
+    try {
+      for (const finding of remaining) {
+        const draft = drafts[finding.id] || finding;
+        await updateVerificationFindingStatus(record.import_id, schedule.id, finding.id, { status: draft.status || "pending", comment: draft.comment || "" }, localStorage.getItem("token"));
+      }
+      await submitVerificationReview(record.import_id, schedule.id, localStorage.getItem("token"));
+      setMessage("Verification review submitted to SOC.");
+    } catch (err) {
+      setMessage(err?.message || "Complete every unresolved finding before submitting.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (allFindings.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white/60 p-12 text-center dark:border-slate-700 dark:bg-slate-900/40">
+        <FileText size={26} className="mb-3 text-slate-400" />
+        <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">No findings in this verification report</p>
+      </div>
+    );
+  }
+
+  const statusCounts = {
+    all: allFindings.length,
+    fixed: fixed.length,
+    unresolved: remaining.length,
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Verification header bar */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-400">Verification report</p>
+            <h2 className="mt-1 text-lg font-extrabold text-slate-900 dark:text-slate-100">
+              Verification {scheduleIndex + 1}
+            </h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              Uploaded {fmtDate(result.uploaded_at || schedule.scheduled_at)}
+              {result.verification_file_name ? ` · ${result.verification_file_name}` : ""}
+              {schedule.note ? ` · ${schedule.note}` : ""}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`rounded-full border px-3 py-1.5 text-xs font-bold ${
+              schedule.status === "completed" ? "border-emerald-200 bg-emerald-50 text-emerald-700" :
+              schedule.status === "failed" ? "border-red-200 bg-red-50 text-red-700" :
+              "border-amber-200 bg-amber-50 text-amber-700"
+            }`}>
+              {schedule.status === "completed" ? "All fixes confirmed" :
+               schedule.status === "failed" ? "Upload failed" :
+               "Completed with errors"}
+            </span>
+            <button type="button" onClick={() => downloadPdf(record.import_id, schedule.id, localStorage.getItem("token"))} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"><Download size={13} /> PDF</button>
+            <button type="button" onClick={() => downloadExcelFn(record.import_id, schedule.id, localStorage.getItem("token"))} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"><Download size={13} /> Excel</button>
+          </div>
+        </div>
+        {/* Summary row */}
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-lg bg-emerald-50 p-3 dark:bg-emerald-950/30">
+            <p className="text-2xl font-extrabold text-emerald-700 dark:text-emerald-400">{statusCounts.fixed}</p>
+            <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700/80 dark:text-emerald-400/80">Confirmed fixed</p>
+          </div>
+          <div className="rounded-lg bg-red-50 p-3 dark:bg-red-950/30">
+            <p className="text-2xl font-extrabold text-red-700 dark:text-red-400">{statusCounts.unresolved}</p>
+            <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-red-700/80 dark:text-red-400/80">Still unresolved</p>
+          </div>
+          <div className="rounded-lg bg-slate-100 p-3 dark:bg-slate-800">
+            <p className="text-2xl font-extrabold text-slate-700 dark:text-slate-200">{statusCounts.all}</p>
+            <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">Solved findings tested</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Full finding table — same structure as initial report */}
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="max-h-[70vh] overflow-auto rounded-t-2xl [scrollbar-gutter:stable]">
+          <table className="w-full min-w-[1700px] border-collapse text-left">
+            <thead className="text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              <tr>
+                <th className="sticky top-0 left-0 z-30 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Name</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">CVE</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">CVSS Base Score</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Risk</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Verification Result</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Host</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">MAC Address</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Hostname</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Operating System</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Protocol</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Port</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Description</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Synopsis</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Solution</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">See Also</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Plugin Output</th>
+                <th className="sticky top-0 z-20 bg-slate-50 px-3 py-3 dark:bg-slate-800/90">Remark</th>
+              </tr>
+            </thead>
+            <tbody>
+              {allFindings.map((f, idx) => (
+                <VerificationFindingRow
+                  key={f.id || f.plugin_id || idx}
+                  finding={f}
+                  draft={drafts[f.id]}
+                  onDraftChange={!isPlatformView && f._verificationStatus === "unresolved" && !reviewComplete ? updateDraft : undefined}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="rounded-b-2xl border-t border-slate-200 bg-slate-50 px-4 py-4 dark:border-slate-800 dark:bg-slate-950/70">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {statusCounts.fixed} confirmed fixed · {statusCounts.unresolved} still unresolved
+            </p>
+            {!isPlatformView && remaining.length > 0 && !reviewComplete && (
+              <div className="flex items-center gap-3">
+                {message && <p className="text-xs font-semibold text-sky-800 dark:text-sky-200">{message}</p>}
+                <button
+                  type="button"
+                  onClick={saveReview}
+                  disabled={saving}
+                  className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:opacity-50"
+                >
+                  {saving ? "Submitting..." : "Submit verification review to SOC"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Read-only finding row for verification report tables.
+function VerificationFindingRow({ finding, draft, onDraftChange }) {
+  const cves = (finding.cves || []).filter(Boolean);
+  const references = (finding.references || []).filter((r) => r.startsWith("http://") || r.startsWith("https://"));
+  const hosts = (finding.affected_hosts || []).filter(Boolean);
+  const evidence = (finding.evidence || "").trim();
+  const isFixed = finding._verificationStatus === "fixed";
+  const status = draft?.status || finding.status || "pending";
+  const comment = draft?.comment ?? finding.comment ?? "";
+
+  return (
+    <tr className="border-t border-slate-200 align-top text-sm text-slate-700 dark:border-slate-800 dark:text-slate-300">
+      <td className="sticky left-0 z-10 min-w-[220px] bg-white px-3 py-3 dark:bg-slate-900">
+        <div className="font-semibold text-slate-900 dark:text-slate-100">{finding.title || "Untitled finding"}</div>
+        <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{finding.category || "Application"}</div>
+      </td>
+      <td className="min-w-[140px] px-3 py-3">
+        <div className="flex flex-wrap gap-1.5">
+          {cves.length > 0 ? cves.map((cve) => (
+            <a key={cve} href={`https://nvd.nist.gov/vuln/detail/${cve}`} target="_blank" rel="noreferrer noopener" className="rounded-md border border-purple-200 bg-purple-50 px-2 py-1 font-mono text-[11px] font-semibold text-purple-700 dark:border-purple-900 dark:bg-purple-950/40 dark:text-purple-400">
+              {cve}
+            </a>
+          )) : <span className="text-slate-400">—</span>}
+        </div>
+      </td>
+      <td className="min-w-[110px] px-3 py-3">
+        <div className="font-mono text-[12px]">{finding.cvss_score != null ? fmtCvss(finding.cvss_score) : "—"}</div>
+      </td>
+      <td className="min-w-[120px] px-3 py-3">
+        <SeverityBadge severity={finding.severity_label} />
+      </td>
+      <td className="min-w-[200px] px-3 py-3">
+        <div className="space-y-2">
+          <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${
+            isFixed
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400"
+              : "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
+          }`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${isFixed ? "bg-emerald-500" : "bg-red-500"}`} />
+            {isFixed ? "Fixed" : "Unresolved"}
+          </span>
+          {onDraftChange && !isFixed && (
+            <div className="space-y-2">
+              <select
+                value={status}
+                onChange={(e) => onDraftChange(finding.id, "status", e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              >
+                <option value="pending">Pending</option>
+                <option value="solved">Solved</option>
+                <option value="ignore">Ignore</option>
+                <option value="false_positive">False positive</option>
+              </select>
+              <input
+                value={comment}
+                onChange={(e) => onDraftChange(finding.id, "comment", e.target.value)}
+                placeholder="Comment required for Ignore / False positive"
+                className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              />
+            </div>
+          )}
+        </div>
+      </td>
+      <td className="min-w-[180px] px-3 py-3">
+        <div className="space-y-1 text-[12px]">
+          <div>{hosts.length > 0 ? hosts.join(", ") : finding.host || "—"}</div>
+          {finding.hostname && <div className="text-slate-500 dark:text-slate-400">{finding.hostname}</div>}
+        </div>
+      </td>
+      <td className="min-w-[120px] px-3 py-3 text-[12px]">{finding.mac_address || "—"}</td>
+      <td className="min-w-[140px] px-3 py-3 text-[12px]">{finding.hostname || finding.host || "—"}</td>
+      <td className="min-w-[160px] px-3 py-3 text-[12px]">{finding.operating_system || finding.os || "—"}</td>
+      <td className="min-w-[90px] px-3 py-3 text-[12px]">{finding.protocol || "—"}</td>
+      <td className="min-w-[80px] px-3 py-3 text-[12px]">{finding.port != null ? finding.port : "—"}</td>
+      <td className="min-w-[240px] px-3 py-3">
+        <ExpandableText text={finding.description || finding.synopsis || "No description available."} maxLength={140} />
+      </td>
+      <td className="min-w-[220px] px-3 py-3 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+        <ExpandableText text={finding.synopsis || ""} maxLength={120} />
+      </td>
+      <td className="min-w-[220px] px-3 py-3 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+        <ExpandableText text={finding.description || ""} maxLength={120} />
+      </td>
+      <td className="min-w-[220px] px-3 py-3 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+        <ExpandableText text={finding.solution || ""} maxLength={120} />
+      </td>
+      <td className="min-w-[180px] px-3 py-3">
+        <div className="space-y-1">
+          {references.length > 0 ? references.map((r) => (
+            <a key={r} href={r} target="_blank" rel="noreferrer noopener" className="block break-all text-[11px] text-purple-600 underline-offset-2 hover:underline dark:text-purple-400">{r}</a>
+          )) : <span className="text-[12px] text-slate-400">—</span>}
+        </div>
+      </td>
+      <td className="min-w-[220px] px-3 py-3 text-[12px] leading-5 text-slate-600 dark:text-slate-300">
+        <ExpandableText text={evidence || ""} maxLength={120} />
+      </td>
+    </tr>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function VaptReport() {
@@ -596,9 +981,9 @@ export default function VaptReport() {
   const [rescanActionLoading, setRescanActionLoading] = useState({});
   const [rescanActionError, setRescanActionError] = useState({});
   const [newDateDraft, setNewDateDraft] = useState({}); // { [scheduleId]: { date, note, open } }
-  const [availableSlots, setAvailableSlots] = useState([]);
-  const [showRoutineScanPrompt, setShowRoutineScanPrompt] = useState(false);
-  const [slotBooking, setSlotBooking] = useState(null);
+  // Report view switcher: "initial" or a schedule id string
+  const [selectedReport, setSelectedReport] = useState("initial");
+
 
   const refreshRescanSchedules = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -639,7 +1024,9 @@ export default function VaptReport() {
         const data = isPlatformView
           ? await getVaptImportAdmin(importId, token)
           : await getVaptImport(importId, token);
-        if (!cancelled) setRecord(data);
+        if (!cancelled) {
+          setRecord(data);
+        }
         if (!cancelled) {
           await refreshRescanSchedules();
         }
@@ -652,28 +1039,7 @@ export default function VaptReport() {
     return () => { cancelled = true; };
   }, [importId, isPlatformView, navigate, refreshRescanSchedules]);
 
-  // ── Check for routine scan auto-prompt ──
-  useEffect(() => {
-    if (!record) return;
-    if (record.status !== "client_completed") return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const token = localStorage.getItem("token");
-        const profile = JSON.parse(localStorage.getItem("user") || "null");
-        const isStaff = profile?.role === "admin" || profile?.role === "soc_analyst";
-        if (isStaff) return; // SOC/admins don't need the slot picker
-        const slots = await getVaptScanSlots(token);
-        if (!cancelled && Array.isArray(slots) && slots.length > 0) {
-          setAvailableSlots(slots);
-          setShowRoutineScanPrompt(true);
-        }
-      } catch {
-        // ignore
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [record, isPlatformView]);
+
 
   // ── WebSocket listener for rescan + report events ──
   useEffect(() => {
@@ -685,9 +1051,9 @@ export default function VaptReport() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed"].includes(message.event)) {
+        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
           refreshRescanSchedules();
-          if (["report_published", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed"].includes(message.event)) {
+          if (["report_published", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
             const token2 = localStorage.getItem("token");
             if (token2) {
               const loadFn = isPlatformView ? getVaptImportAdmin : getVaptImport;
@@ -696,7 +1062,11 @@ export default function VaptReport() {
           }
           // User-facing toasts
           if (!isPlatformView) {
-            if (message.event === "report_published") {
+            if (message.event === "vapt_closure_pending_client_due_date") {
+              setToast({ text: "SOC approved closure. Choose the next VAPT due date to finish closing the cycle.", type: "info" });
+            } else if (message.event === "vapt_cycle_closed") {
+              setToast({ text: "VAPT cycle closed", type: "success" });
+            } else if (message.event === "report_published") {
               setToast({ text: message.file_name ? `New report published: ${message.file_name}` : "New report published", type: "success" });
             } else if (message.event === "vapt_rescan_reminder") {
               setToast({ text: message.message || "Reminder: your verification scan is scheduled for tomorrow", type: "info" });
@@ -799,6 +1169,64 @@ export default function VaptReport() {
     }
   }, []);
 
+  const handleVerificationDecision = useCallback(async (scheduleId, outcome) => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
+    setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
+    try {
+      const result = await postAdminVerificationDecision(scheduleId, outcome, "", token);
+      setRescanSchedules((prev) => prev.map((s) => (
+        String(s.id) === String(scheduleId)
+          ? { ...s, verification_outcome: result.outcome }
+          : s
+      )));
+      setRecord((prev) => prev ? { ...prev, lifecycle_status: result.lifecycle_status } : prev);
+      setToast({ text: outcome === "closed" ? "VAPT cycle closed" : "VAPT reopened for remediation", type: outcome === "closed" ? "success" : "info" });
+    } catch (err) {
+      setRescanActionError((p) => ({ ...p, [scheduleId]: err?.message || "Failed to record verification decision." }));
+    } finally {
+      setRescanActionLoading((p) => ({ ...p, [scheduleId]: false }));
+    }
+  }, []);
+
+  const handleRemediationReview = useCallback(async (decision) => {
+    const token = localStorage.getItem("token");
+    if (!token || !record) return;
+    try {
+      const result = await postAdminRemediationReview(record.import_id, decision, token);
+      setRecord((prev) => prev ? { ...prev, remediation_review_status: decision, lifecycle_status: result.lifecycle_status } : prev);
+      setToast({ text: decision === "approved" ? "Remediation accepted; client may schedule verification" : "Remediation rejected; client must continue fixing findings", type: decision === "approved" ? "success" : "error" });
+    } catch (err) {
+      setToast({ text: err?.message || "Failed to review remediation", type: "error" });
+    }
+  }, [record]);
+
+  const handleDirectClosure = useCallback(async () => {
+    if (!record) return;
+    try {
+      const token = localStorage.getItem("token");
+      const result = await postAdminCloseWithoutVerification(record.import_id, "No findings required verification.", token);
+      setRecord((prev) => prev ? { ...prev, lifecycle_status: result.lifecycle_status, next_vapt_due_at: result.next_vapt_due_at } : prev);
+      setToast({ text: "SOC approved closure. The client must choose the next VAPT due date.", type: "success" });
+    } catch (err) {
+      setToast({ text: err?.message || "Failed to close the VAPT cycle", type: "error" });
+    }
+  }, [record]);
+
+  const [clientDueDate, setClientDueDate] = useState("");
+  const handleClientDueDate = useCallback(async () => {
+    if (!record || !clientDueDate) return;
+    try {
+      const result = await postClientNextVaptDueDate(record.import_id, new Date(clientDueDate).toISOString(), localStorage.getItem("token"));
+      setRecord((prev) => prev ? { ...prev, lifecycle_status: result.lifecycle_status, next_vapt_due_at: result.next_vapt_due_at } : prev);
+      setClientDueDate("");
+      setToast({ text: "VAPT cycle closed and next due date saved", type: "success" });
+    } catch (err) {
+      setToast({ text: err?.message || "Failed to save the next VAPT due date", type: "error" });
+    }
+  }, [clientDueDate, record]);
+
   const toggleNewDateForm = useCallback((scheduleId) => {
     setNewDateDraft((prev) => ({
       ...prev,
@@ -825,7 +1253,7 @@ export default function VaptReport() {
       setRescanSchedules((prev) =>
         prev.map((s) =>
           String(s.id) === String(scheduleId)
-            ? { ...s, status: "requested", scheduled_at: updated.proposed_at }
+            ? { ...s, status: "requested", scheduled_at: updated.proposed_at, note: updated.note || s.note }
             : s
         )
       );
@@ -837,6 +1265,31 @@ export default function VaptReport() {
       setRescanActionLoading((p) => ({ ...p, [scheduleId]: false }));
     }
   }, [newDateDraft]);
+
+  const handleClientRequestNewDate = useCallback(async (scheduleId) => {
+    const token = localStorage.getItem("token");
+    const draft = newDateDraft[scheduleId];
+    if (!token || !draft?.date || !record?.import_id) return;
+    setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
+    setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
+    try {
+      const proposedAt = new Date(draft.date).toISOString();
+      const updated = await requestRescanDateChange(record.import_id, scheduleId, { proposed_at: proposedAt, note: draft.note || "" }, token);
+      setRescanSchedules((prev) =>
+        prev.map((s) =>
+          String(s.id) === String(scheduleId)
+            ? { ...s, status: "requested", scheduled_at: updated.proposed_at, note: updated.note || s.note }
+            : s
+        )
+      );
+      setNewDateDraft((prev) => ({ ...prev, [scheduleId]: { date: "", note: "", open: false } }));
+      setToast({ text: "New date proposed to SOC", type: "success" });
+    } catch (err) {
+      setRescanActionError((p) => ({ ...p, [scheduleId]: err?.message || "Failed to propose new date." }));
+    } finally {
+      setRescanActionLoading((p) => ({ ...p, [scheduleId]: false }));
+    }
+  }, [newDateDraft, record]);
 
   // ── User accept/reject proposed dates ──
   const handleAcceptDate = useCallback(async (scheduleId) => {
@@ -853,7 +1306,7 @@ export default function VaptReport() {
             : s
         )
       );
-      setToast({ text: "Date accepted — rescan queued for execution", type: "success" });
+      setToast({ text: "Date accepted — SOC can upload the manual verification when the retest is complete", type: "success" });
     } catch (err) {
       setRescanActionError((p) => ({ ...p, [scheduleId]: err?.message || "Failed to accept." }));
     } finally {
@@ -877,21 +1330,7 @@ export default function VaptReport() {
     }
   }, [record]);
 
-  const handleBookSlot = useCallback(async (slotId) => {
-    const token = localStorage.getItem("token");
-    if (!token) return;
-    setSlotBooking(slotId);
-    try {
-      await bookVaptScanSlot(slotId, token);
-      setAvailableSlots(prev => prev.filter(s => s.id !== slotId));
-      setShowRoutineScanPrompt(false);
-      setToast({ text: "Scan slot booked successfully", type: "success" });
-    } catch (err) {
-      setToast({ text: err?.message || "Failed to book slot", type: "error" });
-    } finally {
-      setSlotBooking(null);
-    }
-  }, []);
+
 
   const categories = useMemo(() => {
     if (!record) return [];
@@ -1025,6 +1464,8 @@ export default function VaptReport() {
   const summary = record.summary || {};
   const totalReal = record.total_findings ?? 0;
   const riskMeta = riskTone(record.risk_score);
+  const closureSchedule = rescanSchedules.find((schedule) => ["completed", "completed_with_errors", "failed"].includes(schedule.status));
+  const closureBlockReason = getClosureBlockReason(record, closureSchedule);
 
   return (
     <div className="min-h-screen text-slate-900 dark:text-slate-100">
@@ -1083,7 +1524,48 @@ export default function VaptReport() {
             {/* Page-level actions — grouped on the right, wraps under the
                 title on narrow screens instead of overlapping it. */}
             <div className="flex flex-shrink-0 flex-wrap items-center gap-2">
-              {record.status === "client_completed" && !isPlatformView && !rescanSchedules.some(s => ["scheduled", "approved", "running", "requested"].includes(s.status)) && (
+              {!isPlatformView && (
+                <button type="button" onClick={() => downloadVaptClosureBundle(record.import_id, localStorage.getItem("token")).catch((err) => setToast({ text: err?.message || "Failed to download closure bundle", type: "error" }))} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-600 shadow-sm hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                  <Download size={15} /> Closure bundle
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const token = localStorage.getItem("token");
+                    if (isPlatformView) {
+                      await downloadVaptReportAdminExcel(record.import_id, token);
+                    } else {
+                      await downloadVaptReportExcel(record.import_id, token);
+                    }
+                  } catch (err) {
+                    setToast({ text: err?.message || "Failed to download Excel report", type: "error" });
+                  }
+                }}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-600 shadow-sm hover:border-emerald-300 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-emerald-700 dark:hover:text-emerald-400"
+              >
+                <Download size={15} /> Export to Excel
+              </button>
+              {isPlatformView && record.lifecycle_status === "remediation_required" && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const token = localStorage.getItem("token");
+                      await logSupportOffered(record.import_id, token);
+                      setRecord(prev => prev ? { ...prev, support_offered_at: new Date().toISOString() } : prev);
+                      setToast({ text: "Support offered logged — 7-day reminder timer reset", type: "success" });
+                    } catch (err) {
+                      setToast({ text: err?.message || "Failed to log support offered", type: "error" });
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                >
+                  Log support offered
+                </button>
+              )}
+              {record.lifecycle_status === "revalidation_required" && !isPlatformView && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
                 <button
                   type="button"
                   onClick={() => setShowRescanModal(true)}
@@ -1092,7 +1574,7 @@ export default function VaptReport() {
                   Schedule verification scan
                 </button>
               )}
-              {isPlatformView && record.status === "client_completed" && !rescanSchedules.some(s => ["scheduled", "approved", "running", "requested"].includes(s.status)) && (
+              {isPlatformView && record.status === "client_completed" && record.remediation_review_status === "approved" && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
                 <button
                   type="button"
                   onClick={() => setShowRescanModal(true)}
@@ -1126,6 +1608,53 @@ export default function VaptReport() {
 
           <NotificationPanel record={record} schedules={rescanSchedules} isPlatformView={isPlatformView} />
 
+          <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <p className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">VAPT cycle {record.cycle_number || 1}</p>
+            <p className="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-200">
+              {LIFECYCLE_LABEL[record.lifecycle_status] || "VAPT cycle in progress"}
+            </p>
+            {!isPlatformView && record.remediation_review_status === "approved" && record.lifecycle_status === "revalidation_required" && (
+              <p className="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                SOC accepted your remediation. Choose a future date and time to schedule the verification scan.
+              </p>
+            )}
+            {!isPlatformView && record.remediation_review_status === "rejected" && record.lifecycle_status === "remediation_required" && (
+              <p className="mt-2 text-sm font-semibold text-amber-700 dark:text-amber-400">
+                SOC requested more remediation before a verification scan can be scheduled.
+              </p>
+            )}
+            {record.next_vapt_due_at && record.lifecycle_status === "closed" && (
+              <p className="mt-2 text-sm text-emerald-700 dark:text-emerald-400">
+                Next VAPT assessment: <strong>{new Date(record.next_vapt_due_at).toLocaleString()}</strong>
+              </p>
+            )}
+            {!isPlatformView && record.lifecycle_status === "closure_pending_client_due_date" && (
+              <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30">
+                <p className="text-sm font-bold text-sky-800 dark:text-sky-200">SOC approved closure</p>
+                <p className="mt-1 text-sm text-sky-700 dark:text-sky-300">Choose the next VAPT due date and time to complete closure.</p>
+                <div className="mt-3 flex flex-wrap items-end gap-3">
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                    Next VAPT due date/time
+                    <input type="datetime-local" value={clientDueDate} onChange={(e) => setClientDueDate(e.target.value)} className="mt-1 block rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
+                  </label>
+                  <button type="button" onClick={handleClientDueDate} disabled={!clientDueDate} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Complete closure</button>
+                </div>
+              </div>
+            )}
+            {isPlatformView && record.remediation_review_status === "pending_soc_review" && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" onClick={() => handleRemediationReview("approved")} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white">Accept client remediation</button>
+                <button type="button" onClick={() => handleRemediationReview("rejected")} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">Request more remediation</button>
+              </div>
+            )}
+            {isPlatformView && record.status === "client_completed" && !(record.findings || []).some((finding) => (finding.status || "") === "solved") && !rescanSchedules.length && (
+              <div className="mt-3">
+                <button type="button" onClick={handleDirectClosure} disabled={Boolean(closureBlockReason)} title={closureBlockReason || "Close without verification"} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Close without verification</button>
+                {closureBlockReason && <p className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{closureBlockReason}</p>}
+              </div>
+            )}
+          </div>
+
           {/* Stat cards — own full-width row, no longer squeezed inside the
               title flex container. */}
           <div>
@@ -1151,7 +1680,7 @@ export default function VaptReport() {
                 </div>
               ))}
             </div>
-            <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            {(!isPlatformView || rescanSchedules.some((schedule) => ["scheduled", "approved", "requested"].includes(schedule.status))) && <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Next rescan</p>
@@ -1161,8 +1690,8 @@ export default function VaptReport() {
                   {rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && !isPlatformView && (
                     <p className="mt-1 text-xs font-semibold text-amber-600 dark:text-amber-400">SOC proposed a new date — review below</p>
                   )}
-                  {rescanSchedules.length > 0 && rescanSchedules[0].status === "completed" && (
-                    <p className="mt-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">Verification scan completed</p>
+                  {rescanSchedules.length > 0 && ["completed", "completed_with_errors", "failed"].includes(rescanSchedules[0].status) && (
+                    <p className={`mt-1 text-xs font-semibold ${rescanSchedules[0].status === "failed" || rescanSchedules[0].status === "completed_with_errors" ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>{rescanSchedules[0].status === "failed" ? "Verification upload failed" : rescanSchedules[0].status === "completed_with_errors" ? "Completed with remaining findings" : "Verification upload completed"}</p>
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -1188,6 +1717,16 @@ export default function VaptReport() {
                       </button>
                     </>
                   )}
+                  {!isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "scheduled" && (
+                    <button
+                      type="button"
+                      onClick={() => toggleNewDateForm(rescanSchedules[0].id)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400 dark:hover:bg-amber-950/60"
+                    >
+                      <Clock size={15} />
+                      Propose new date
+                    </button>
+                  )}
                   {/* SOC: schedule next scan */}
                   {isPlatformView && record.status === "client_completed" && (
                     <button
@@ -1198,18 +1737,61 @@ export default function VaptReport() {
                       Schedule next scan
                     </button>
                   )}
+                  {!isPlatformView && record.lifecycle_status === "revalidation_required" && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
+                    <button
+                      type="button"
+                      onClick={() => setShowRescanModal(true)}
+                      className="inline-flex items-center rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700"
+                    >
+                      Schedule verification scan
+                    </button>
+                  )}
                 </div>
               </div>
               <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">
                 {rescanSchedules.length > 0
                   ? rescanSchedules[0].status === "requested"
                     ? "SOC has proposed a new date for the verification scan. You can accept or reject it."
-                    : rescanSchedules[0].status === "completed"
-                      ? "The verification scan has been completed."
+                    : ["completed", "completed_with_errors", "failed"].includes(rescanSchedules[0].status)
+                      ? rescanSchedules[0].status === "failed" ? "The manual verification upload could not confirm a fix. SOC must review the result before closing the cycle." : rescanSchedules[0].status === "completed_with_errors" ? "Some previously solved findings remain. SOC must review the result before closing the cycle." : "The manual verification upload has been completed."
                       : "SOC has scheduled the next verification scan for this report."
                   : "No next rescan has been scheduled yet."
                 }
               </p>
+              {!isPlatformView && newDateDraft[rescanSchedules[0]?.id]?.open && (
+                <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
+                  <p className="mb-2 text-xs font-black uppercase tracking-[0.22em] text-amber-700 dark:text-amber-300">Propose a different date</p>
+                  <div className="grid gap-3 sm:grid-cols-[220px_1fr_auto] sm:items-end">
+                    <div>
+                      <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">New date</label>
+                      <input
+                        type="datetime-local"
+                        value={newDateDraft[rescanSchedules[0].id]?.date || ""}
+                        onChange={(e) => updateNewDateDraft(rescanSchedules[0].id, "date", e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Note</label>
+                      <input
+                        type="text"
+                        placeholder="Optional reason"
+                        value={newDateDraft[rescanSchedules[0].id]?.note || ""}
+                        onChange={(e) => updateNewDateDraft(rescanSchedules[0].id, "note", e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleClientRequestNewDate(rescanSchedules[0].id)}
+                      disabled={rescanActionLoading[rescanSchedules[0].id] || !newDateDraft[rescanSchedules[0].id]?.date}
+                      className="inline-flex items-center justify-center rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:opacity-50"
+                    >
+                      Send to SOC
+                    </button>
+                  </div>
+                </div>
+              )}
               {rescanSchedules.length > 0 && rescanSchedules[0].note && (
                 <p className="mt-3 rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-300">Note: {rescanSchedules[0].note}</p>
               )}
@@ -1218,7 +1800,7 @@ export default function VaptReport() {
                   {rescanActionError[rescanSchedules[0].id]}
                 </div>
               )}
-            </div>
+            </div>}
             <p className="mt-4 flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
               <ShieldAlert size={13} />
               Informational findings are excluded automatically so the report focuses on real vulnerabilities.
@@ -1248,7 +1830,9 @@ export default function VaptReport() {
           <RescanRequestsPanel
             schedules={rescanSchedules}
             loading={rescanLoading}
+            closureBlockReason={closureBlockReason}
             onApprove={handleApproveReschedule}
+            onDecision={handleVerificationDecision}
             onToggleNewDate={toggleNewDateForm}
             onUpdateDraft={updateNewDateDraft}
             onSubmitNewDate={handleRequestNewDate}
@@ -1259,42 +1843,22 @@ export default function VaptReport() {
         )}
 
         {/* ── Rescan timeline (multiple rescans) ── */}
-        <RescanTimeline schedules={rescanSchedules} record={record} />
+        {isPlatformView && <RescanTimeline schedules={rescanSchedules} record={record} isPlatformView={isPlatformView} />}
 
-        {/* ── Routine scan auto-prompt ── */}
-        {showRoutineScanPrompt && availableSlots.length > 0 && record?.status === "client_completed" && (
-          <div className="mb-6 rounded-2xl border border-sky-200 bg-sky-50 p-5 shadow-sm dark:border-sky-900 dark:bg-sky-950/40">
-            <div className="flex items-start gap-3">
-              <Calendar size={20} className="mt-0.5 text-sky-600 dark:text-sky-400" />
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-sky-800 dark:text-sky-200">Your report is completed — schedule your next routine scan</p>
-                <p className="mt-1 text-sm text-sky-600 dark:text-sky-400">{availableSlots.length} scan slot(s) available. Pick one below:</p>
-                <div className="mt-3 space-y-2">
-                  {availableSlots.slice(0, 3).map(slot => (
-                    <div key={slot.id} className="flex items-center justify-between rounded-xl border border-sky-200 bg-white px-4 py-3 dark:border-sky-800 dark:bg-slate-900">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{new Date(slot.scheduled_at).toLocaleString()}</p>
-                        {slot.note && <p className="mt-1 text-xs text-slate-500">{slot.note}</p>}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleBookSlot(slot.id)}
-                        disabled={slotBooking === slot.id}
-                        className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-sky-700 disabled:opacity-50"
-                      >
-                        {slotBooking === slot.id ? "Booking…" : "Book"}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <button type="button" onClick={() => setShowRoutineScanPrompt(false)} className="mt-2 text-xs font-semibold text-sky-500 hover:text-sky-700 dark:text-sky-400">Dismiss</button>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* ── Report view switcher ── */}
+        <ReportSwitcherTabs
+          selectedReport={selectedReport}
+          onSelect={setSelectedReport}
+          initialCount={(record.findings || []).length}
+          verificationSchedules={rescanSchedules.filter((s) => ["completed", "completed_with_errors", "failed"].includes(s.status) && s.result_data)}
+          record={record}
+        />
 
-        {/* ── Filters ── */}
-        <div className="mb-6 grid gap-4 lg:grid-cols-[1fr_320px]">
+        {/* ── Initial Report view ── */}
+        {selectedReport === "initial" && (
+          <>
+            {/* ── Filters ── */}
+            <div className="mb-6 grid gap-4 lg:grid-cols-[1fr_320px]">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <p className="mb-3 text-xs font-black uppercase tracking-wider text-slate-400">
               Severity distribution — click a bar to filter
@@ -1540,6 +2104,17 @@ export default function VaptReport() {
             </div>
           </div>
         )}
+          </>
+        )}
+
+        {/* ── Verification Report views ── */}
+        {selectedReport !== "initial" && (
+          <VerificationReportTable
+            schedule={rescanSchedules.find((s) => String(s.id) === String(selectedReport))}
+            record={{ ...record, _scheduleIndex: rescanSchedules.findIndex((s) => String(s.id) === String(selectedReport)) }}
+            isPlatformView={isPlatformView}
+          />
+        )}
       </div>
       <RescanModal
         open={showRescanModal}
@@ -1554,3 +2129,4 @@ export default function VaptReport() {
     </div>
   );
 }
+

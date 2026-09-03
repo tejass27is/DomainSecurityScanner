@@ -34,6 +34,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
     location.pathname !== "/admin/vapt-reports" &&
     !location.pathname.startsWith("/admin/vapt-reports/") &&
     location.pathname !== "/admin/vapt-upload" &&
+    location.pathname !== "/admin/vapt-access-requests" &&
     location.pathname !== "/admin/rescan-requests" &&
     location.pathname !== "/admin/profile"
   ) {
@@ -66,6 +67,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
             ? [
                 { to: "/admin/vapt-upload", label: "Upload Report", icon: "upload_file" },
                 { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
+                { to: "/admin/vapt-access-requests", label: "VAPT Access Requests", icon: "verified_user" },
               ]
             : [
                 { to: "/admin", label: "User Management", icon: "group" },

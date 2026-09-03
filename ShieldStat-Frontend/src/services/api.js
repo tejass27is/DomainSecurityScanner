@@ -1,4 +1,5 @@
-const API_BASE = import.meta.env.VITE_BACKEND_URL;
+const configuredApiBase = import.meta.env.VITE_BACKEND_URL?.trim();
+const API_BASE = configuredApiBase || (import.meta.env.DEV ? window.location.origin : "");
 if (!API_BASE) {
   throw new Error(
     "VITE_BACKEND_URL is not set. " +
@@ -696,12 +697,42 @@ export async function uploadVaptReport(file, token, orgId = null, region = null)
   return res.json();
 }
 
-export function requestVaptAccess(regions, token) {
+export async function uploadVaptVerificationReport(file, scheduleId, token) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("schedule_id", scheduleId);
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(buildUrl(`/vapt/admin/rescan-requests/${encodeURIComponent(scheduleId)}/upload`), {
+    method: "POST",
+    headers,
+    body: formData,
+    signal: DEV_TIMEOUT_MS ? AbortSignal.timeout(DEV_TIMEOUT_MS) : undefined,
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || `Verification upload failed (HTTP ${res.status}).`);
+  }
+  return res.json();
+}
+
+export function requestVaptAccess(regions, token, onboarding = null) {
   // Handle both single region (string) and multiple regions (array)
   const regionArray = Array.isArray(regions) ? regions : [regions];
   return request("/vapt/request-access", {
     method: "POST",
-    body: { regions: regionArray },
+    body: { regions: regionArray, ...(onboarding || {}) },
+    token,
+  });
+}
+
+export function requestVaptRegion(body, token) {
+  return request("/vapt/request-region", { method: "POST", body, token });
+}
+
+export function decideInitialVaptDate(regionCode, body, token) {
+  return request(`/vapt/onboarding/${encodeURIComponent(regionCode)}/date-decision`, {
+    method: "POST",
+    body,
     token,
   });
 }
@@ -714,10 +745,10 @@ export function getAdminVaptAccessRequests(token) {
   return request("/vapt/admin/requests", { token, skipCache: true });
 }
 
-export function approveVaptAccessRequest(orgId, region, approved, token) {
+export function approveVaptAccessRequest(orgId, region, approved, token, note = "") {
   return request("/vapt/admin/approve-access", {
     method: "POST",
-    body: { org_id: orgId, region, approved },
+    body: { org_id: orgId, region, approved, note: note || undefined },
     token,
   });
 }
@@ -731,8 +762,8 @@ export function getVaptImport(importId, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}`, { token, skipCache: true });
 }
 
-async function _downloadVaptPdf(basePath, importId, token) {
-  const url = buildUrl(`${basePath}/${encodeURIComponent(importId)}/report`);
+async function _downloadVaptFile(pathWithId, importId, token, ext = "pdf") {
+  const url = buildUrl(pathWithId);
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
   let res;
@@ -755,7 +786,7 @@ async function _downloadVaptPdf(basePath, importId, token) {
   const blobUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = blobUrl;
-  link.download = `vapt-report-${importId.slice(0, 8)}.pdf`;
+  link.download = `vapt-report-${importId.slice(0, 8)}.${ext}`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -763,7 +794,11 @@ async function _downloadVaptPdf(basePath, importId, token) {
 }
 
 export function downloadVaptReport(importId, token) {
-  return _downloadVaptPdf("/vapt/imports", importId, token);
+  return _downloadVaptFile(`/vapt/imports/${encodeURIComponent(importId)}/report`, importId, token);
+}
+
+export function downloadVaptVerificationReport(importId, scheduleId, token) {
+  return _downloadVaptFile(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/report`, importId, token);
 }
 
 export function updateVaptFindingStatus(importId, findingId, { status, comment }, token) {
@@ -806,7 +841,11 @@ export function getVaptImportAdmin(importId, token) {
 }
 
 export function downloadVaptReportAdmin(importId, token) {
-  return _downloadVaptPdf("/admin/vapt/imports", importId, token);
+  return _downloadVaptFile(`/admin/vapt/imports/${encodeURIComponent(importId)}/report`, importId, token);
+}
+
+export function downloadVaptVerificationReportAdmin(importId, scheduleId, token) {
+  return _downloadVaptFile(`/admin/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/report`, importId, token);
 }
 
 export function getVaptOrganizations(token) {
@@ -826,6 +865,38 @@ export function postAdminRequestNewDate(scheduleId, body, token) {
   return request(`/vapt/admin/vapt/rescan-requests/${encodeURIComponent(scheduleId)}/request-date`, { method: "POST", body, token });
 }
 
+export function postAdminVerificationDecision(scheduleId, outcome, note, token, nextDueAt) {
+  return request(`/vapt/admin/vapt/rescan-requests/${encodeURIComponent(scheduleId)}/decision`, {
+    method: "POST",
+    body: { outcome, note: note || undefined, next_vapt_due_at: nextDueAt || undefined },
+    token,
+  });
+}
+
+export function postAdminRemediationReview(importId, decision, token) {
+  return request(`/vapt/admin/imports/${encodeURIComponent(importId)}/remediation-review`, {
+    method: "POST",
+    body: { decision },
+    token,
+  });
+}
+
+export function postAdminCloseWithoutVerification(importId, note, token) {
+  return request(`/vapt/admin/imports/${encodeURIComponent(importId)}/close-without-verification`, {
+    method: "POST",
+    body: { note: note || undefined },
+    token,
+  });
+}
+
+export function postClientNextVaptDueDate(importId, nextDueAt, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/next-due-date`, {
+    method: "POST",
+    body: { next_vapt_due_at: nextDueAt },
+    token,
+  });
+}
+
 // VAPT rescan scheduling APIs
 export function postVaptRescanSchedule(importId, body, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule`, { method: "POST", body, token });
@@ -839,20 +910,35 @@ export function getVaptRescanSchedules(importId, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule`, { token });
 }
 
-export function deleteVaptRescanSchedule(importId, scheduleId, token) {
-  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}`, { method: "DELETE", token });
-}
-
 export function acceptRescanDate(importId, scheduleId, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/accept`, { method: "POST", token });
+}
+
+export function requestRescanDateChange(importId, scheduleId, body, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/request-date`, {
+    method: "POST",
+    body,
+    token,
+  });
 }
 
 export function rejectRescanDate(importId, scheduleId, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/reject`, { method: "POST", token });
 }
 
-export function postVaptRescanNow(importId, body, token) {
-  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-now`, { method: "POST", body, token });
+export function updateVerificationFindingStatus(importId, scheduleId, findingId, body, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/findings/${encodeURIComponent(findingId)}`, {
+    method: "PATCH",
+    body,
+    token,
+  });
+}
+
+export function submitVerificationReview(importId, scheduleId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/submit`, {
+    method: "POST",
+    token,
+  });
 }
 
 // ─── VAPT Onboarding ────────────────────────────────────────────────────────
@@ -869,20 +955,74 @@ export function getHasCompletedScans(token) {
   return request("/vapt/has-completed-scans", { token, skipCache: true });
 }
 
-// ─── Routine Scan Slots ─────────────────────────────────────────────────────
+// ─── Excel exports ──────────────────────────────────────────────────────────
 
-export function getVaptScanSlots(token) {
-  return request("/vapt/scan-slots", { token, skipCache: true });
+export function downloadVaptReportExcel(importId, token) {
+  return _downloadVaptFile(`/vapt/imports/${encodeURIComponent(importId)}/report/excel`, importId, token, "xlsx");
 }
 
-export function bookVaptScanSlot(slotId, token) {
-  return request(`/vapt/scan-slots/${encodeURIComponent(slotId)}/book`, { method: "POST", token });
+export function downloadVaptVerificationReportExcel(importId, scheduleId, token) {
+  return _downloadVaptFile(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/report/excel`, importId, token, "xlsx");
 }
 
-export function getAdminVaptScanSlots(token) {
-  return request("/vapt/admin/scan-slots", { token, skipCache: true });
+export function downloadVaptReportAdminExcel(importId, token) {
+  return _downloadVaptFile(`/admin/vapt/imports/${encodeURIComponent(importId)}/report/excel`, importId, token, "xlsx");
 }
 
-export function createVaptScanSlot(body, token) {
-  return request("/vapt/admin/scan-slots", { method: "POST", body, token });
+export function downloadVaptVerificationReportAdminExcel(importId, scheduleId, token) {
+  return _downloadVaptFile(`/admin/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/report/excel`, importId, token, "xlsx");
+}
+
+export function logSupportOffered(importId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/log-support-offered`, { method: "POST", token });
+}
+
+export function getAdminVaptOnboardingReviews(token) {
+  return request("/vapt/admin/onboarding", { token, skipCache: true });
+}
+
+export function reviewAdminVaptOnboarding(orgId, status, note, token) {
+  return request(`/vapt/admin/onboarding/${encodeURIComponent(orgId)}/review`, {
+    method: "POST",
+    body: { status, note },
+    token,
+  });
+}
+
+export function decideInitialVaptAccess(orgId, body, token) {
+  return request(`/vapt/admin/onboarding/${encodeURIComponent(orgId)}/decision`, {
+    method: "POST",
+    body,
+    token,
+  });
+}
+
+export function getVaptTimeline(importId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/timeline`, { token, skipCache: true });
+}
+
+export async function downloadVaptClosureBundle(importId, token) {
+  const url = buildUrl(`/vapt/imports/${encodeURIComponent(importId)}/closure-bundle`);
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || `Failed to download closure bundle (${res.status})`);
+  }
+  const blobUrl = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = `vapt-closure-${importId.slice(0, 8)}.zip`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(blobUrl);
+}
+
+export function proposeInitialVaptDate(orgId, body, token) {
+  return request(`/vapt/admin/onboarding/${encodeURIComponent(orgId)}/propose-date`, {
+    method: "POST",
+    body,
+    token,
+  });
 }

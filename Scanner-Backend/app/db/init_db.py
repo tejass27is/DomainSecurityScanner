@@ -36,7 +36,15 @@ def init_tables():
         conn.execute(text("CREATE TABLE IF NOT EXISTS regions (region_id SERIAL PRIMARY KEY, code VARCHAR(30) NOT NULL UNIQUE, name VARCHAR(100) NOT NULL, description TEXT NULL, is_active BOOLEAN NOT NULL DEFAULT true)"))
         # NOTE: No regions are seeded — region codes + names are typed by users
         # when they request VAPT access, so nothing is built-in from the developer side.
-        conn.execute(text("CREATE TABLE IF NOT EXISTS organization_regions (id SERIAL PRIMARY KEY, org_id VARCHAR(36) NOT NULL REFERENCES organizations(org_id), region_id INTEGER NOT NULL REFERENCES regions(region_id), status VARCHAR(20) NOT NULL DEFAULT 'pending', requested_at TIMESTAMPTZ NOT NULL DEFAULT now(), reviewed_at TIMESTAMPTZ NULL, reviewed_by VARCHAR(36) NULL REFERENCES users(user_id), CONSTRAINT uq_org_region UNIQUE (org_id, region_id))"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS organization_regions (id SERIAL PRIMARY KEY, org_id VARCHAR(36) NOT NULL REFERENCES organizations(org_id), region_id INTEGER NOT NULL REFERENCES regions(region_id), status VARCHAR(20) NOT NULL DEFAULT 'pending', requested_at TIMESTAMPTZ NOT NULL DEFAULT now(), reviewed_at TIMESTAMPTZ NULL, reviewed_by VARCHAR(36) NULL REFERENCES users(user_id), rejection_reason TEXT NULL, testing_start_at TIMESTAMPTZ NULL, testing_end_at TIMESTAMPTZ NULL, testing_timezone VARCHAR(64) NULL, proposed_start_at TIMESTAMPTZ NULL, proposed_end_at TIMESTAMPTZ NULL, proposed_timezone VARCHAR(64) NULL, schedule_status VARCHAR(32) NOT NULL DEFAULT 'pending', CONSTRAINT uq_org_region UNIQUE (org_id, region_id))"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS rejection_reason TEXT NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS testing_start_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS testing_end_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS testing_timezone VARCHAR(64) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS proposed_start_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS proposed_end_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS proposed_timezone VARCHAR(64) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS schedule_status VARCHAR(32) NOT NULL DEFAULT 'pending'"))
 
         # ── vapt_imports ──────────────────────────────────────────────────────
         # Tables created by an earlier schema shipped a NOT NULL `status` column
@@ -44,10 +52,40 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS uploaded_by VARCHAR(36) NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ALTER COLUMN status SET DEFAULT 'completed'"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS lifecycle_status VARCHAR(64) NOT NULL DEFAULT 'report_published'"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ALTER COLUMN lifecycle_status TYPE VARCHAR(64)"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS cycle_number INTEGER NOT NULL DEFAULT 1"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_review_status VARCHAR(24) NOT NULL DEFAULT 'not_submitted'"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reviewed_by VARCHAR(36) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reviewed_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS next_vapt_due_at TIMESTAMPTZ NULL"))
         conn.execute(text("DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vapt_imports' AND column_name='import_id' AND data_type IN ('character varying','text')) THEN ALTER TABLE vapt_imports ALTER COLUMN import_id TYPE UUID USING import_id::uuid; END IF; END $$;"))
 
         # ── vapt_rescan_schedules ────────────────────────────────────────────
         # These columns were added after the original schedule table shipped.
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS note TEXT NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS error_message TEXT NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ALTER COLUMN status TYPE VARCHAR(32)"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS notified BOOLEAN NOT NULL DEFAULT false"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS result_data JSONB NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS verification_outcome VARCHAR(20) NOT NULL DEFAULT 'pending'"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS verified_by VARCHAR(36) NULL"))
+        # Schedules created by the retired automatic runner remain manual SOC
+        # review items after deployment of the manual verification workflow.
+        conn.execute(text("UPDATE vapt_rescan_schedules SET status = 'approved' WHERE status IN ('running', 'stalled')"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS cycle_number INTEGER NOT NULL DEFAULT 1"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS review_status VARCHAR(20) NOT NULL DEFAULT 'pending'"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(36) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS review_note TEXT NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS checklist_answers JSONB NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS testing_start_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS testing_end_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS testing_timezone VARCHAR(64) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS proposed_start_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS proposed_end_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS proposed_timezone VARCHAR(64) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS schedule_status VARCHAR(32) NOT NULL DEFAULT 'pending'"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS support_offered_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reminder_sent_at TIMESTAMPTZ NULL"))

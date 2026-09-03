@@ -674,6 +674,13 @@ function AdminUsers() {
                             </button>
                             {isExpanded && (
                             <div className="overflow-x-auto bg-white animate-in slide-in-from-top-2 fade-in duration-200 border-t border-surface-container">
+                            <div className="grid gap-3 border-b border-surface-container bg-indigo-50 p-6 sm:grid-cols-2 lg:grid-cols-4">
+                              <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">VAPT onboarding</p><p className="mt-1 font-semibold text-slate-900">{org.vapt?.onboarding_status || "not_started"}</p></div>
+                              <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Reports</p><p className="mt-1 font-semibold text-slate-900">{org.vapt?.report_count || 0}</p></div>
+                              <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Approved regions</p><p className="mt-1 font-semibold text-emerald-700">{org.vapt?.approved_regions?.length || 0}</p></div>
+                              <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Pending regions</p><p className="mt-1 font-semibold text-amber-700">{org.vapt?.pending_regions?.length || 0}</p></div>
+                              <div className="sm:col-span-2 lg:col-span-4"><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Region details</p><div className="mt-2 flex flex-wrap gap-2">{[...(org.vapt?.approved_regions || []).map((region) => ({ ...region, status: "approved" })), ...(org.vapt?.pending_regions || []).map((region) => ({ ...region, status: "pending" })), ...(org.vapt?.rejected_regions || []).map((region) => ({ ...region, status: "rejected" }))].map((region) => <span key={`${region.status}-${region.code}`} className={`rounded-full border px-3 py-1 text-xs font-semibold ${region.status === "approved" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : region.status === "pending" ? "border-amber-200 bg-amber-50 text-amber-700" : "border-red-200 bg-red-50 text-red-700"}`}>{region.code} · {region.name} · {region.status}</span>)}{!org.vapt?.approved_regions?.length && !org.vapt?.pending_regions?.length && !org.vapt?.rejected_regions?.length && <span className="text-sm text-slate-500">No VAPT region requests yet.</span>}</div></div>
+                            </div>
                                 <table className="w-full text-left border-collapse">
                                     <thead className="bg-surface-container-lowest">
                                     <tr>

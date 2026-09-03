@@ -28,6 +28,10 @@ from app.db.models import (
     HeaderFixRequest,
     TlsFixRequest,
     ResolvedFinding,
+    Region,
+    OrganizationRegion,
+    VaptOnboardingChecklist,
+    VaptImport,
 )
 from app.utils.email import send_new_admin_credentials_email, send_personal_email_invitation_email
 
@@ -453,6 +457,7 @@ def get_users_by_org(db: Session) -> dict:
                 "org_id": org.org_id,
                 "domain": org.domain,
                 "max_domains": org.max_domains,
+                "vapt": _get_admin_vapt_org_summary(db, org.org_id),
                 "users": [
                     _serialize_user(user, blocked_emails)
                     for user in users_by_org.get(org.org_id, [])
@@ -468,6 +473,23 @@ def get_users_by_org(db: Session) -> dict:
             _serialize_user(user, blocked_emails)
             for user in soc_analyst_only
         ],
+    }
+
+
+def _get_admin_vapt_org_summary(db: Session, org_id: str) -> dict:
+    onboarding = db.query(VaptOnboardingChecklist).filter(VaptOnboardingChecklist.org_id == org_id).first()
+    rows = db.query(OrganizationRegion, Region).join(Region, OrganizationRegion.region_id == Region.region_id).filter(OrganizationRegion.org_id == org_id).all()
+    imports = db.query(VaptImport).filter(VaptImport.org_id == org_id).all()
+    return {
+        "onboarding_status": onboarding.review_status if onboarding else "not_started",
+        "onboarding_completed": bool(onboarding and onboarding.completed_at),
+        "testing_start_at": onboarding.testing_start_at if onboarding else None,
+        "testing_timezone": onboarding.testing_timezone if onboarding else None,
+        "approved_regions": [{"code": region.code, "name": region.name} for row, region in rows if row.status == "approved"],
+        "pending_regions": [{"code": region.code, "name": region.name, "testing_start_at": row.testing_start_at, "testing_timezone": row.testing_timezone, "rejection_reason": row.rejection_reason} for row, region in rows if row.status == "pending"],
+        "rejected_regions": [{"code": region.code, "name": region.name, "rejection_reason": row.rejection_reason} for row, region in rows if row.status == "rejected"],
+        "report_count": len(imports),
+        "latest_report_at": max((item.created_at for item in imports if item.created_at), default=None),
     }
 
 

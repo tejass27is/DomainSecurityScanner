@@ -344,6 +344,7 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 
 	scanResult := models.ScanResult{
 		ScanID:       job.ScanID,
+		ScheduleID:   job.ScheduleID,
 		OrgID:        job.OrgID,
 		Target:       job.Target,
 		Status:       "completed",

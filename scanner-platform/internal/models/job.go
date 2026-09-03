@@ -4,6 +4,7 @@ import "time"
 
 type ScanJob struct {
 	ScanID          string         `json:"scan_id"`
+	ScheduleID      string         `json:"schedule_id,omitempty"`
 	OrgID           string         `json:"org_id,omitempty"`
 	Target          string         `json:"target"`
 	Status          string         `json:"status,omitempty"`
@@ -53,6 +54,7 @@ type ScanNotification struct {
 
 type ScanResult struct {
 	ScanID       string           `json:"scan_id"`
+	ScheduleID   string           `json:"schedule_id,omitempty"`
 	OrgID        string           `json:"org_id,omitempty"`
 	Target       string           `json:"target"`
 	Status       string           `json:"status"`

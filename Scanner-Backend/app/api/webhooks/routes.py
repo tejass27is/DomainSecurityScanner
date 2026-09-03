@@ -394,7 +394,7 @@ async def scan_result_webhook(
 
         # 🔐 Idempotency: Check if result was already processed
         # Use Redis to track processed scan IDs (24h TTL)
-        idempotency_key = f"scan_result_processed:{org_id}:{scan_id}"
+        idempotency_key = f"scan_result_processed:{org_id}:{request.schedule_id or scan_id}:{target.strip().lower()}"
         already_processed = await redis_client.redis.get(idempotency_key)
         
         if already_processed:
@@ -410,6 +410,7 @@ async def scan_result_webhook(
             "event": "scan_complete",
             "org_id": org_id,
             "domain": target.strip().lower(),
+            "schedule_id": request.schedule_id,
         })
 
         try:

@@ -27,6 +27,15 @@ const FORMAT_ICON = {
   xlsx: FileDigit,
 };
 
+const LIFECYCLE_LABEL = {
+  report_published: "Initial report published",
+  revalidation_required: "Re-validation required",
+  revalidation_scheduled: "Re-validation scheduled",
+  revalidation_verification_pending: "SOC decision pending",
+  closed: "Cycle closed",
+  remediation_required: "Remediation required",
+};
+
 function RiskPill({ score }) {
   const meta = riskTone(score);
   return (
@@ -116,7 +125,7 @@ export default function SocAnalystVaptReports() {
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_rescan_reminder", "routine_scan_booked"].includes(message.event)) {
+          if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_rescan_reminder"].includes(message.event)) {
             refreshRescanRequests();
           }
           if (["report_published", "client_review_completed"].includes(message.event)) {
@@ -454,7 +463,7 @@ export default function SocAnalystVaptReports() {
                                 {item.file_name}
                               </p>
                               <p className="text-xs text-slate-500 dark:text-slate-400">
-                                {formatLabel(item)} · {item.source_tool || "generic"}
+                                VAPT Cycle {item.cycle_number || 1} · {LIFECYCLE_LABEL[item.lifecycle_status] || "In progress"}
                               </p>
                             </div>
                           </div>

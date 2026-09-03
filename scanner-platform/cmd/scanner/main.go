@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 
 	"scanner-platform/scanner-engine/core"
 	"scanner-platform/scanner-engine/scanners/collection"
@@ -23,21 +21,6 @@ func main() {
 	domain_name := "officebeacon.com"
 	if len(os.Args) > 1 {
 		domain_name = os.Args[1]
-	}
-
-	// Optional second arg `<host>:<port>` triggers a single-port rescan at the end.
-	var rescanHost string
-	var rescanPort int
-	if len(os.Args) > 2 {
-		parts := strings.SplitN(os.Args[2], ":", 2)
-		if len(parts) == 2 {
-			if p, err := strconv.Atoi(parts[1]); err == nil && p >= 1 && p <= 65535 {
-				rescanHost = parts[0]
-				rescanPort = p
-			} else {
-				fmt.Println("Invalid rescan target (want <host>:<port 1-65535>), ignoring:", os.Args[2])
-			}
-		}
 	}
 
 	fmt.Println("Starting scanning for domain:", domain_name)
@@ -156,14 +139,5 @@ func main() {
 		}
 
 		fmt.Println(string(data))
-	}
-	// =====================================
-	// PORT RESCAN (optional, CLI-driven)
-	// =====================================
-	// Only runs when given as `go run cmd/scanner/main.go <domain> <host>:<port>`,
-	// so the standalone tool never pings an external target on its own.
-	if rescanHost != "" {
-		fmt.Println("\nTesting Single Port Rescan")
-		fmt.Println(RescanSinglePort(rescanHost, rescanPort))
 	}
 }

@@ -8,7 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
-RUN pip install --no-cache-dir -r requirements.txt
+ENV PIP_DEFAULT_TIMEOUT=180
+ENV PIP_RETRIES=5
+RUN pip install --no-cache-dir --default-timeout=180 --retries 5 -r requirements.txt
 
 ENV PYTHONPATH=/app
 EXPOSE 8000

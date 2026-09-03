@@ -40,6 +40,7 @@ section, exactly as before — only Critical / High / Medium / Low are
 for transparency, on the executive dashboard.
 """
 
+import json
 import os
 from datetime import datetime, timezone
 from io import BytesIO
@@ -64,6 +65,7 @@ from reportlab.platypus import (
     PageBreak,
     PageTemplate,
     Paragraph,
+    Preformatted,
     Spacer,
     Table,
     TableStyle,
@@ -1209,7 +1211,7 @@ def generate_vapt_report_pdf(
     engagement_start = engagement_start or created.strftime("%d %b %Y")
     engagement_end = engagement_end or created.strftime("%d %b %Y")
     assessment_date = created.strftime("%d %b %Y")
-    report_title = "VAPT Security Report"
+    report_title = "Initial VAPT Security Report"
 
     assessment_type = assessment_type or "External & Internal Vulnerability Assessment and Penetration Testing"
     methodology = methodology or ("Grey-box testing aligned with the OWASP Testing Guide, PTES, "
@@ -1262,3 +1264,300 @@ def generate_vapt_report_pdf(
     out = BytesIO()
     writer.write(out)
     return out.getvalue()
+
+
+def generate_vapt_verification_report_pdf(schedule, original_record) -> bytes:
+    """Build a report containing only one verification schedule's results."""
+    _register_fonts()
+    styles = _build_styles()
+    buffer = BytesIO()
+    doc = BaseDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=MARGIN,
+        rightMargin=MARGIN,
+        topMargin=20 * mm,
+        bottomMargin=18 * mm,
+        title=f"VAPT Verification Report - {original_record.file_name}",
+        author="iSecurify",
+    )
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="verification")
+    doc.addPageTemplates([PageTemplate(id="verification", frames=[frame])])
+
+    result_data = schedule.result_data or {}
+    targets = result_data.get("targets", {}) if isinstance(result_data, dict) else {}
+    findings = result_data.get("findings", []) if isinstance(result_data, dict) else []
+    fixed_findings = result_data.get("fixed_findings", []) if isinstance(result_data, dict) else []
+    remaining_findings = result_data.get("remaining_findings", []) if isinstance(result_data, dict) else []
+    if not isinstance(targets, dict):
+        targets = {}
+    if not isinstance(findings, list):
+        findings = []
+    if not isinstance(fixed_findings, list):
+        fixed_findings = []
+    if not isinstance(remaining_findings, list):
+        remaining_findings = []
+    outcome = getattr(schedule, "verification_outcome", None) or "pending"
+    outcome_label = {"closed": "CLOSED", "reopened": "REOPENED - REMEDIATION REQUIRED"}.get(outcome, "AWAITING SOC DECISION")
+    schedule_id = str(schedule.id)
+
+    story = [
+        Paragraph("VAPT Verification Report", styles["cover_title"]),
+        Paragraph("Re-validation results for one scheduled verification scan", styles["body"]),
+        Spacer(1, 8),
+        Paragraph(f"<b>Original report:</b> {_esc(original_record.file_name)}", styles["body"]),
+        Paragraph(f"<b>VAPT cycle:</b> {getattr(original_record, 'cycle_number', 1)}", styles["body"]),
+        Paragraph(f"<b>Verification date:</b> {_esc(schedule.scheduled_at)}", styles["body"]),
+        Paragraph(f"<b>Schedule ID:</b> {_esc(schedule_id)}", styles["body"]),
+        Paragraph(f"<b>SOC outcome:</b> {_esc(outcome_label)}", styles["body"]),
+        Spacer(1, 12),
+        Paragraph("Verification scan data", styles["h1"]),
+        Paragraph("Only data from this verification upload is included. The original VAPT findings are not repeated.", styles["body"]),
+        Paragraph(f"<b>Findings confirmed fixed:</b> {len(fixed_findings)} &nbsp;&nbsp; <b>Findings still present:</b> {len(remaining_findings)}", styles["body"]),
+        Spacer(1, 6),
+    ]
+    if findings:
+        story.extend([
+            Paragraph("Verification findings", styles["h2"]),
+            Preformatted(_latin1_safe(json.dumps(findings, indent=2, default=str)), styles["body"]),
+            Spacer(1, 8),
+        ])
+        if remaining_findings:
+            story.extend([
+                Paragraph("Findings still present", styles["h2"]),
+                Preformatted(_latin1_safe(json.dumps(remaining_findings, indent=2, default=str)), styles["body"]),
+            ])
+    elif not targets:
+        story.append(Paragraph("No verification result data has been received yet.", styles["body"]))
+    else:
+        for target, payload in targets.items():
+            story.extend([
+                Paragraph(f"Target: {_esc(target)}", styles["h2"]),
+                Preformatted(_latin1_safe(json.dumps(payload, indent=2, default=str)), styles["body"]),
+                Spacer(1, 8),
+            ])
+    doc.build(story)
+    return buffer.getvalue()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Excel (.xlsx) generation — same normalized data, different container
+# ─────────────────────────────────────────────────────────────────────────
+
+def _build_findings_xlsx_sheet(wb, findings, sheet_name="Findings"):
+    """Write the normalized finding data to an Excel worksheet.
+
+    Columns match the data already feeding the PDF: severity, host, CVE,
+    category, status — plus a few extras that are trivially available.
+    """
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    ws = wb.active if not wb.sheetnames else wb.create_sheet(sheet_name)
+    if sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+    else:
+        ws.title = sheet_name
+
+    headers = [
+        "ID", "Title", "Severity", "CVSS", "Host(s)",
+        "Port", "Category", "CWE", "CVE(s)", "Status",
+        "Description", "Recommendation", "Business Impact",
+    ]
+
+    header_font = Font(bold=True, color="FFFFFF", size=10)
+    header_fill = PatternFill(start_color="800080", end_color="800080", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin", color="E5E7EB"),
+        right=Side(style="thin", color="E5E7EB"),
+        top=Side(style="thin", color="E5E7EB"),
+        bottom=Side(style="thin", color="E5E7EB"),
+    )
+
+    for col_idx, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+
+    # Auto-filter on header row
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+
+    for row_idx, finding in enumerate(findings, 2):
+        hosts = finding.get("affected_hosts") or []
+        cves = finding.get("cves") or []
+        status = (finding.get("remediation_status") or finding.get("status") or "open").replace("_", " ").title()
+        values = [
+            finding.get("id", ""),
+            finding.get("title", ""),
+            (finding.get("severity_label") or "info").title(),
+            finding.get("cvss_score", ""),
+            ", ".join(hosts) if hosts else "",
+            finding.get("port", ""),
+            finding.get("category", ""),
+            finding.get("cwe", ""),
+            ", ".join(cves) if cves else "",
+            status,
+            (finding.get("description") or "")[:500],
+            (finding.get("solution") or "")[:500],
+            (finding.get("business_impact") or "")[:300],
+        ]
+        for col_idx, value in enumerate(values, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="top", wrap_text=col_idx in (11, 12, 13))
+
+    # Column widths (approximate)
+    widths = [8, 30, 12, 8, 30, 8, 20, 12, 25, 14, 40, 40, 30]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    return ws
+
+
+def generate_vapt_report_xlsx(record) -> bytes:
+    """Build an Excel workbook containing the VAPT findings and return raw bytes.
+
+    Uses the same filtered-and-sorted finding set as the PDF report.
+    """
+    from io import BytesIO
+    from openpyxl import Workbook
+
+    raw_info_count = (record.severity_distribution or {}).get("info", 0)
+    filtered = _reported_only(record)
+
+    wb = Workbook()
+
+    # ── Sheet 1: Findings ──
+    _build_findings_xlsx_sheet(wb, filtered.findings, "Findings")
+
+    # ── Sheet 2: Summary ──
+    summary_ws = wb.create_sheet("Summary")
+    summary_data = [
+        ["Field", "Value"],
+        ["File Name", record.file_name],
+        ["Source Tool", _tool_label(record.source_tool)],
+        ["File Format", (record.file_format or "").upper()],
+        ["Total Findings (excl. info)", filtered.total_findings],
+        ["Informational (excluded)", raw_info_count],
+        ["Unique Hosts", filtered.unique_hosts],
+        ["Risk Score", f"{record.risk_score}/100"],
+        ["Overall Severity", (record.severity or "none").title()],
+    ]
+    # Severity distribution
+    for sev in SEVERITY_ORDER:
+        summary_data.append([f"Severity: {sev.title()}", (record.severity_distribution or {}).get(sev, 0)])
+    # Category distribution
+    for cat, count in sorted((record.category_distribution or {}).items(), key=lambda kv: -kv[1]):
+        summary_data.append([f"Category: {cat}", count])
+
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    thin_border = Border(
+        left=Side(style="thin", color="E5E7EB"),
+        right=Side(style="thin", color="E5E7EB"),
+        top=Side(style="thin", color="E5E7EB"),
+        bottom=Side(style="thin", color="E5E7EB"),
+    )
+    for row_idx, row in enumerate(summary_data, 1):
+        for col_idx, value in enumerate(row, 1):
+            cell = summary_ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            if row_idx == 1:
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(start_color="800080", end_color="800080", fill_type="solid")
+    summary_ws.column_dimensions["A"].width = 30
+    summary_ws.column_dimensions["B"].width = 30
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def generate_vapt_verification_report_xlsx(schedule, original_record) -> bytes:
+    """Build an Excel workbook for one verification schedule's results."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    result_data = schedule.result_data or {}
+    findings = result_data.get("findings", []) if isinstance(result_data, dict) else []
+    fixed_findings = result_data.get("fixed_findings", []) if isinstance(result_data, dict) else []
+    remaining_findings = result_data.get("remaining_findings", []) if isinstance(result_data, dict) else []
+    if not isinstance(findings, list):
+        findings = []
+    if not isinstance(fixed_findings, list):
+        fixed_findings = []
+    if not isinstance(remaining_findings, list):
+        remaining_findings = []
+
+    wb = Workbook()
+
+    # ── Sheet 1: Verification Findings ──
+    ws = wb.active
+    ws.title = "Verification Findings"
+    headers = ["ID", "Title", "Severity", "CVSS", "Host(s)", "Category", "Status"]
+    header_font = Font(bold=True, color="FFFFFF", size=10)
+    header_fill = PatternFill(start_color="800080", end_color="800080", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin", color="E5E7EB"),
+        right=Side(style="thin", color="E5E7EB"),
+        top=Side(style="thin", color="E5E7EB"),
+        bottom=Side(style="thin", color="E5E7EB"),
+    )
+    from openpyxl.utils import get_column_letter
+
+    for col_idx, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = thin_border
+
+    for row_idx, finding in enumerate(findings, 2):
+        hosts = finding.get("affected_hosts") or []
+        values = [
+            finding.get("id", ""),
+            finding.get("title", ""),
+            (finding.get("severity_label") or "info").title(),
+            finding.get("cvss_score", ""),
+            ", ".join(hosts) if hosts else "",
+            finding.get("category", ""),
+            (finding.get("remediation_status") or finding.get("status") or "open").replace("_", " ").title(),
+        ]
+        for col_idx, value in enumerate(values, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="top")
+
+    widths = [8, 30, 12, 8, 30, 20, 14]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # ── Sheet 2: Summary ──
+    summary_ws = wb.create_sheet("Verification Summary")
+    summary_data = [
+        ["Field", "Value"],
+        ["Original Report", original_record.file_name],
+        ["Schedule ID", str(schedule.id)],
+        ["Verification Date", str(schedule.scheduled_at)],
+        ["SOC Outcome", getattr(schedule, "verification_outcome", "pending")],
+        ["Findings in Verification Export", len(findings)],
+        ["Confirmed Fixed", len(fixed_findings)],
+        ["Still Present", len(remaining_findings)],
+    ]
+    for row_idx, row in enumerate(summary_data, 1):
+        for col_idx, value in enumerate(row, 1):
+            cell = summary_ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            if row_idx == 1:
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(start_color="800080", end_color="800080", fill_type="solid")
+    summary_ws.column_dimensions["A"].width = 30
+    summary_ws.column_dimensions["B"].width = 40
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()

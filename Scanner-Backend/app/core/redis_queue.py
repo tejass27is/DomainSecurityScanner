@@ -29,7 +29,6 @@ class RedisClient:
             decode_responses=decode_responses,
             socket_connect_timeout=2,
             socket_timeout=2,
-            retry_on_timeout=False,
         )
         self.port = port
         self.db = db

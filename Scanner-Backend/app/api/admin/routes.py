@@ -41,7 +41,7 @@ from app.api.admin.service import (
     unblock_email,
     update_subscription_plan,
 )
-from app.api.vapt.report_generator import generate_vapt_report_pdf
+from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
 from app.api.vapt.routes import _to_detail, _to_list_item, _uploader_email_map
 from app.api.vapt import schedule_service
 from app.core.middleware import (
@@ -51,7 +51,7 @@ from app.core.middleware import (
 )
 from app.core.websocket_manager import ws_manager
 from app.db.base import get_db
-from app.db.models import Organization, User, VaptImport
+from app.db.models import Organization, User, VaptImport, VaptRescanSchedule
 from app.utils.email import send_vapt_rescan_schedule_email
 from pydantic import BaseModel
 from datetime import datetime, timezone
@@ -278,6 +278,13 @@ async def schedule_vapt_rescan_admin(
 ):
     record = _platform_import_or_404(db, import_id)
 
+    existing_schedule = db.query(VaptRescanSchedule).filter(
+        VaptRescanSchedule.import_id == record.import_id,
+        VaptRescanSchedule.status.in_(["scheduled", "requested", "approved"]),
+    ).first()
+    if existing_schedule:
+        raise HTTPException(status_code=409, detail="An active verification schedule already exists for this VAPT cycle")
+
     try:
         scheduled_at = datetime.fromisoformat(body.scheduled_at)
         # Always normalize to UTC: naive = assume UTC, aware = convert
@@ -406,6 +413,79 @@ def download_all_vapt_report(
         headers={
             "Content-Disposition": f'attachment; filename="vapt-report-{safe_name}.pdf"'
         },
+    )
+
+
+@router.get("/vapt/imports/{import_id}/rescan-schedule/{schedule_id}/report")
+def download_vapt_verification_report_admin(
+    import_id: str,
+    schedule_id: str,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Download one verification scan report for the platform team."""
+    record = _platform_import_or_404(db, import_id)
+    schedule = db.query(VaptRescanSchedule).filter(
+        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.import_id == record.import_id,
+    ).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Verification schedule not found")
+    try:
+        pdf_bytes = generate_vapt_verification_report_pdf(schedule, record)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to generate the verification PDF report: {exc}")
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="vapt-verification-{schedule_id[:8]}.pdf"'},
+    )
+
+
+@router.get("/vapt/imports/{import_id}/report/excel")
+def download_all_vapt_report_excel(
+    import_id: str,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Download the Excel report for any VAPT import on the platform."""
+    record = _platform_import_or_404(db, import_id)
+    try:
+        xlsx_bytes = generate_vapt_report_xlsx(record)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to generate the Excel report: {exc}")
+    safe_name = "".join(c for c in record.file_name if c.isalnum() or c in "._-") or "vapt-report"
+    safe_name = safe_name.replace(" ", "-")
+    return StreamingResponse(
+        iter([xlsx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="vapt-report-{safe_name}.xlsx"'},
+    )
+
+
+@router.get("/vapt/imports/{import_id}/rescan-schedule/{schedule_id}/report/excel")
+def download_vapt_verification_report_admin_excel(
+    import_id: str,
+    schedule_id: str,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Download one verification scan report as Excel for the platform team."""
+    record = _platform_import_or_404(db, import_id)
+    schedule = db.query(VaptRescanSchedule).filter(
+        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.import_id == record.import_id,
+    ).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Verification schedule not found")
+    try:
+        xlsx_bytes = generate_vapt_verification_report_xlsx(schedule, record)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to generate verification Excel: {exc}")
+    return StreamingResponse(
+        iter([xlsx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="vapt-verification-{schedule_id[:8]}.xlsx"'},
     )
 
 

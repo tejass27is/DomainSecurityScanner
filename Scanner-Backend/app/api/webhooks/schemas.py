@@ -22,6 +22,7 @@ class ScannerWebhookResultRequest(BaseModel):
     domain: Optional[str] = None
     data: Any
     scan_id: Optional[str] = None
+    schedule_id: Optional[str] = None
     org_id: Optional[str] = None
     status: Optional[str] = None
     progress: Optional[int] = None

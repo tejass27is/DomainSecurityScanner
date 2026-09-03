@@ -20,7 +20,13 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
         { to: "/admin/vapt-upload", label: "Upload Report", icon: "upload_file" },
         { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
       ]
-    : undefined;
+    : [
+        { to: "/scan-dashboard", label: "Dashboard", icon: "dashboard" },
+        { to: "/assessment", label: "Assessment", icon: "security" },
+        { to: "/scan", label: "Audit Domain", icon: "radar" },
+        { to: "/malware", label: "Malware Scan", icon: "bug_report" },
+        { to: "/vapt/reports", label: "VAPT", icon: "fact_check" },
+      ];
 
   return (
     <div className="flex min-h-screen overflow-x-hidden bg-slate-100 dark:bg-slate-950">

@@ -42,6 +42,15 @@ function RiskPill({ score }) {
   );
 }
 
+const LIFECYCLE_LABEL = {
+  report_published: "Initial report published",
+  revalidation_required: "Re-validation required",
+  revalidation_scheduled: "Re-validation scheduled",
+  revalidation_verification_pending: "SOC decision pending",
+  closed: "Cycle closed",
+  remediation_required: "Remediation required",
+};
+
 function PeriodChip({ active, onClick, children }) {
   return (
     <button
@@ -104,7 +113,10 @@ export default function VaptReports() {
           return;
         }
 
-        const status = await getVaptAccessStatus(token);
+        const [status] = await Promise.all([
+          getVaptAccessStatus(token),
+        ]);
+
         if (!status?.vapt_access_enabled) {
           navigate("/vapt", { replace: true });
           return;
@@ -134,7 +146,7 @@ export default function VaptReports() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed"].includes(message.event)) {
+        if (["vapt_access_requested", "vapt_region_requested", "vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_region_reviewed", "vapt_access_reviewed"].includes(message.event)) {
           if (!cancelled) loadImports();
         }
       } catch {
@@ -146,6 +158,7 @@ export default function VaptReports() {
       ws.close();
     };
   }, [loadImports]);
+
 
   const handleDownload = useCallback(async (importId) => {
     const token = localStorage.getItem("token");
@@ -194,7 +207,11 @@ export default function VaptReports() {
               findings and download PDFs.
             </p>
           </div>
+          <button type="button" onClick={() => navigate("/vapt?region_request=1")} className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-purple-700">
+            <Globe size={16} /> Request New Region
+          </button>
         </div>
+
 
         {/* ── Summary strip ── */}
         <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -362,7 +379,7 @@ export default function VaptReports() {
                                 {item.file_name}
                               </p>
                               <p className="text-xs text-slate-500 dark:text-slate-400">
-                                {item.file_format.toUpperCase()} export ·{" "}
+                                VAPT Cycle {item.cycle_number || 1} · {LIFECYCLE_LABEL[item.lifecycle_status] || "In progress"} ·{" "}
                                 <span className="font-bold text-purple-600 dark:text-purple-400">{item.region || "—"}</span> ·{" "}
                                 {formatLabel(item)}
                               </p>
@@ -371,7 +388,7 @@ export default function VaptReports() {
                         </td>
                         <td className="px-6 py-4">
                           <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold ${FORMAT_BADGE[item.file_format] || FORMAT_BADGE.xml}`}>
-                            {formatLabel(item)}
+                            Cycle {item.cycle_number || 1}
                           </span>
                         </td>
                         <td className="px-6 py-4"><RiskPill score={item.risk_score} /></td>

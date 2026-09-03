@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import logo from "../assets/logo.svg";
 import logoWhite from "../assets/iSecurify Logo - White - Transparent.png";
 import ResetPasswordModal from "./ResetPasswordModal";
-import { getProfile } from "../services/api";
 import { logoutAndRedirect } from "../utils/auth";
 
 function Sidebar({
@@ -17,45 +16,18 @@ function Sidebar({
     { to: "/assessment", label: "Assessment", icon: "security" },
     { to: "/scan", label: "Audit Domain", icon: "radar" },
     { to: "/malware", label: "Malware Scan", icon: "bug_report" },
-    { to: "/vapt/reports", label: "VAPT", icon: "fact_check" },
+    { to: "/vapt", label: "VAPT", icon: "fact_check" },
   ],
 }) {
   const location = useLocation();
   const settingsRef = useRef(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
-  const [vaptAccessEnabled, setVaptAccessEnabled] = useState(false);
 
   // Keep the completion flag in-memory so it resets on full page reload.
   const [, setMalwareScanComplete] = useState(() =>
     Boolean(window.__malwareScanCompleted),
   );
-
-  useEffect(() => {
-    const fetchProfile = async () => {
-      const token = localStorage.getItem("token");
-      if (!token) return;
-      try {
-        const profile = await getProfile(token);
-        setVaptAccessEnabled(Boolean(profile?.vapt_access_enabled));
-      } catch {
-        return;
-      }
-    };
-
-    // Poll the profile (and refresh on tab focus) so that when the admin
-    // approves VAPT access the nav option appears without a page reload.
-    fetchProfile();
-    window.addEventListener("profile-updated", fetchProfile);
-    const intervalId = setInterval(fetchProfile, 15000);
-    const onFocus = () => fetchProfile();
-    window.addEventListener("focus", onFocus);
-    return () => {
-      window.removeEventListener("profile-updated", fetchProfile);
-      clearInterval(intervalId);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, []);
 
   useEffect(() => {
     const onComplete = () => setMalwareScanComplete(true);
@@ -111,12 +83,7 @@ function Sidebar({
     logoutAndRedirect();
   };
 
-  const visibleNavItems = (navItems || []).filter((item) => {
-    if (item.to === "/vapt/reports" || item.to === "/vapt") {
-      return vaptAccessEnabled;
-    }
-    return true;
-  });
+  const visibleNavItems = navItems || [];
 
   const baseClass =
     "relative flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-200 overflow-hidden lg:min-h-[48px]";

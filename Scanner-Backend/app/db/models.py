@@ -45,6 +45,14 @@ class OrganizationRegion(Base):
     requested_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
     reviewed_at = Column(TIMESTAMP, nullable=True)
     reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    testing_start_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    testing_end_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    testing_timezone = Column(String(64), nullable=True)
+    proposed_start_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    proposed_end_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    proposed_timezone = Column(String(64), nullable=True)
+    schedule_status = Column(String(32), nullable=False, default="pending", server_default="'pending'")
 
     __table_args__ = (
         UniqueConstraint("org_id", "region_id", name="uq_org_region"),
@@ -373,6 +381,19 @@ class VaptImport(Base):
     # (which shipped a NOT NULL `status` column). Imports are stored fully
     # normalized, so the value is always "completed" at insert time.
     status = Column(String(20), nullable=False, default="completed", server_default="'completed'")
+    lifecycle_status = Column(String(64), nullable=False, default="report_published", server_default="'report_published'")
+    cycle_number = Column(Integer, nullable=False, default=1, server_default="1")
+    remediation_review_status = Column(String(24), nullable=False, default="not_submitted", server_default="'not_submitted'")
+    remediation_reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    remediation_reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    next_vapt_due_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Timestamp when SOC last logged a support-offered action while in
+    # remediation_required.  Reset on each call so the 7-day follow-up
+    # reminder timer always counts from the most recent outreach.
+    support_offered_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Timestamp when the most recent SOC follow-up reminder was sent.
+    # NULL = no reminder has been sent yet for this cycle.
+    remediation_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     region = Column(String(20), nullable=False, default="")
     total_findings = Column(Integer, nullable=False, default=0)
     unique_hosts = Column(Integer, nullable=False, default=0)
@@ -400,6 +421,11 @@ class VaptOnboardingChecklist(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     org_id = Column(String(36), ForeignKey("organizations.org_id"), unique=True, nullable=False)
+    cycle_number = Column(Integer, nullable=False, default=1, server_default="1")
+    review_status = Column(String(20), nullable=False, default="pending", server_default="'pending'")
+    reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    review_note = Column(Text, nullable=True)
 
     # Scope / IP ranges the org wants assessed
     scope_ip_ranges = Column(Text, nullable=True)
@@ -412,8 +438,17 @@ class VaptOnboardingChecklist(Base):
     tech_contact_phone = Column(String(50), nullable=True)
     # Preferred testing window (e.g. "Weekdays 10PM-6AM EST")
     testing_window = Column(Text, nullable=True)
+    testing_start_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    testing_end_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    testing_timezone = Column(String(64), nullable=True)
+    proposed_start_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    proposed_end_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    proposed_timezone = Column(String(64), nullable=True)
+    schedule_status = Column(String(32), nullable=False, default="pending", server_default="'pending'")
     # Systems explicitly out of scope
     out_of_scope_systems = Column(Text, nullable=True)
+    # Full client questionnaire answers, stored as structured JSON from the Excel checklist
+    checklist_answers = Column(JSON, nullable=True)
 
     completed_at = Column(TIMESTAMP, nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
@@ -421,31 +456,6 @@ class VaptOnboardingChecklist(Base):
 
     __table_args__ = (
         Index("idx_vapt_onboarding_org", "org_id"),
-    )
-
-
-class VaptScanSlot(Base):
-    """SOC-published availability slots for routine next-month scans.
-
-    SOC creates slots ahead of time; orgs pick one to confirm.
-    """
-
-    __tablename__ = "vapt_scan_slots"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=True)
-    # NULL org_id = open slot any org can claim
-    scheduled_at = Column(TIMESTAMP(timezone=True), nullable=False)
-    created_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
-    status = Column(String(20), nullable=False, default="available")  # available | booked | completed
-    booked_by_org = Column(String(36), ForeignKey("organizations.org_id"), nullable=True)
-    note = Column(Text, nullable=True)
-    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    __table_args__ = (
-        Index("idx_vapt_scan_slot_status", "status"),
-        Index("idx_vapt_scan_slot_scheduled", "scheduled_at"),
     )
 
 
@@ -459,8 +469,12 @@ class VaptRescanSchedule(Base):
     hosts = Column(JSON, nullable=True)  # list of host strings to rescan
     scheduled_at = Column(TIMESTAMP(timezone=True), nullable=False)
     recurrence = Column(JSON, nullable=True)
+    result_data = Column(JSON, nullable=True)
+    verification_outcome = Column(String(20), nullable=False, default="pending", server_default="'pending'")
+    verified_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    verified_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     note = Column(Text, nullable=True)
-    status = Column(String(20), nullable=False, default="scheduled")
+    status = Column(String(32), nullable=False, default="scheduled")
     error_message = Column(Text, nullable=True)  # populated when status = "failed"
     notified = Column(Boolean, nullable=False, server_default="false")
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
