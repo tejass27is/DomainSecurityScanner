@@ -68,6 +68,55 @@ def test_create_scan_task_to_queue_returns_success_when_queue_fails(monkeypatch)
     assert result["message"] == "Scan task registered successfully"
 
 
+def test_create_scan_task_rejects_unregistered_domain(monkeypatch):
+    """The ownership check must reject a domain the org never registered."""
+    from fastapi import HTTPException
+
+    db = FakeDB(org_result=type("Org", (), {"domain": ["nuv.ac.in"]})())
+    monkeypatch.setattr(scanner_service, "_validate_domain_dns", lambda domain: (True, "ok"))
+
+    try:
+        asyncio.run(scanner_service.create_scan_task_to_queue(db, "isecurify.co", "org-1"))
+    except HTTPException as exc:
+        assert exc.status_code == 403
+        assert "not registered" in exc.detail
+    else:
+        raise AssertionError("expected HTTPException 403 for an unregistered domain")
+
+
+def test_create_scan_task_normalizes_registered_domain_variants(monkeypatch):
+    """www / scheme / case variants of a registered domain must not false-403."""
+    db = FakeDB(org_result=type("Org", (), {"domain": ["example.com"]})())
+    monkeypatch.setattr(scanner_service, "_validate_domain_dns", lambda domain: (True, "ok"))
+
+    async def ok_queue(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(scanner_service.redis_client, "PushToQueue", ok_queue)
+
+    for variant in ["WWW.Example.com", "https://example.com/", "Example.com"]:
+        result = asyncio.run(
+            scanner_service.create_scan_task_to_queue(db, variant, "org-1")
+        )
+        assert result["domain_validation"] is True
+
+
+def test_create_scan_task_accepts_string_org_domain(monkeypatch):
+    """org.domain stored as a bare string must not be char-split by the check."""
+    db = FakeDB(org_result=type("Org", (), {"domain": "Example.com"})())
+    monkeypatch.setattr(scanner_service, "_validate_domain_dns", lambda domain: (True, "ok"))
+
+    async def ok_queue(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(scanner_service.redis_client, "PushToQueue", ok_queue)
+
+    result = asyncio.run(
+        scanner_service.create_scan_task_to_queue(db, "example.com", "org-1")
+    )
+    assert result["domain_validation"] is True
+
+
 def test_cancel_active_scans_for_org_sets_cancel_signal(monkeypatch):
     active_scan = type("ActiveScan", (), {"domain": "example.com", "org_id": "org-1", "status": "running"})()
     db = FakeDB(active_result=active_scan)

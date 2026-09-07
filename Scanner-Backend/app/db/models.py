@@ -93,6 +93,26 @@ class User(Base):
     # on first login before they can use the platform.
     must_change_password = Column(Boolean, nullable=False, server_default="false")
 
+class PublicReportRequest(Base):
+    """A report requested from the public "scan a domain" flow on the landing
+    page (no login). The request is persisted so SOC can see who asked for a
+    copy of a public domain report.
+    """
+    __tablename__ = "public_report_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    first_name = Column(String(255), nullable=False, default="")
+    last_name = Column(String(255), nullable=False, default="")
+    email = Column(String(255), nullable=False, index=True)
+    domain = Column(Text, nullable=False, index=True)
+    report_payload = Column(JSON, nullable=False, default={})
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_public_report_requests_created", "created_at"),
+    )
+
+
 class Invitation(Base):
     __tablename__ = "invitations"
 
@@ -182,6 +202,10 @@ class SecurityAlert(Base):
     severity = Column(String(20), nullable=False, default="medium")
     message = Column(Text, nullable=False)
     details = Column(JSON, nullable=True)
+    # Triage state: "open" (unhandled) → "acknowledged" (seen) → "resolved" (closed out)
+    status = Column(String(20), nullable=False, default="open", server_default="'open'")
+    resolved_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    resolved_at = Column(TIMESTAMP, nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
 
 
@@ -375,6 +399,7 @@ class VaptImport(Base):
     # earlier schema versions that predate this column).
     uploaded_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     file_name = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=True)
     file_format = Column(String(20), nullable=False, default="xml")  # xml | csv | xlsx
     source_tool = Column(String(50), nullable=False, default="generic")  # nessus | openvas | qualys | generic
     # Kept for compatibility with tables created by earlier schema versions
@@ -485,6 +510,24 @@ class VaptRescanSchedule(Base):
         Index("idx_vapt_rescan_scheduled", "scheduled_at"),
         Index("idx_vapt_rescan_status", "status"),
     )
+
+
+class NotificationPreference(Base):
+    """Per-user notification + escalation preferences.
+
+    ``channels`` is a JSON map of event category → bool (e.g.
+    {"vapt_report_published": true, "scan_complete": false, ...}).
+    ``escalation_rules`` is a JSON map of rule → days (e.g.
+    {"critical_finding_open_days": 7}). Kept as JSON so new event types
+    and rules never require a migration.
+    """
+
+    __tablename__ = "notification_preferences"
+
+    user_id = Column(String(36), ForeignKey("users.user_id"), primary_key=True)
+    channels = Column(JSON, nullable=True)
+    escalation_rules = Column(JSON, nullable=True)
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class ReportedIssue(Base):

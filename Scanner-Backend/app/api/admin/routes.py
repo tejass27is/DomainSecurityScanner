@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,7 @@ from app.api.admin.service import (
     block_email,
     block_vapt_access,
     unblock_vapt_access,
+    check_escalation_rules,
     create_personal_email_invitation,
     create_subscription_plan,
     delete_admin,
@@ -28,17 +29,21 @@ from app.api.admin.service import (
     generate_promo_code,
     get_audit_logs,
     get_blacklisted_emails,
+    get_cve_enrichment,
     get_promo_codes,
-    list_personal_email_invitations,
     get_scan_summaries,
     get_security_alerts,
+    get_soc_dashboard,
     get_subscription_plans,
     get_total_scans,
     get_users_by_org,
+    get_vulnerability_aging,
+    list_personal_email_invitations,
     provision_admin_account,
     provision_soc_analyst_account,
     revoke_personal_email_invitation,
     unblock_email,
+    update_security_alert_status,
     update_subscription_plan,
 )
 from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
@@ -278,9 +283,15 @@ async def schedule_vapt_rescan_admin(
 ):
     record = _platform_import_or_404(db, import_id)
 
+    # SOC scheduling goes through the same gates as client scheduling: the
+    # client must have completed its review, SOC must have accepted the
+    # remediation, and at least one finding must be pending verification.
+    from app.api.vapt.routes import _validate_rescan_prerequisites
+    _validate_rescan_prerequisites(record)
+
     existing_schedule = db.query(VaptRescanSchedule).filter(
         VaptRescanSchedule.import_id == record.import_id,
-        VaptRescanSchedule.status.in_(["scheduled", "requested", "approved"]),
+        VaptRescanSchedule.status.in_(["scheduled", "requested", "approval_pending", "approved", "rejected"]),
     ).first()
     if existing_schedule:
         raise HTTPException(status_code=409, detail="An active verification schedule already exists for this VAPT cycle")
@@ -626,7 +637,62 @@ def list_audit_logs(
 
 @router.get("/security/alerts")
 def list_security_alerts(
+    status: str | None = Query(None),
+    severity: str | None = Query(None),
     db: Session = Depends(get_db),
     _current_admin: User = Depends(require_admin),
 ):
-    return {"alerts": get_security_alerts(db)}
+    return {"alerts": get_security_alerts(db, status=status, severity=severity)}
+
+
+@router.patch("/security/alerts/{alert_id}")
+def update_security_alert(
+    alert_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Triage a security alert: acknowledge or resolve it."""
+    status = str(payload.get("status") or "").strip().lower()
+    return update_security_alert_status(alert_id, status, current_admin, db)
+
+
+# ─── SOC console (admins + SOC analysts) ─────────────────────────────────────
+
+@router.get("/soc/dashboard")
+def soc_dashboard(
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Platform-wide SOC KPIs: severity distribution, remediation aging, leaderboard."""
+    return get_soc_dashboard(db)
+
+
+@router.get("/soc/vulnerability-aging")
+def soc_vulnerability_aging(
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Track the same vulnerability (plugin + host) across VAPT cycles."""
+    return get_vulnerability_aging(db)
+
+
+@router.get("/soc/cves")
+def soc_cve_enrichment(
+    import_id: str,
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Unique CVEs in a VAPT import, enriched from the public CVE API."""
+    return get_cve_enrichment(db, import_id)
+
+
+@router.post("/soc/check-escalations")
+def soc_check_escalations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Manually run the escalation rules (critical/high findings aging)."""
+    return {"escalated": check_escalation_rules(db, current_user)}
+
+

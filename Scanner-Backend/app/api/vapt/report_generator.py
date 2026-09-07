@@ -50,7 +50,7 @@ from xml.sax.saxutils import escape as _xml_escape
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib import colors
 from reportlab.lib.colors import HexColor
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -1452,7 +1452,7 @@ def generate_vapt_report_xlsx(record) -> bytes:
     for cat, count in sorted((record.category_distribution or {}).items(), key=lambda kv: -kv[1]):
         summary_data.append([f"Category: {cat}", count])
 
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.styles import Font, PatternFill, Border, Side
     thin_border = Border(
         left=Side(style="thin", color="E5E7EB"),
         right=Side(style="thin", color="E5E7EB"),

@@ -16,9 +16,10 @@ from app.api.admin.routes import router as admin_router
 from app.api.malware.routes import router as malware_router
 from app.db.base import SessionLocal
 from app.api.report_issue.routes import router as report_issue_router
+from app.api.public.routes import router as public_router
 from app.api.vapt.routes import router as vapt_router
 from app.api.vapt.routes import check_remediation_followup_reminders, list_admin_rescan_requests
-from app.api.admin.service import seed_default_subscription_plans, delete_expired_unclaimed_promo_codes
+from app.api.admin.service import seed_default_subscription_plans, delete_expired_unclaimed_promo_codes, check_escalation_rules
 import threading
 import time
 
@@ -35,6 +36,7 @@ def cleanup_expired_promo_codes():
                 delete_expired_unclaimed_promo_codes(db)
                 list_admin_rescan_requests(db, None)
                 check_remediation_followup_reminders(db, None)
+                check_escalation_rules(db, None)
             finally:
                 db.close()
         except Exception as e:
@@ -127,6 +129,7 @@ app.include_router(admin_router)
 app.include_router(webhook_scanner_router)
 app.include_router(malware_router)
 app.include_router(report_issue_router)
+app.include_router(public_router)
 app.include_router(vapt_router)
 
 if __name__ == "__main__":

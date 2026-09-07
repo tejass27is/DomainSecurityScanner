@@ -17,7 +17,6 @@ import {
   getVaptAccessStatus,
   getVaptOnboarding,
   updateVaptOnboarding,
-  getHasCompletedScans,
   decideInitialVaptDate,
   getWebSocketUrl,
 } from "../services/api";
@@ -179,9 +178,13 @@ function ChoiceChipGroup({ options, value, onChange }) {
           key={option}
           type="button"
           onClick={() => onChange(option)}
-          className={`rounded-full border px-3 py-2 text-xs font-semibold transition ${value === option ? "border-violet-600 bg-violet-600 text-white shadow-sm" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-violet-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"}`}
+          className={`rounded-lg border px-3.5 py-2 text-xs font-medium transition ${
+            value === option
+              ? "border-slate-900 bg-slate-900 text-white dark:border-white dark:bg-white dark:text-slate-900"
+              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:border-slate-600"
+          }`}
         >
-          {option}
+          {value === option && <span className="mr-1">✓</span>}{option}
         </button>
       ))}
     </div>
@@ -202,6 +205,7 @@ export default function VaptUpload() {
   const [orgs, setOrgs] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState("");
   const [selectedRegion, setSelectedRegion] = useState("");
+  const [reportTitle, setReportTitle] = useState("");
   const [verificationSchedules, setVerificationSchedules] = useState([]);
   const [selectedVerificationSchedule, setSelectedVerificationSchedule] = useState(verificationScheduleParam);
   const [orgsError, setOrgsError] = useState("");
@@ -386,13 +390,14 @@ export default function VaptUpload() {
     const generalAnswers = nextOnboarding?.checklist_answers?.general_information || {};
     const primaryContactAnswer = generalAnswers.primary_contact?.answer || "";
     const derivedContact = extractPrimaryContactInfo(primaryContactAnswer);
-    const testingAuthorizationAnswer = generalAnswers.testing_authorization?.answer || "";
 
-    const scopeIpRanges = nextOnboarding?.scope_ip_ranges || nextOnboarding?.checklist_answers?.network_infrastructure?.internal_ips?.answer || "";
+    // The questionnaire's network section stores the in-scope ranges under
+    // internal_ip_ranges — mirror that value into scope_ip_ranges.
+    const scopeIpRanges = nextOnboarding?.scope_ip_ranges || nextOnboarding?.checklist_answers?.network_infrastructure?.internal_ip_ranges?.answer || "";
     const derived = {
       ...nextOnboarding,
       scope_ip_ranges: scopeIpRanges,
-      authorization_confirmed: Boolean(nextOnboarding?.authorization_confirmed) || testingAuthorizationAnswer.toLowerCase() === "yes",
+      authorization_confirmed: Boolean(nextOnboarding?.authorization_confirmed),
       tech_contact_name: nextOnboarding?.tech_contact_name || derivedContact.name || "",
       tech_contact_email: nextOnboarding?.tech_contact_email || derivedContact.email || "",
     };
@@ -430,7 +435,6 @@ export default function VaptUpload() {
   };
   const [onboarding, setOnboarding] = useState(emptyOnboarding);
   const timezoneOptions = Array.from(new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, "UTC", "Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Australia/Sydney"].filter(Boolean)));
-  const [hasScans, setHasScans] = useState(true);
   const [accessCode, setAccessCode] = useState("");
   const [accessName, setAccessName] = useState("");
   const [requestRegionCode, setRequestRegionCode] = useState("");
@@ -458,7 +462,6 @@ export default function VaptUpload() {
   const selectedOrg = orgs.find((o) => o.org_id === selectedOrgId) || null;
   const clientAccessState = getClientVaptAccessState({
     vaptAccessEnabled: !!vaptAccessStatus.vapt_access_enabled,
-    hasScans,
     onboarding: onboarding || emptyOnboarding,
   });
 
@@ -565,11 +568,8 @@ export default function VaptUpload() {
     if (!token) return;
     (async () => {
       try {
-        const [onbData, scanData] = await Promise.all([
-          getVaptOnboarding(token),
-          getHasCompletedScans(token),
-        ]);
-        
+        const onbData = await getVaptOnboarding(token);
+
         const nextOnboarding = {
           ...emptyOnboarding,
           ...(onbData || {}),
@@ -588,7 +588,6 @@ export default function VaptUpload() {
 
         setOnboarding(nextOnboarding);
         setSocReviewNote((onbData || {})?.review_note || "");
-        setHasScans(!!scanData?.has_completed_scans);
 
         // For region requests, start with a fresh empty checklist
         // and only preserve the region-agnostic metadata.
@@ -608,7 +607,6 @@ export default function VaptUpload() {
         }
       } catch {
         // If onboarding endpoint doesn't exist yet, allow through
-        setHasScans(true);
       }
     })();
   }, [canUpload, regionRequestMode]);
@@ -652,6 +650,34 @@ export default function VaptUpload() {
     }
   }, [accessCode, accessName]);
 
+  // Accepting/rejecting a SOC-proposed first-scan window can complete the whole
+  // request (when the client accepts, the backend also approves the pending
+  // checklist). Refresh immediately instead of waiting for the next poll / WS
+  // push so the UI never lingers on a stale "awaiting review" screen.
+  const handleInitialDateDecision = useCallback(
+    async (decision, note) => {
+      const token = localStorage.getItem("token");
+      const regionCode = vaptAccessStatus.pending_regions?.[0]?.code || "";
+      if (!token || !regionCode) return;
+      try {
+        await decideInitialVaptDate(regionCode, { decision, ...(note ? { note } : {}) }, token);
+      } catch (err) {
+        setRequestMessage(err?.message || "Unable to record your decision.");
+      }
+      try {
+        const [nextStatus, nextOnboarding] = await Promise.all([
+          getVaptAccessStatus(token),
+          getVaptOnboarding(token),
+        ]);
+        setVaptAccessStatus(nextStatus || {});
+        setOnboarding((prev) => ({ ...prev, ...(nextOnboarding || {}) }));
+      } catch {
+        // Keep the current state on transient errors; polling will retry.
+      }
+    },
+    [vaptAccessStatus.pending_regions],
+  );
+
   const handleFile = useCallback((file) => {
     setUploadError("");
     const err = validateVaptFile(file);
@@ -683,7 +709,7 @@ export default function VaptUpload() {
     try {
       const result = selectedVerificationSchedule
         ? await uploadVaptVerificationReport(selectedFile, selectedVerificationSchedule, token)
-        : await uploadVaptReport(selectedFile, token, selectedOrgId, selectedRegion);
+        : await uploadVaptReport(selectedFile, token, selectedOrgId, selectedRegion, reportTitle || null);
       setPreview(result);
       setProgressMsg("");
     } catch (err) {
@@ -710,8 +736,12 @@ export default function VaptUpload() {
     }
   }, [preview, canUpload]);
 
+  // Gates are rendered after all hooks run (below) so hook order never changes
+  // between renders — otherwise React would error on re-renders that flip a gate.
+  let gateScreen = null;
+
   if (!canUpload && vaptAccessStatus.vapt_blocked) {
-    return (
+    gateScreen = (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-red-200 bg-white p-8 shadow-sm dark:border-red-900 dark:bg-slate-900">
         <div className="mb-6 flex items-center gap-3">
           <span className="material-symbols-outlined text-red-600 dark:text-red-400">block</span>
@@ -727,7 +757,7 @@ export default function VaptUpload() {
   }
 
   if (!canUpload && clientAccessState === "access_not_approved") {
-    return (
+    gateScreen = (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <div className="mb-6 flex items-center gap-3">
           <span className="material-symbols-outlined text-purple-600">fact_check</span>
@@ -863,7 +893,7 @@ export default function VaptUpload() {
 
   useEffect(() => {
     const token = localStorage.getItem("token");
-    if (regionRequestMode || !token || !onboarding || !onboarding.checklist_answers) return;
+    if (canUpload || regionRequestMode || !token || !onboarding || !onboarding.checklist_answers) return;
     const timer = setTimeout(async () => {
       try {
         await updateVaptOnboarding(onboarding, token);
@@ -886,9 +916,9 @@ export default function VaptUpload() {
       return;
     }
 
-    const derivedScopeIpRanges = onboarding.scope_ip_ranges || onboarding.checklist_answers?.network_infrastructure?.internal_ips?.answer || "";
+    const derivedScopeIpRanges = onboarding.scope_ip_ranges || onboarding.checklist_answers?.network_infrastructure?.internal_ip_ranges?.answer || "";
     const derivedPrimaryContact = extractPrimaryContactInfo(onboarding.checklist_answers?.general_information?.primary_contact?.answer || "");
-    const derivedAuthorizationConfirmed = Boolean(onboarding.authorization_confirmed) || (onboarding.checklist_answers?.general_information?.testing_authorization?.answer || "").toLowerCase() === "yes";
+    const derivedAuthorizationConfirmed = Boolean(onboarding.authorization_confirmed);
     const requiredFields = {
       testing_start_at: onboarding.testing_start_at,
       testing_timezone: onboarding.testing_timezone,
@@ -978,6 +1008,8 @@ export default function VaptUpload() {
     }
   }, [onboarding, requestRegionCode, requestRegionName]);
 
+  if (gateScreen) return gateScreen;
+
   if (!canUpload && regionRequestMode && clientAccessState === "allowed") {
     return (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -1030,9 +1062,9 @@ export default function VaptUpload() {
 
   if (!canUpload && clientAccessState === "checklist_required") {
     return (
-      <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <div className="mx-auto max-w-4xl border border-slate-200 bg-white p-6 sm:p-8 dark:border-slate-800 dark:bg-slate-900">
         <div className="mb-6 flex items-center justify-between gap-4">
-          <span className="material-symbols-outlined text-purple-600">fact_check</span>
+          <span className="material-symbols-outlined text-slate-500">fact_check</span>
           <button
             type="button"
             onClick={() => navigate(regionRequestMode ? "/vapt/reports" : "/scan-dashboard")}
@@ -1050,98 +1082,145 @@ export default function VaptUpload() {
         </p>
 
         <div className="mt-8 space-y-6">
-          <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-800 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-200">
-            This intake is structured by section so it stays manageable. Progress saves automatically as you go, and you can return later without losing work.
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+            <span className="font-semibold text-slate-700 dark:text-slate-300">Heads up:</span> Fill each section at your own pace. Progress saves automatically and you can return later.
           </div>
 
           {onboarding.review_status === "rejected" && socReviewNote && (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-              <p className="font-bold">SOC review feedback</p>
-              <p className="mt-1 whitespace-pre-wrap">{socReviewNote}</p>
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400">
+              <span className="font-bold">SOC Review Feedback:</span> {socReviewNote}
             </div>
           )}
 
-          <div className="mx-auto w-full max-w-6xl rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-5 grid gap-4 rounded-2xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-900 dark:bg-violet-950/30 md:grid-cols-2">
-              <div className="space-y-2">
-                <label htmlFor="request-region-code" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Region code</label>
-                <input
-                  id="request-region-code"
-                  type="text"
-                  value={requestRegionCode}
-                  onChange={(e) => setRequestRegionCode(e.target.value.toUpperCase())}
-                  placeholder="e.g. ACC-IND"
-                  className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-violet-500 dark:focus:ring-violet-900/40"
-                />
+          <div className="w-full">
+            {/* Region Fields + Progress — clean rectangular layout */}
+            <div className="mb-6 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">{regionRequestMode ? "Region Details" : "Test Details"}</h3>
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-bold transition-all ${
+                  saveState === "saved"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400"
+                    : saveState === "saving"
+                    ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400"
+                    : "border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
+                }`}>
+                  <span className="text-xs">{saveState === "saved" ? "✓" : saveState === "saving" ? "•" : "↻"}</span>
+                  {saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving..." : "Retry"}
+                </span>
               </div>
-              <div className="space-y-2">
-                <label htmlFor="request-region-name" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Region name</label>
-                <input
-                  id="request-region-name"
-                  type="text"
-                  value={requestRegionName}
-                  onChange={(e) => setRequestRegionName(e.target.value)}
-                  placeholder="e.g. Accenture India"
-                  className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-violet-500 dark:focus:ring-violet-900/40"
-                />
-              </div>
-              <div className="space-y-2">
-                <label htmlFor="testing-start-at" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Testing start</label>
-                <input id="testing-start-at" type="datetime-local" value={onboarding.testing_start_at || ""} onChange={(e) => setOnboarding((prev) => ({ ...prev, testing_start_at: e.target.value }))} className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100" />
-              </div>
-              <div className="space-y-2">
-                <label htmlFor="testing-timezone" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Timezone</label>
-                <select id="testing-timezone" value={onboarding.testing_timezone || "UTC"} onChange={(e) => setOnboarding((prev) => ({ ...prev, testing_timezone: e.target.value }))} className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100">
-                  {timezoneOptions.map((timezone) => <option key={timezone} value={timezone}>{timezone}</option>)}
-                </select>
-              </div>
-            </div>
-            <div className="mb-5 rounded-2xl border border-slate-200 bg-slate-50/90 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950/40">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Progress</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">
-                    {Object.values(onboarding.checklist_answers || {}).reduce((total, section) => total + Object.values(section || {}).length, 0)} fields across {QUESTION_SECTIONS.length} sections
-                  </p>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="space-y-1.5">
+                  <label htmlFor="request-region-code" className="text-xs font-semibold text-slate-600 dark:text-slate-400">Region Code</label>
+                  <input
+                    id="request-region-code"
+                    type="text"
+                    value={requestRegionCode}
+                    onChange={(e) => setRequestRegionCode(e.target.value.toUpperCase())}
+                    placeholder="e.g. ACC-IND"
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-slate-400 focus:bg-white focus:ring-1 focus:ring-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-slate-500 dark:focus:ring-slate-700"
+                  />
                 </div>
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                  <span className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-emerald-700 shadow-sm dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400">
-                    <span className="text-[11px]">{saveState === "saved" ? "✓" : saveState === "saving" ? "•" : "↻"}</span>
-                    {saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving..." : "Try again"}
+                <div className="space-y-1.5">
+                  <label htmlFor="request-region-name" className="text-xs font-semibold text-slate-600 dark:text-slate-400">Region Name</label>
+                  <input
+                    id="request-region-name"
+                    type="text"
+                    value={requestRegionName}
+                    onChange={(e) => setRequestRegionName(e.target.value)}
+                    placeholder="e.g. Accenture India"
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-slate-400 focus:bg-white focus:ring-1 focus:ring-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-slate-500 dark:focus:ring-slate-700"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="testing-start-at" className="text-xs font-semibold text-slate-600 dark:text-slate-400">Testing Start</label>
+                  <input
+                    id="testing-start-at"
+                    type="datetime-local"
+                    value={onboarding.testing_start_at || ""}
+                    onChange={(e) => setOnboarding((prev) => ({ ...prev, testing_start_at: e.target.value }))}
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white focus:ring-1 focus:ring-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-slate-500 dark:focus:ring-slate-700"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="testing-timezone" className="text-xs font-semibold text-slate-600 dark:text-slate-400">Timezone</label>
+                  <select
+                    id="testing-timezone"
+                    value={onboarding.testing_timezone || "UTC"}
+                    onChange={(e) => setOnboarding((prev) => ({ ...prev, testing_timezone: e.target.value }))}
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white focus:ring-1 focus:ring-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-slate-500 dark:focus:ring-slate-700"
+                  >
+                    {timezoneOptions.map((timezone) => <option key={timezone} value={timezone}>{timezone}</option>)}
+                  </select>
+                </div>
+              </div>
+              {/* Overall progress bar */}
+              <div className="mt-4 border-t border-slate-100 pt-4 dark:border-slate-800">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Overall Progress</span>
+                  <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                    {Math.round(
+                      QUESTION_SECTIONS.reduce((acc, s) => {
+                        const sp = getSectionProgress(s);
+                        return acc + sp.percent;
+                      }, 0) / QUESTION_SECTIONS.length
+                    )}%
                   </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                  <div
+                    className="h-full rounded-full bg-slate-700 dark:bg-slate-400 transition-all duration-500 ease-out"
+                    style={{
+                      width: `${Math.round(
+                        QUESTION_SECTIONS.reduce((acc, s) => {
+                          const sp = getSectionProgress(s);
+                          return acc + sp.percent;
+                        }, 0) / QUESTION_SECTIONS.length
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <div className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+                  {QUESTION_SECTIONS.length} sections &middot; {Object.values(onboarding.checklist_answers || {}).reduce((total, section) => total + Object.values(section || {}).length, 0)} fields
                 </div>
               </div>
             </div>
 
             <div className="space-y-4">
-              <nav aria-label="VAPT checklist sections" className="w-full rounded-[1.75rem] border border-slate-200 bg-gradient-to-b from-slate-50 to-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.04)] dark:border-slate-700 dark:from-slate-900 dark:to-slate-950">
-                <div className="relative">
-                  <div className="absolute left-5 right-5 top-5 hidden h-0.5 bg-slate-200 md:block dark:bg-slate-700" />
-                  <div className="grid grid-cols-2 gap-x-2 gap-y-4 sm:grid-cols-4 md:grid-cols-7">
-                    {QUESTION_SECTIONS.map((section) => {
-                      const progress = getSectionProgress(section);
-                      const isActive = activeSection === section.id;
-                      const isComplete = progress.answered === progress.total && progress.total > 0;
-                      return (
-                        <button
-                          key={section.id}
-                          type="button"
-                          onClick={() => setActiveSection(section.id)}
-                          aria-current={isActive ? "step" : undefined}
-                          className="group relative flex min-w-0 flex-col items-center gap-2 text-center"
-                        >
-                          <span className="relative z-10 flex h-10 w-10 items-center justify-center rounded-full border-2 text-sm font-black transition-all duration-200 md:h-11 md:w-11">
-                            <span className={`flex h-full w-full items-center justify-center rounded-full ${isActive ? "bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-600/20 ring-4 ring-blue-100 dark:ring-blue-900/30" : isComplete ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:border-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300" : "border-slate-300 bg-white text-slate-500 group-hover:border-blue-400 group-hover:text-blue-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300 dark:group-hover:border-blue-500 dark:group-hover:text-blue-300"}`}>
-                              {isComplete ? "✓" : sectionNumberMap[section.id]}
-                            </span>
-                          </span>
-                          <span className={`max-w-[92px] text-[10px] font-bold leading-[1.2] tracking-wide ${isActive ? "text-blue-700 dark:text-blue-300" : isComplete ? "text-emerald-700 dark:text-emerald-300" : "text-slate-600 dark:text-slate-300"}`}>
-                            {section.title}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
+              <nav aria-label="VAPT checklist sections" className="w-full rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-7">
+                  {QUESTION_SECTIONS.map((section) => {
+                    const progress = getSectionProgress(section);
+                    const isActive = activeSection === section.id;
+                    const isComplete = progress.answered === progress.total && progress.total > 0;
+                    return (
+                      <button
+                        key={section.id}
+                        type="button"
+                        onClick={() => setActiveSection(section.id)}
+                        aria-current={isActive ? "step" : undefined}
+                        className={`flex flex-col items-center gap-1.5 rounded-lg px-2 py-2.5 text-center transition ${
+                          isActive
+                            ? "bg-slate-100 dark:bg-slate-800"
+                            : "hover:bg-slate-50 dark:hover:bg-slate-800/50"
+                        }`}
+                      >
+                        <span className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ${
+                          isComplete
+                            ? "bg-emerald-600 text-white"
+                            : isActive
+                            ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                            : "bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400"
+                        }`}>
+                          {isComplete ? "✓" : sectionNumberMap[section.id]}
+                        </span>
+                        <span className={`text-[10px] font-semibold leading-tight ${
+                          isActive ? "text-slate-900 dark:text-white" : isComplete ? "text-emerald-600 dark:text-emerald-400" : "text-slate-400 dark:text-slate-500"
+                        }`}>
+                          {section.title}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </nav>
 
@@ -1149,146 +1228,116 @@ export default function VaptUpload() {
                 {QUESTION_SECTIONS.filter((section) => section.id === activeSection).map((section) => {
                   const currentSectionIndex = QUESTION_SECTIONS.findIndex((s) => s.id === activeSection);
                   const isLastSection = currentSectionIndex === QUESTION_SECTIONS.length - 1;
+                  const sectionProgress = getSectionProgress(section);
+                  const prevSection = currentSectionIndex > 0 ? QUESTION_SECTIONS[currentSectionIndex - 1] : null;
+                  const nextSection = currentSectionIndex < QUESTION_SECTIONS.length - 1 ? QUESTION_SECTIONS[currentSectionIndex + 1] : null;
                   return (
-                  <div key={section.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/40">
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-[11px] font-black uppercase tracking-[0.2em] text-violet-700 dark:text-violet-400">{sectionNumberMap[section.id]}. {section.title}</p>
-                        <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{section.description}</p>
+                  <div key={section.id} className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+                    {/* Section Header */}
+                    <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-800">
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-xs font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                          {sectionNumberMap[section.id]}
+                        </span>
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-900 dark:text-white">{section.title}</h3>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400">{section.description}</p>
+                        </div>
                       </div>
-                      <div className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-                        {getSectionProgress(section).answered}/{getSectionProgress(section).total}
-                      </div>
+                      <span className="text-xs font-semibold text-slate-400 dark:text-slate-500">
+                        {sectionProgress.answered}/{sectionProgress.total}
+                      </span>
                     </div>
 
-                    <div className="space-y-4">
+                    {/* Questions grid */}
+                    <div className="p-5">
                       {(() => {
                         const twoColumnQuestions = section.questions.filter((question) => question.short || question.type === "choice");
                         const fullWidthQuestions = section.questions.filter((question) => !question.short && question.type !== "choice");
 
+                        const renderQuestionCard = (question, section) => {
+                          const condition = question.condition;
+                          const isVisible = !condition || onboarding.checklist_answers?.[condition.sectionId]?.[condition.field]?.answer === condition.value;
+                          if (!isVisible) return null;
+                          const entry = onboarding.checklist_answers?.[section.id]?.[question.id] || { answer: "", na: false };
+                          const baseInput = "w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:ring-1 focus:ring-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-slate-500 dark:focus:ring-slate-700";
+
+                          return (
+                            <div
+                              key={question.id}
+                              className={`rounded-lg border p-4 transition ${
+                                entry.na
+                                  ? "border-slate-200/60 opacity-50 dark:border-slate-800/60"
+                                  : entry.answer?.trim()
+                                  ? "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-900"
+                                  : "border-slate-200 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-900/50"
+                              }`}
+                            >
+                              <div className="mb-2.5 flex items-start justify-between gap-3">
+                                <label className="block text-[13px] font-medium leading-snug text-slate-700 dark:text-slate-300">
+                                  <span className="inline-flex items-baseline gap-1">
+                                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500">{getQuestionNumber(section.id, question.id)}.</span>
+                                    <span>{question.label}</span>
+                                    <span className="text-[10px] text-red-400">*</span>
+                                  </span>
+                                </label>
+                                {/* N/A Toggle */}
+                                <button
+                                  type="button"
+                                  onClick={() => toggleNa(section.id, question.id)}
+                                  className={`relative shrink-0 rounded-md px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide transition ${
+                                    entry.na
+                                      ? "border border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                                      : "border border-slate-200 bg-white text-slate-400 hover:border-slate-300 hover:text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500 dark:hover:text-slate-300"
+                                  }`}
+                                >
+                                  {entry.na ? "✓ N/A" : "N/A"}
+                                </button>
+                              </div>
+
+                              {question.helper && (
+                                <p className="mb-2.5 text-[11px] leading-5 text-slate-500 dark:text-slate-400">{question.helper}</p>
+                              )}
+
+                              {question.type === "choice" ? (
+                                <ChoiceChipGroup
+                                  options={question.options}
+                                  value={entry.answer}
+                                  onChange={(option) => updateQuestionAnswer(section.id, question.id, option, false)}
+                                />
+                              ) : question.type === "textarea" || question.type === "table" ? (
+                                <textarea
+                                  rows={question.type === "table" ? 3 : 2}
+                                  value={entry.na ? "N/A" : entry.answer}
+                                  disabled={entry.na}
+                                  onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
+                                  className={`${baseInput} min-h-[72px] resize-y rounded-xl`}
+                                  placeholder={question.example || "Provide details"}
+                                />
+                              ) : (
+                                <input
+                                  type="text"
+                                  value={entry.na ? "N/A" : entry.answer}
+                                  disabled={entry.na}
+                                  onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
+                                  className={baseInput}
+                                  placeholder={question.example || "Type answer"}
+                                />
+                              )}
+                            </div>
+                          );
+                        };
+
                         return (
                           <>
                             {twoColumnQuestions.length > 0 && (
-                              <div className="grid gap-4 md:grid-cols-2">
-                                {twoColumnQuestions.map((question) => {
-                                  const condition = question.condition;
-                                  const isVisible = !condition || onboarding.checklist_answers?.[condition.sectionId]?.[condition.field]?.answer === condition.value;
-                                  if (!isVisible) return null;
-                                  const entry = onboarding.checklist_answers?.[section.id]?.[question.id] || { answer: "", na: false };
-                                  const baseClass = "w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-violet-500 dark:focus:ring-violet-900/30";
-                                  const wrapClass = "rounded-xl border border-slate-200 bg-white p-3 shadow-[0_2px_8px_rgba(15,23,42,0.04)] transition hover:-translate-y-px hover:shadow-md focus-within:border-l-4 focus-within:border-l-violet-500 focus-within:pl-[11px] dark:border-slate-700 dark:bg-slate-900 dark:shadow-none dark:hover:shadow-lg dark:hover:shadow-black/20";
-
-                                  return (
-                                    <div key={question.id} className={wrapClass}>
-                                      <div className="mb-2 flex items-center justify-between gap-3">
-                                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300">
-                                          <span className="inline-flex items-center gap-1.5">
-                                            <span className="text-violet-700 dark:text-violet-300">{getQuestionNumber(section.id, question.id)}.</span>
-                                            <span>{question.label}</span>
-                                            <span className="text-red-500">*</span>
-                                          </span>
-                                        </label>
-                                        <button
-                                          type="button"
-                                          onClick={() => toggleNa(section.id, question.id)}
-                                          className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.15em] ${entry.na ? "border-slate-700 bg-slate-800 text-white dark:border-slate-200 dark:bg-slate-100 dark:text-slate-900" : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"}`}
-                                        >
-                                          N/A
-                                        </button>
-                                      </div>
-
-                                      {question.helper && (
-                                        <p className="mb-2 text-[11px] leading-5 text-slate-500 dark:text-slate-400">{question.helper}</p>
-                                      )}
-
-                                      {question.type === "choice" ? (
-                                        <ChoiceChipGroup
-                                          options={question.options}
-                                          value={entry.answer}
-                                          onChange={(option) => updateQuestionAnswer(section.id, question.id, option, false)}
-                                        />
-                                      ) : (
-                                        <input
-                                          type="text"
-                                          value={entry.na ? "N/A" : entry.answer}
-                                          disabled={entry.na}
-                                          onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
-                                          className={baseClass}
-                                          placeholder={question.example || "Type answer"}
-                                        />
-                                      )}
-                                    </div>
-                                  );
-                                })}
+                              <div className="grid gap-3 md:grid-cols-2">
+                                {twoColumnQuestions.map((question) => renderQuestionCard(question, section))}
                               </div>
                             )}
-
                             {fullWidthQuestions.length > 0 && (
-                              <div className="space-y-4">
-                                {fullWidthQuestions.map((question) => {
-                                  const condition = question.condition;
-                                  const isVisible = !condition || onboarding.checklist_answers?.[condition.sectionId]?.[condition.field]?.answer === condition.value;
-                                  if (!isVisible) return null;
-                                  const entry = onboarding.checklist_answers?.[section.id]?.[question.id] || { answer: "", na: false };
-                                  const baseClass = "w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-violet-500 dark:focus:ring-violet-900/30";
-                                  const wrapClass = "rounded-xl border border-slate-200 bg-white p-3 shadow-[0_2px_8px_rgba(15,23,42,0.04)] transition hover:-translate-y-px hover:shadow-md focus-within:border-l-4 focus-within:border-l-violet-500 focus-within:pl-[11px] dark:border-slate-700 dark:bg-slate-900 dark:shadow-none dark:hover:shadow-lg dark:hover:shadow-black/20";
-
-                                  return (
-                                    <div key={question.id} className={wrapClass}>
-                                      <div className="mb-2 flex items-center justify-between gap-3">
-                                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300">
-                                          <span className="inline-flex items-center gap-1.5">
-                                            <span className="text-violet-700 dark:text-violet-300">{getQuestionNumber(section.id, question.id)}.</span>
-                                            <span>{question.label}</span>
-                                            <span className="text-red-500">*</span>
-                                          </span>
-                                        </label>
-                                        <button
-                                          type="button"
-                                          onClick={() => toggleNa(section.id, question.id)}
-                                          className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.15em] ${entry.na ? "border-slate-700 bg-slate-800 text-white dark:border-slate-200 dark:bg-slate-100 dark:text-slate-900" : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"}`}
-                                        >
-                                          N/A
-                                        </button>
-                                      </div>
-
-                                      {question.helper && (
-                                        <p className="mb-2 text-[11px] leading-5 text-slate-500 dark:text-slate-400">{question.helper}</p>
-                                      )}
-
-                                      {question.type === "textarea" ? (
-                                        <textarea
-                                          rows={2}
-                                          value={entry.na ? "N/A" : entry.answer}
-                                          disabled={entry.na}
-                                          onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
-                                          className={`${baseClass} min-h-[74px] resize-y`}
-                                          placeholder={question.example || "Provide details"}
-                                        />
-                                      ) : question.type === "table" ? (
-                                        <div className="space-y-3">
-                                          <textarea
-                                            rows={3}
-                                            value={entry.na ? "N/A" : entry.answer}
-                                            disabled={entry.na}
-                                            onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
-                                            className={`${baseClass} min-h-[90px] resize-y`}
-                                            placeholder={question.example || "Add rows as needed for each asset / platform entry."}
-                                          />
-                                        </div>
-                                      ) : (
-                                        <input
-                                          type="text"
-                                          value={entry.na ? "N/A" : entry.answer}
-                                          disabled={entry.na}
-                                          onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
-                                          className={baseClass}
-                                          placeholder={question.example || "Type answer"}
-                                        />
-                                      )}
-                                    </div>
-                                  );
-                                })}
+                              <div className="space-y-3">
+                                {fullWidthQuestions.map((question) => renderQuestionCard(question, section))}
                               </div>
                             )}
                           </>
@@ -1296,45 +1345,43 @@ export default function VaptUpload() {
                       })()}
                     </div>
 
-                    <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const currentIndex = QUESTION_SECTIONS.findIndex((s) => s.id === activeSection);
-                          if (currentIndex > 0) {
-                            setActiveSection(QUESTION_SECTIONS[currentIndex - 1].id);
-                          }
-                        }}
-                        disabled={QUESTION_SECTIONS.findIndex((s) => s.id === activeSection) === 0}
-                        className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
-                      >
-                        ← Previous
-                      </button>
+                    {/* Bottom Navigation */}
+                    <div className="border-t border-slate-100 px-5 py-4 dark:border-slate-800">
+                      <div className="flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          onClick={() => prevSection && setActiveSection(prevSection.id)}
+                          disabled={!prevSection}
+                          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800"
+                        >
+                          ← {prevSection ? prevSection.title : "Previous"}
+                        </button>
 
-                      {isLastSection ? (
-                        <button
-                          type="button"
-                          onClick={handleSubmitOnboarding}
-                          disabled={checklistSubmitting || !canSubmitChecklist}
-                          title={canSubmitChecklist ? "Submit checklist for SOC review" : "Complete all required fields before submitting"}
-                          className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-500/15 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {checklistSubmitting ? "Submitting checklist..." : "Submit checklist"}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const currentIndex = QUESTION_SECTIONS.findIndex((s) => s.id === activeSection);
-                            if (currentIndex < QUESTION_SECTIONS.length - 1) {
-                              setActiveSection(QUESTION_SECTIONS[currentIndex + 1].id);
-                            }
-                          }}
-                          className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-500/15 transition hover:opacity-95"
-                        >
-                          Next →
-                        </button>
-                      )}
+                        {isLastSection ? (
+                          <button
+                            type="button"
+                            onClick={handleSubmitOnboarding}
+                            disabled={checklistSubmitting || !canSubmitChecklist}
+                            title={canSubmitChecklist ? "Submit checklist for SOC review" : "Complete all required fields before submitting"}
+                            className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
+                          >
+                            {checklistSubmitting ? "Submitting..." : "Submit checklist"}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const currentIndex = QUESTION_SECTIONS.findIndex((s) => s.id === activeSection);
+                              if (currentIndex < QUESTION_SECTIONS.length - 1) {
+                                setActiveSection(QUESTION_SECTIONS[currentIndex + 1].id);
+                              }
+                            }}
+                            className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
+                          >
+                            {nextSection ? nextSection.title : "Next"} →
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                   );
@@ -1342,7 +1389,7 @@ export default function VaptUpload() {
               </div>
 
               {checklistMessage && (
-                <div className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-800 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-200">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
                   {checklistMessage}
                 </div>
               )}
@@ -1358,13 +1405,13 @@ export default function VaptUpload() {
       <div className="flex min-h-screen items-center justify-center p-6 text-slate-900 dark:text-slate-100">
         <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <p className="text-sm leading-6 text-slate-700 dark:text-slate-200">Your VAPT request has been submitted. The admin and SOC team will review the region, checklist, and preferred testing window together.</p>
-          {onboarding.proposed_start_at && onboarding.proposed_end_at && (
+          {onboarding.schedule_status === "date_proposed" && onboarding.proposed_start_at && onboarding.proposed_end_at && (
             <div className="mt-5 rounded-xl border border-sky-200 bg-sky-50 p-4 text-left text-sm text-sky-900 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200">
               <p className="font-bold">SOC proposed a different testing window</p>
               <p className="mt-1">{new Date(onboarding.proposed_start_at).toLocaleString()} to {new Date(onboarding.proposed_end_at).toLocaleString()} ({onboarding.proposed_timezone})</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" onClick={async () => { await decideInitialVaptDate((vaptAccessStatus.pending_regions?.[0]?.code || ""), { decision: "accepted" }, localStorage.getItem("token")); }} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Accept date</button>
-                <button type="button" onClick={async () => { await decideInitialVaptDate((vaptAccessStatus.pending_regions?.[0]?.code || ""), { decision: "rejected", note: "Please propose another first-scan window." }, localStorage.getItem("token")); }} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">Reject date</button>
+                <button type="button" onClick={() => handleInitialDateDecision("accepted")} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Accept date</button>
+                <button type="button" onClick={() => handleInitialDateDecision("rejected", "Please propose another first-scan window.")} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">Reject date</button>
               </div>
             </div>
           )}
@@ -1518,6 +1565,24 @@ export default function VaptUpload() {
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                   The region the assessment was performed in. The organization's users see reports
                   filtered by their approved regions.
+                </p>
+              </div>
+
+              {/* Report Title */}
+              <div className="mt-4">
+                <label htmlFor="report-title" className="mb-2 block text-xs font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
+                  Report Title
+                </label>
+                <input
+                  id="report-title"
+                  type="text"
+                  value={reportTitle}
+                  onChange={(e) => setReportTitle(e.target.value)}
+                  placeholder={selectedFile ? selectedFile.name.replace(/\.[^.]+$/, "").replace(/_/g, " ") : "e.g. SA OPT First Security Assessment"}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                />
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  A clean name shown to the client in reports and notifications. Leave blank to use the filename.
                 </p>
               </div>
             </div>

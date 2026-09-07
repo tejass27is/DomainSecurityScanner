@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from app.api.scanner.service import create_scan_task_to_queue
 from app.api.scanner.schemas import ScanRequest as ScanReqSchema, CancelScanRequest
@@ -41,13 +41,22 @@ async def get_scan_list(
     user: User = Depends(require_owner)  # 🔐 REQUIRED: admin/owner access only
 ):
     """
-    Get list of queued scans.
+    Get list of queued scans for the authenticated user's organization.
     
     ✅ FIXED: Now requires owner/admin authentication
-    ⚠️ Note: Returns all scans for debugging. Consider filtering by org_id for multi-tenant safety.
+    ✅ Multi-tenant safe: only returns this org's queued jobs.
     """
     data = redis_client.redis.lrange("scan_queue", 0, -1)
-    return [json.loads(item) for item in data]
+    jobs = []
+    for item in data:
+        try:
+            job = json.loads(item)
+        except (TypeError, ValueError):
+            continue
+        job_org = str(job.get("org_id") or "").strip()
+        if user.role in ("admin", "soc_analyst") or job_org == (user.org_id or ""):
+            jobs.append(job)
+    return jobs
 
 
 @router.post("/cancel")
@@ -93,13 +102,32 @@ async def clear_scan_queue(
     user: User = Depends(require_owner)  # 🔐 REQUIRED: admin/owner only
 ):
     """
-    Clear the entire scan queue.
+    Clear queued scans for the authenticated user's organization only.
     
-    ✅ FIXED: Now requires owner/admin authentication
-    ⚠️ WARNING: Destructive operation. Consider limiting to admin-only with extra confirmation.
+    ✅ Multi-tenant safe: admin/SOC may clear everything; owners only their own org.
     """
-    redis_client.redis.delete("scan_queue")
-    return {"message": "Scan queue cleared"}
+    data = redis_client.redis.lrange("scan_queue", 0, -1)
+    kept = []
+    removed = 0
+    for item in data:
+        try:
+            job = json.loads(item)
+        except (TypeError, ValueError):
+            kept.append(item)
+            continue
+        job_org = str(job.get("org_id") or "").strip()
+        if user.role not in ("admin", "soc_analyst") and job_org != (user.org_id or ""):
+            kept.append(item)
+        else:
+            removed += 1
+    if kept:
+        redis_client.redis.delete("scan_queue")
+        if kept:
+            for item in kept:
+                redis_client.redis.rpush("scan_queue", item)
+    else:
+        redis_client.redis.delete("scan_queue")
+    return {"message": f"Scan queue cleared ({removed} job(s) removed)", "removed": removed}
 
 
 @router.get("/active")

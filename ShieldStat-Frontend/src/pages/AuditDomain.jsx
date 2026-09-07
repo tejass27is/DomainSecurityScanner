@@ -388,8 +388,14 @@ function NewScan() {
         const domains = dedupeDomains(normalizeProfileDomains(profile?.domain));
         setKnownDomains(domains);
         setAvailableSlots(Math.max(0, (profile?.max_domains || 0) - domains.length));
-        if (domains[0] && !globalDomain) {
-          setGlobalDomain(domains[0]);
+        // The selected domain persists in browser storage across sessions, so it
+        // can outlive an account switch. Only keep it when it is still registered
+        // to the logged-in account; otherwise fall back to the first registered
+        // domain so "Initialize Scan" can never fire on an unregistered domain.
+        const currentDomain = (globalDomain || "").trim().toLowerCase();
+        const stillRegistered = domains.some((d) => d.toLowerCase() === currentDomain);
+        if (!stillRegistered) {
+          setGlobalDomain(domains[0] || "");
         }
         if (profile?.org_id) {
           setOrgId(profile.org_id);

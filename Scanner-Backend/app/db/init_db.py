@@ -22,10 +22,16 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS promo_codes ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NOT NULL DEFAULT now()"))
         conn.execute(text("ALTER TABLE IF EXISTS promo_codes ADD COLUMN IF NOT EXISTS privilege_revoked BOOLEAN NOT NULL DEFAULT false"))
         conn.execute(text("ALTER TABLE IF EXISTS personal_email_invitations ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS security_alerts ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'"))
+        conn.execute(text("ALTER TABLE IF EXISTS security_alerts ADD COLUMN IF NOT EXISTS resolved_by VARCHAR(36) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS security_alerts ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS reported_issues ADD COLUMN IF NOT EXISTS resolution VARCHAR(50) NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS reported_issues ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS reported_issues ADD COLUMN IF NOT EXISTS evidence JSONB NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS reported_issues ADD COLUMN IF NOT EXISTS verifications JSONB NULL"))
+        # public_report_requests: created by the PublicReportRequest model on
+        # fresh installs; the ALTERs below upgrade databases that shipped the
+        # table before the model grew first/last name + created_at columns.
         conn.execute(text("CREATE TABLE IF NOT EXISTS public_report_requests (id SERIAL PRIMARY KEY, first_name VARCHAR(255) NOT NULL DEFAULT '', last_name VARCHAR(255) NOT NULL DEFAULT '', email VARCHAR(255) NOT NULL, domain TEXT NOT NULL, report_payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ DEFAULT now())"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_public_report_requests_email ON public_report_requests (email)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_public_report_requests_domain ON public_report_requests (domain)"))

@@ -44,9 +44,11 @@ function RiskPill({ score }) {
 
 const LIFECYCLE_LABEL = {
   report_published: "Initial report published",
+  awaiting_soc_remediation_acceptance: "Remediation review in progress",
   revalidation_required: "Re-validation required",
   revalidation_scheduled: "Re-validation scheduled",
   revalidation_verification_pending: "SOC decision pending",
+  closure_pending_client_due_date: "SOC approved closure — due date required",
   closed: "Cycle closed",
   remediation_required: "Remediation required",
 };
@@ -146,7 +148,7 @@ export default function VaptReports() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (["vapt_access_requested", "vapt_region_requested", "vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_region_reviewed", "vapt_access_reviewed"].includes(message.event)) {
+        if (["vapt_access_requested", "vapt_region_requested", "vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_region_reviewed", "vapt_access_reviewed", "vapt_remediation_reviewed", "vapt_verification_decided", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
           if (!cancelled) loadImports();
         }
       } catch {
@@ -375,8 +377,8 @@ export default function VaptReports() {
                               <FormatIcon size={17} />
                             </div>
                             <div className="min-w-0">
-                              <p className="max-w-[280px] truncate font-bold text-slate-800 dark:text-slate-200" title={item.file_name}>
-                                {item.file_name}
+                              <p className="max-w-[280px] truncate font-bold text-slate-800 dark:text-slate-200" title={item.display_name || item.file_name}>
+                                {item.display_name || item.file_name}
                               </p>
                               <p className="text-xs text-slate-500 dark:text-slate-400">
                                 VAPT Cycle {item.cycle_number || 1} · {LIFECYCLE_LABEL[item.lifecycle_status] || "In progress"} ·{" "}

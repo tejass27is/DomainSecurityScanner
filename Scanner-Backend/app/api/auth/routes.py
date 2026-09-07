@@ -11,6 +11,8 @@ from app.db.base import get_db
 from app.api.auth.service import (
     login_user, register, verify_registration, invite_member,
     get_members, delete_member, redeem_promo_code, add_domain,
+    remove_domain,
+    get_notification_preferences, update_notification_preferences,
     send_forgot_password_otp, verify_otp_and_reset_password,
     reset_password_with_old_password,
     setup_user_totp, verify_user_totp, reset_user_totp,
@@ -229,6 +231,33 @@ async def add_domain_route(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@router.post('/remove-domain')
+def remove_domain_route(
+    req: AddDomainRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_owner),
+):
+    """Remove a registered domain from the user's organization."""
+    return remove_domain(current_user, req.domain, db)
+
+
+@router.get('/notification-preferences')
+def get_preferences(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    return get_notification_preferences(current_user.user_id, db)
+
+
+@router.put('/notification-preferences')
+def put_preferences(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    return update_notification_preferences(current_user.user_id, payload, db)
+
 
 @router.post('/redeem-promo')
 def redeem_promo(

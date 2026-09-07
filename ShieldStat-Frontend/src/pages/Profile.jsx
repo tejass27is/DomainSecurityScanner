@@ -10,6 +10,9 @@ import {
   redeemPromo,
   requestVaptAccess,
   getVaptAccessStatus,
+  removeDomain,
+  getNotificationPreferences,
+  updateNotificationPreferences,
 } from "../services/api";
 import { clearAuthSession } from "../utils/auth";
 
@@ -71,6 +74,11 @@ function Profile() {
   const [showPromoForm, setShowPromoForm] = useState(false);
   const [promoCode, setPromoCode] = useState("");
   const [promoLoading, setPromoLoading] = useState(false);
+  const [removingDomain, setRemovingDomain] = useState("");
+
+  // ─── Notification preferences state ───────────────────────────────────────
+  const [notifPrefs, setNotifPrefs] = useState({ channels: {}, escalation_rules: {} });
+  const [notifLoading, setNotifLoading] = useState(false);
 
   // ─── VAPT access state ─────────────────────────────────────────────────────
   const [vaptAccessStatus, setVaptAccessStatus] = useState({
@@ -104,6 +112,15 @@ function Profile() {
     const id = setTimeout(() => setToast(null), 4500);
     return () => clearTimeout(id);
   }, [toast]);
+
+  useEffect(() => {
+    if (!token) return;
+    getNotificationPreferences(token)
+      .then((prefs) => {
+        if (prefs) setNotifPrefs({ channels: prefs.channels || {}, escalation_rules: prefs.escalation_rules || {} });
+      })
+      .catch(() => {});
+  }, [token]);
 
   // ─── Fetch profile on mount ────────────────────────────────────────────────
   useEffect(() => {
@@ -309,6 +326,63 @@ function Profile() {
   const refreshProfile = async () => {
     const data = await getProfile(token);
     setProfile(data);
+  };
+
+  const handleRemoveDomain = async (domain) => {
+    const confirmed = window.confirm(
+      `Remove ${domain} from your account?\n\nAll scan data (reports, history, malware, fix requests) for this domain will be deleted. This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    setRemovingDomain(domain);
+    try {
+      const data = await removeDomain(domain, token);
+      setToast({ text: data.message || `Domain '${domain}' removed`, type: "success" });
+      clearDomainCaches();
+      await refreshProfile();
+      window.dispatchEvent(new Event("profile-updated"));
+    } catch (err) {
+      setToast({ text: err.message || "Failed to remove domain", type: "error" });
+    } finally {
+      setRemovingDomain("");
+    }
+  };
+
+  const NOTIFICATION_CHANNELS = [
+    { key: "scan_complete", label: "Domain scan complete", description: "When a registered domain finishes its security scan." },
+    { key: "vapt_report_published", label: "VAPT report published", description: "When SOC publishes a new VAPT report for your org." },
+    { key: "vapt_remediation", label: "VAPT remediation updates", description: "Remediation accepted, reopened, or follow-up reminders." },
+    { key: "vapt_rescan", label: "VAPT rescan scheduling", description: "Rescan scheduled, dates proposed, or verification results." },
+    { key: "security_alerts", label: "Security alerts", description: "Platform security alerts involving your account." },
+  ];
+
+  const handleToggleChannel = async (key, enabled) => {
+    const nextChannels = { ...notifPrefs.channels, [key]: enabled };
+    setNotifPrefs({ ...notifPrefs, channels: nextChannels });
+    setNotifLoading(true);
+    try {
+      const saved = await updateNotificationPreferences({ channels: { [key]: enabled } }, token);
+      if (saved) setNotifPrefs({ channels: saved.channels || {}, escalation_rules: saved.escalation_rules || {} });
+      setToast({ text: "Notification preferences saved", type: "success" });
+    } catch (err) {
+      setToast({ text: err.message || "Failed to save preferences", type: "error" });
+    } finally {
+      setNotifLoading(false);
+    }
+  };
+
+  const handleEscalationDays = async (key, days) => {
+    const nextRules = { ...notifPrefs.escalation_rules, [key]: days };
+    setNotifPrefs({ ...notifPrefs, escalation_rules: nextRules });
+    setNotifLoading(true);
+    try {
+      const saved = await updateNotificationPreferences({ escalation_rules: { [key]: days } }, token);
+      if (saved) setNotifPrefs({ channels: saved.channels || {}, escalation_rules: saved.escalation_rules || {} });
+      setToast({ text: "Escalation threshold saved", type: "success" });
+    } catch (err) {
+      setToast({ text: err.message || "Failed to save threshold", type: "error" });
+    } finally {
+      setNotifLoading(false);
+    }
   };
 
   const handleRedeemPromo = async (e) => {
@@ -930,6 +1004,16 @@ function Profile() {
                           {scan.hasScan ? "open_in_new" : "radar"}
                         </span>
                       </button>
+                      {isOwner && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveDomain(scan.target)}
+                          disabled={removingDomain === scan.target}
+                          className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {removingDomain === scan.target ? "Removing..." : "Remove"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))
@@ -938,6 +1022,88 @@ function Profile() {
           </div>
         </section>
       </div>
+
+      {/* ═══════════════ NOTIFICATION PREFERENCES (owner only) ═══════════════ */}
+      {isOwner && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+          <section className="lg:col-span-full">
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between border-b border-slate-100 bg-white px-6 py-5">
+                <div className="flex items-center gap-3">
+                  <span className="material-symbols-outlined text-indigo-600">notifications_active</span>
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700">Notification Preferences</h3>
+                    <p className="mt-0.5 text-[10px] font-medium text-slate-500">Choose which events email your team, and when open findings escalate.</p>
+                  </div>
+                </div>
+                {notifLoading && <Loader2 size={16} className="animate-spin text-indigo-600" />}
+              </div>
+
+              <div className="divide-y divide-slate-100">
+                {NOTIFICATION_CHANNELS.map((ch) => (
+                  <div key={ch.key} className="flex items-center justify-between px-6 py-4">
+                    <div>
+                      <span className="block text-sm font-bold text-slate-900">{ch.label}</span>
+                      <span className="block text-xs text-slate-500">{ch.description}</span>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={notifPrefs.channels[ch.key] !== false}
+                      onClick={() => handleToggleChannel(ch.key, notifPrefs.channels[ch.key] === false)}
+                      disabled={notifLoading}
+                      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-60 ${
+                        notifPrefs.channels[ch.key] !== false ? "bg-indigo-600" : "bg-slate-300"
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                          notifPrefs.channels[ch.key] !== false ? "translate-x-[22px]" : "translate-x-0.5"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                ))}
+
+                <div className="flex flex-col gap-4 px-6 py-5">
+                  <div className="flex items-center gap-3">
+                    <span className="material-symbols-outlined text-indigo-600">timer</span>
+                    <span className="text-sm font-bold text-slate-900">Escalation thresholds (days open)</span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3">
+                      <span className="text-xs font-semibold text-slate-700">Critical finding escalates after</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={90}
+                        value={notifPrefs.escalation_rules.critical_finding_open_days ?? 7}
+                        onChange={(e) => handleEscalationDays("critical_finding_open_days", Number(e.target.value))}
+                        disabled={notifLoading}
+                        className="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 disabled:opacity-60"
+                      />
+                      <span className="text-xs text-slate-500">days</span>
+                    </label>
+                    <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3">
+                      <span className="text-xs font-semibold text-slate-700">High finding escalates after</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={90}
+                        value={notifPrefs.escalation_rules.high_finding_open_days ?? 14}
+                        onChange={(e) => handleEscalationDays("high_finding_open_days", Number(e.target.value))}
+                        disabled={notifLoading}
+                        className="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 disabled:opacity-60"
+                      />
+                      <span className="text-xs text-slate-500">days</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
 
       {toast?.text && (
         <div

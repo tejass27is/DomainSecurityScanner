@@ -26,7 +26,9 @@ export async function logoutAndRedirect() {
       method: "POST",
       credentials: "include",  // sends cookie so backend can delete it
     });
-  } catch (_) {}
+  } catch {
+    // best-effort: proceed to clear the local session either way
+  }
   clearAuthSession();
   window.location.replace("/auth");
 }

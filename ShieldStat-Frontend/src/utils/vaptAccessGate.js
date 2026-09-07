@@ -1,6 +1,5 @@
 export function getClientVaptAccessState({
   vaptAccessEnabled,
-  hasScans,
   onboarding,
 }) {
   const completed = Boolean(onboarding?.completed);

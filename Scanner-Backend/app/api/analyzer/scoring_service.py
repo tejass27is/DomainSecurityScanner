@@ -220,7 +220,6 @@ def calculate_compliance_scores(
     dns_score = scores_map.get("DNS Security", 50)
     network_score = scores_map.get("Network Security", 50)
     app_score = scores_map.get("Application Security", 50)
-    mail_score = scores_map.get("Mail Security", 50)
 
     # PCI-DSS: Requires strong encryption, secure network
     pci_score = (tls_score * 0.4 + network_score * 0.3 + app_score * 0.3)
@@ -230,14 +229,6 @@ def calculate_compliance_scores(
 
     # GDPR: Focus on encryption and security headers
     gdpr_score = (tls_score * 0.5 + app_score * 0.5)
-
-    # Apply strictness multiplier for critical domains
-    if criticality_level == "critical":
-        threshold = 85
-    elif criticality_level == "high":
-        threshold = 80
-    else:
-        threshold = 75
 
     return {
         "PCI-DSS": round(min(100, pci_score), 2),

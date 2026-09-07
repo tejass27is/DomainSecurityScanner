@@ -9,6 +9,7 @@ class VaptImportListItem(BaseModel):
 
     import_id: str
     file_name: str
+    display_name: Optional[str] = None
     file_format: str
     source_tool: str
     total_findings: int

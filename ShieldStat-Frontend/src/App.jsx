@@ -29,6 +29,7 @@ const VaptReport = lazy(() => import("./pages/VaptReport"));
 const SocAnalystVaptReports = lazy(() => import("./pages/SocAnalystVaptReports"));
 const AdminRescanRequests = lazy(() => import("./pages/AdminRescanRequests"));
 const AdminVaptAccessRequests = lazy(() => import("./pages/AdminVaptAccessRequests"));
+const SocDashboard = lazy(() => import("./pages/SocDashboard"));
 
 function App() {
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -119,6 +120,7 @@ function App() {
         <Route path="vapt-upload" element={<VaptUpload />} />
         <Route path="vapt-access-requests" element={<AdminVaptAccessRequests />} />
         <Route path="rescan-requests" element={<AdminRescanRequests />} />
+        <Route path="soc-dashboard" element={<SocDashboard />} />
         <Route path="profile" element={<Profile />} />
       </Route>
       </Routes>

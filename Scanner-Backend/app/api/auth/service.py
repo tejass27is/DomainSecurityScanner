@@ -1,5 +1,4 @@
 import bcrypt
-import json
 import uuid
 import secrets
 import re
@@ -15,7 +14,6 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.db.models import (
     User,
     Organization,
-    Invitation,
     PromoCode,
     PasswordResetOTP,
     Blacklist,
@@ -850,6 +848,96 @@ async def _validate_domain_dns(domain: str) -> bool:
         raise HTTPException(status_code=400, detail=f"DNS validation failed: {str(e)}")
 
 
+def remove_domain(user: User, domain: str, db: Session) -> dict:
+    """Remove a registered domain from the user's organization.
+
+    Only org owners/admins can remove domains. The domain must be currently
+    registered; its scan data (summaries, history, fix requests, malware
+    results) is cleaned up so no orphaned records remain.
+    """
+    from app.api.admin.service import _cleanup_domain_data
+
+    if not user or not user.org_id:
+        raise HTTPException(status_code=400, detail="User not associated with an organization")
+    if user.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only org owners/admins can remove domains")
+
+    org = db.query(Organization).filter(Organization.org_id == user.org_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    domain = _normalize_domain(domain)
+    if not domain:
+        raise HTTPException(status_code=400, detail="Domain is required")
+
+    raw_domains = org.domain or []
+    if not isinstance(raw_domains, list):
+        raw_domains = [raw_domains]
+    org_domains = [str(d).strip().lower() for d in raw_domains if str(d).strip()]
+
+    normalized_domain = _normalize_domain(domain)
+    if normalized_domain not in {_normalize_domain(d) for d in org_domains}:
+        raise HTTPException(status_code=404, detail=f"Domain '{domain}' is not registered to this account")
+
+    kept = [d for d in org_domains if _normalize_domain(d) != normalized_domain]
+    org.domain = kept
+    flag_modified(org, "domain")
+    db.commit()
+
+    try:
+        _cleanup_domain_data(db, org.org_id, [normalized_domain])
+    except Exception:
+        db.rollback()
+
+    return {
+        "message": f"Domain '{domain}' removed successfully",
+        "domains": kept,
+        "max_domains": org.max_domains,
+    }
+
+
+def get_notification_preferences(user_id: str, db: Session) -> dict:
+    from app.db.models import NotificationPreference
+    prefs = db.query(NotificationPreference).filter(NotificationPreference.user_id == user_id).first()
+    if not prefs:
+        return {
+            "user_id": user_id,
+            "channels": {},
+            "escalation_rules": {},
+        }
+    return {
+        "user_id": user_id,
+        "channels": prefs.channels or {},
+        "escalation_rules": prefs.escalation_rules or {},
+    }
+
+
+def update_notification_preferences(user_id: str, payload: dict, db: Session) -> dict:
+    from app.db.models import NotificationPreference
+    prefs = db.query(NotificationPreference).filter(NotificationPreference.user_id == user_id).first()
+    if not prefs:
+        prefs = NotificationPreference(user_id=user_id)
+        db.add(prefs)
+
+    channels = payload.get("channels")
+    escalation = payload.get("escalation_rules")
+    if isinstance(channels, dict):
+        merged = dict(prefs.channels or {})
+        merged.update(channels)
+        prefs.channels = merged
+    if isinstance(escalation, dict):
+        merged_rules = dict(prefs.escalation_rules or {})
+        merged_rules.update(escalation)
+        prefs.escalation_rules = merged_rules
+    db.commit()
+    db.refresh(prefs)
+    return {
+        "user_id": user_id,
+        "channels": prefs.channels or {},
+        "escalation_rules": prefs.escalation_rules or {},
+    }
+
+
 async def add_domain(user_id: str, domain: str, db: Session):
     """
     Add a domain to the user's organization.
@@ -870,14 +958,20 @@ async def add_domain(user_id: str, domain: str, db: Session):
     # Refresh org after revocation check
     db.refresh(org)
 
-    domain = domain.strip().lower()
+    # Normalize exactly like registration (lowercase, no scheme, no www., no
+    # trailing slash) so the stored value always matches what the scanner's
+    # ownership check compares against.
+    domain = _normalize_domain(domain)
     if not domain:
         raise HTTPException(status_code=400, detail="Domain is required")
 
     # 🔐 Validate domain resolves in DNS
     await _validate_domain_dns(domain)
 
-    org_domains = list(org.domain) if org.domain else []
+    raw_org_domains = org.domain or []
+    if not isinstance(raw_org_domains, list):
+        raw_org_domains = [raw_org_domains]
+    org_domains = [str(d).strip().lower() for d in raw_org_domains if str(d).strip()]
 
     if domain in org_domains:
         raise HTTPException(status_code=400, detail="Domain already added")

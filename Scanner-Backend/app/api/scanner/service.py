@@ -9,6 +9,25 @@ from app.db.models import Organization, ActiveScan
 redis_client = RedisClient()
 
 
+def _normalize_domain_for_match(domain: str) -> str:
+    """Normalize a domain for ownership comparison.
+
+    Mirrors how registration normalizes before storing (lowercase, no scheme,
+    no www., no trailing dot), so scanning "www.example.com" works when the
+    account holds "example.com" and vice versa.
+    """
+    return (
+        (domain or "")
+        .strip()
+        .lower()
+        .replace("https://", "")
+        .replace("http://", "")
+        .strip("/")
+        .rstrip(".")
+        .lstrip("www.")
+    )
+
+
 def _build_cancel_signal_keys(org_id: str, domain: str) -> list[str]:
     domain = (domain or "").strip().lower()
     org_id = (org_id or "").strip()
@@ -59,15 +78,25 @@ async def create_scan_task_to_queue(db: Session, domain: str, org_id: str, sched
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
 
-        # 🔐 Verify domain ownership: user can only scan domains they've registered
-        org_domains = list(org.domain) if org.domain else []
-        if domain not in org_domains:
+        # 🔐 Verify domain ownership: user can only scan domains they've registered.
+        # org.domain is a JSON array, but guard against a stray string value the
+        # same way the VAPT module does, and normalize both sides so case / www /
+        # scheme variants of the same registered domain never false-403.
+        raw_org_domains = org.domain or []
+        if not isinstance(raw_org_domains, list):
+            raw_org_domains = [raw_org_domains]
+        org_domains = {
+            _normalize_domain_for_match(str(d))
+            for d in raw_org_domains
+            if str(d).strip()
+        }
+        if _normalize_domain_for_match(domain) not in org_domains:
             import logging
             logger = logging.getLogger(__name__)
             logger.warning(f"🔴 SECURITY: Unauthorized scan attempt for domain '{domain}' by org '{org_id}'")
             raise HTTPException(
                 status_code=403,
-                detail="Domain not registered. Please add the domain to your account before scanning."
+                detail=f"Domain '{domain}' is not registered to this account. Please add the domain to your account before scanning."
             )
 
         db.commit()

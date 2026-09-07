@@ -3,15 +3,14 @@ import os
 import logging
 import hmac
 import hashlib
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, Header
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Header
 from app.api.webhooks.schemas import ScannerWebhookRequest, ScannerWebhookResultRequest
 from typing import Any
 from app.api.analyzer.controller import calculate_and_store_summary
 from app.core.redis_queue import RedisClient
 from sqlalchemy.orm import Session
 from app.db.base import get_db
-from app.db.models import ActiveScan, PortFixRequest, ScanSummary, User
-import logging
+from app.db.models import ActiveScan, PortFixRequest
 
 # ✅ Import ws_manager LAST to avoid circular imports
 from app.core.websocket_manager import ws_manager

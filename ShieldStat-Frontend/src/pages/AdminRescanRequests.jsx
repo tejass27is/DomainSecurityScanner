@@ -79,10 +79,11 @@ export default function AdminRescanRequests() {
     setActionLoading((p) => ({ ...p, [id]: true }));
     try {
       const token = localStorage.getItem("token");
-      const nextDueAt = outcome === "closed" ? window.prompt("Enter next VAPT due date/time (ISO 8601):") : null;
-      if (outcome === "closed" && !nextDueAt) return;
-      await postAdminVerificationDecision(id, outcome, "", token, nextDueAt);
-      setToast({ text: outcome === "closed" ? "VAPT cycle closed" : "VAPT reopened for remediation", type: "success" });
+      // The client chooses the next VAPT due date after SOC approves closure —
+      // the backend transitions to closure_pending_client_due_date and ignores
+      // any due date passed from the SOC side.
+      await postAdminVerificationDecision(id, outcome, "", token);
+      setToast({ text: outcome === "closed" ? "Closure approved — the client will choose the next VAPT due date" : "VAPT reopened for remediation", type: "success" });
       await load();
     } catch (err) {
       setToast({ text: err?.message || "Decision could not be saved", type: "error" });
@@ -171,11 +172,13 @@ export default function AdminRescanRequests() {
                           ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
                           : ["completed", "completed_with_errors", "failed"].includes(r.status)
                           ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400"
-                          : r.status === "scheduled"
+                          : r.status === "scheduled" || r.status === "approval_pending"
                           ? "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-400"
+                          : r.status === "rejected"
+                          ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
                           : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400"
                       }`}>
-                        {r.status === "failed" ? "Failed" : r.status === "completed_with_errors" ? "Completed with errors" : r.status === "completed" ? "Completed" : r.status === "scheduled" ? "Awaiting approval" : "Date proposed"}
+                        {r.status === "failed" ? "Failed" : r.status === "completed_with_errors" ? "Completed with errors" : r.status === "completed" ? "Completed" : r.status === "rejected" ? "Rejected by client" : r.status === "scheduled" || r.status === "approval_pending" ? "Awaiting approval" : "Awaiting client decision"}
                       </span>
                       {r.error_message && (
                         <span className="text-xs text-red-600 dark:text-red-400">{r.error_message}</span>
@@ -214,16 +217,21 @@ export default function AdminRescanRequests() {
                         >
                           <CheckCircle2 size={14} /> Upload manual verification
                         </a>
-                      ) : (r.status === "scheduled" || r.status === "requested") ? (
+                      ) : (r.status === "scheduled" || r.status === "requested" || r.status === "approval_pending" || r.status === "rejected") ? (
                         <>
-                          <button
-                            onClick={() => handleApprove(r.id)}
-                            disabled={actionLoading[r.id]}
-                            className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400 dark:hover:bg-emerald-950/60"
-                          >
-                            {actionLoading[r.id] ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                            Approve
-                          </button>
+                          {r.status !== "rejected" && r.status !== "requested" && (
+                            <button
+                              onClick={() => handleApprove(r.id)}
+                              disabled={actionLoading[r.id]}
+                              className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400 dark:hover:bg-emerald-950/60"
+                            >
+                              {actionLoading[r.id] ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                              Approve
+                            </button>
+                          )}
+                          {r.status === "rejected" && (
+                            <p className="text-xs font-semibold text-red-600 dark:text-red-400">Client rejected this date — propose a new date below.</p>
+                          )}
                           <button
                             type="button"
                             onClick={() => setDatePickerOpen((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}

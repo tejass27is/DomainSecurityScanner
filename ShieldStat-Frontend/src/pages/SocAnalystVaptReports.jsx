@@ -29,9 +29,11 @@ const FORMAT_ICON = {
 
 const LIFECYCLE_LABEL = {
   report_published: "Initial report published",
+  awaiting_soc_remediation_acceptance: "Remediation review in progress",
   revalidation_required: "Re-validation required",
   revalidation_scheduled: "Re-validation scheduled",
   revalidation_verification_pending: "SOC decision pending",
+  closure_pending_client_due_date: "SOC approved closure — due date required",
   closed: "Cycle closed",
   remediation_required: "Remediation required",
 };

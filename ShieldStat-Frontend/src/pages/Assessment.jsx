@@ -384,90 +384,109 @@ function OverviewPage({ checks }) {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 function ChecklistItem({ item, checked, ignored, onToggle, onIgnore, color }) {
+  const [expanded, setExpanded] = useState(false);
+
   return (
     <div
-      className={`border-b last:border-0 border-slate-200 dark:border-slate-800/60 transition-colors ${
-        ignored ? "bg-slate-50/50 dark:bg-slate-900/30" : "hover:bg-slate-50 dark:hover:bg-slate-800/30"
+      className={`group border border-slate-200/70 dark:border-slate-800/60 rounded-2xl transition-all duration-200 ${
+        ignored
+          ? "bg-slate-50/40 dark:bg-slate-900/20 opacity-60"
+          : checked
+          ? "bg-white/80 dark:bg-slate-900/60 border-l-2 shadow-[0_2px_12px_rgba(128,0,128,0.06)]"
+          : "bg-white/60 dark:bg-slate-900/40 hover:shadow-[0_4px_20px_rgba(15,23,42,0.06)] hover:border-slate-300/80 dark:hover:border-slate-700"
       }`}
+      style={checked && !ignored ? { borderLeftColor: color, borderLeftWidth: "3px" } : undefined}
     >
-      <div className="grid grid-cols-1 gap-4 px-4 py-5 md:grid-cols-[96px_180px_120px_1fr] md:items-start md:gap-6 md:py-6">
-        {/* Column 1: Done / Ignore */}
-        <div className="flex items-center justify-between gap-4 md:flex-col md:items-center md:justify-start">
+      <div className="px-4 py-3.5 sm:px-5 sm:py-4">
+        {/* Top Row: Checkbox + Title + Level + Ignore + Expand */}
+        <div className="flex items-center gap-3">
+          {/* Checkbox */}
           <button
             type="button"
             onClick={() => !ignored && onToggle(item.id)}
             disabled={ignored}
-            className={`w-6 h-6 rounded-lg border-2 transition-all flex items-center justify-center ${
+            className={`w-5 h-5 sm:w-6 sm:h-6 rounded-lg border-2 transition-all duration-200 flex items-center justify-center flex-shrink-0 ${
               checked
-                ? "border-transparent text-white"
-                : "border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                ? "border-transparent text-white shadow-sm"
+                : "border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 group-hover:border-slate-400 dark:group-hover:border-slate-600"
             }`}
             style={checked && !ignored ? { backgroundColor: color } : undefined}
           >
             {checked && (
-              <svg viewBox="0 0 12 10" className="w-3.5 h-3 fill-none stroke-current stroke-2">
+              <svg viewBox="0 0 12 10" className="w-3 h-2.5 fill-none stroke-current stroke-2.5">
                 <polyline points="1,5 4,9 11,1" />
               </svg>
             )}
           </button>
 
-          <div className="flex flex-col items-center gap-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-600">
-              Ignore
-            </span>
-            <button
-              onClick={() => onIgnore(item.id)}
-              className={`relative w-9 h-5 rounded-full transition-colors ${
-                ignored ? "bg-amber-500" : "bg-slate-200 dark:bg-slate-800"
-              }`}
-            >
-              <div
-                className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${
-                  ignored ? "translate-x-4" : ""
-                }`}
-              />
-            </button>
-          </div>
-        </div>
-
-        {/* Column 2: Advice (Title) */}
-        <div className="pt-0.5">
+          {/* Title */}
           <h3
-            className={`text-sm font-black leading-tight transition-colors ${
+            className={`text-[13px] sm:text-sm font-bold leading-snug transition-colors flex-1 min-w-0 ${
               ignored
                 ? "text-slate-400 dark:text-slate-600 line-through"
-                : "text-slate-900 dark:text-slate-100"
+                : "text-slate-800 dark:text-slate-100"
             }`}
             onClick={() => !ignored && onToggle(item.id)}
           >
             {item.title}
           </h3>
-        </div>
 
-        {/* Column 3: Level */}
-        <div className="pt-0.5">
+          {/* Level Badge */}
           <span
-            className={`text-[10px] px-3 py-1.5 rounded-full font-black uppercase tracking-widest inline-block ${
+            className={`text-[9px] sm:text-[10px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider flex-shrink-0 ${
               item.level === "Essential"
-                ? "bg-emerald-100/80 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400"
+                ? "bg-emerald-100/80 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400"
                 : item.level === "Optional"
-                ? "bg-blue-100/80 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400"
-                : "bg-purple-100/80 text-purple-700 dark:bg-purple-500/20 dark:text-purple-400"
+                ? "bg-blue-100/80 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400"
+                : "bg-purple-100/80 text-purple-700 dark:bg-purple-500/15 dark:text-purple-400"
             }`}
           >
             {item.level}
           </span>
-        </div>
 
-        {/* Column 4: Details (Description) */}
-        <div className="pt-0.5">
-          <p
-            className={`text-xs leading-relaxed transition-colors ${
-              ignored ? "text-slate-400 dark:text-slate-600" : "text-slate-500 dark:text-slate-400"
+          {/* Ignore Toggle */}
+          <button
+            onClick={() => onIgnore(item.id)}
+            className={`relative w-8 h-[18px] sm:w-9 sm:h-5 rounded-full transition-colors flex-shrink-0 ${
+              ignored ? "bg-amber-400 dark:bg-amber-500" : "bg-slate-200 dark:bg-slate-800 group-hover:bg-slate-300 dark:group-hover:bg-slate-700"
             }`}
           >
-            {item.description}
-          </p>
+            <div
+              className={`absolute top-[2px] left-[2px] w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full bg-white transition-transform duration-200 shadow-sm ${
+                ignored ? "translate-x-[14px] sm:translate-x-[16px]" : ""
+              }`}
+            />
+          </button>
+
+          {/* Expand/Collapse */}
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all flex-shrink-0"
+          >
+            <span
+              className="material-symbols-outlined text-[18px] transition-transform duration-200"
+              style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}
+            >
+              expand_more
+            </span>
+          </button>
+        </div>
+
+        {/* Expandable Description */}
+        <div
+          className={`overflow-hidden transition-all duration-300 ease-in-out ${
+            expanded ? "max-h-[600px] opacity-100 mt-3" : "max-h-0 opacity-0 mt-0"
+          }`}
+        >
+          <div className="pl-8 sm:pl-9 border-l-2 border-slate-200/60 dark:border-slate-800/60 ml-0">
+            <p
+              className={`text-xs sm:text-[13px] leading-relaxed ${
+                ignored ? "text-slate-400 dark:text-slate-600" : "text-slate-500 dark:text-slate-400"
+              }`}
+            >
+              {item.description}
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -495,6 +514,10 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
   const ignoredCount = section.items.filter((i) => checks[i.id] === false).length;
   const total = section.items.length;
 
+  const essentialItems = section.items.filter((i) => i.level === "Essential");
+  const optionalItems = section.items.filter((i) => i.level === "Optional");
+  const recommendedItems = section.items.filter((i) => i.level !== "Essential" && i.level !== "Optional");
+
   const currentIndex = CHECKLIST_SECTIONS.findIndex((s) => s.id === sectionId);
   const prevSection = currentIndex > 0 ? CHECKLIST_SECTIONS[currentIndex - 1] : null;
   const nextSection = currentIndex < CHECKLIST_SECTIONS.length - 1 ? CHECKLIST_SECTIONS[currentIndex + 1] : null;
@@ -504,7 +527,7 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
       <div className="mx-auto max-w-[1400px]">
 
         {/* Navigation Breadcrumb */}
-        <div className="flex items-center gap-2 mb-8">
+        <div className="flex items-center gap-2 mb-6">
           <Link to="/assessment" className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-slate-200 text-xs font-bold transition-all">
             <span className="material-symbols-outlined text-[18px]">arrow_back</span>
             CHECKLIST
@@ -513,55 +536,80 @@ function SectionDetailPage({ sectionId, checks, onToggle, onIgnore }) {
           <span className="text-xs font-black uppercase text-slate-600 dark:text-slate-300 tracking-widest">{section.label}</span>
         </div>
 
-        {/* Section Header */}
-        <div className="mb-8 grid grid-cols-1 gap-8 items-end lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_420px]">
-          <div>
-            <div className="flex items-center gap-4 mb-4">
-              <div className="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: section.color + "15", color: section.color }}>
-                <span className="material-symbols-outlined text-3xl" style={{ fontVariationSettings: '"FILL" 1' }}>{section.icon}</span>
+        {/* Sticky Progress Header */}
+        <div className="sticky top-0 z-30 -mx-4 sm:mx-0 px-4 sm:px-0 pb-4 pt-1">
+          <div className="rounded-2xl border border-slate-200/60 dark:border-slate-800/60 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl shadow-[0_4px_24px_rgba(15,23,42,0.06)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.3)] p-4 sm:p-5">
+            <div className="flex items-center gap-4 mb-3">
+              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: section.color + "18", color: section.color }}>
+                <span className="material-symbols-outlined text-xl sm:text-2xl" style={{ fontVariationSettings: '"FILL" 1' }}>{section.icon}</span>
               </div>
-              <h1 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">{section.label}</h1>
+              <div className="flex-1 min-w-0">
+                <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white tracking-tight truncate">{section.label}</h1>
+                <p className="text-slate-500 dark:text-slate-400 text-xs sm:text-sm leading-relaxed line-clamp-1 mt-0.5">{section.description}</p>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="text-2xl sm:text-3xl font-black" style={{ color: section.color }}>{progress}%</div>
+                <div className="text-[10px] font-bold text-slate-400 dark:text-slate-600">
+                  {doneCount}/{total} done
+                  {ignoredCount > 0 && <span className="text-slate-300 dark:text-slate-700"> · {ignoredCount} ign</span>}
+                </div>
+              </div>
             </div>
-            <p className="text-slate-500 dark:text-slate-400 text-sm max-w-2xl leading-relaxed">{section.description}</p>
-          </div>
-          <div className="app-card-surface p-5">
-            <div className="flex items-center justify-between mb-3 text-[11px] font-black uppercase tracking-widest">
-              <span className="text-slate-400 dark:text-slate-500">Section Progress</span>
-              <span style={{ color: section.color }}>{progress}%</span>
-            </div>
-            <div className="h-2.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden mb-3">
-              <div className="h-full transition-all duration-500" style={{ width: `${progress}%`, backgroundColor: section.color }} />
-            </div>
-            <div className="text-[10px] font-bold text-slate-400 dark:text-slate-600">
-              {doneCount} of {total} completed {ignoredCount > 0 && `· ${ignoredCount} ignored`}
+            <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+              <div className="h-full rounded-full transition-all duration-500" style={{ width: `${progress}%`, backgroundColor: section.color }} />
             </div>
           </div>
         </div>
 
-        {/* Checklist Table Wrapper */}
-        <div className="app-card-surface overflow-hidden">
-          {/* Table Header */}
-          <div className="hidden bg-slate-50/80 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800/60 py-4 px-4 gap-6 md:grid md:grid-cols-[96px_180px_120px_1fr]">
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 text-center flex items-center justify-center gap-1">
-              Done? <span className="material-symbols-outlined text-[14px]">unfold_more</span>
-            </span>
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1">
-              Advice <span className="material-symbols-outlined text-[14px]">unfold_more</span>
-            </span>
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1">
-              Level <span className="material-symbols-outlined text-[14px]">unfold_more</span>
-            </span>
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1">
-              Details
-            </span>
-          </div>
+        {/* Checklist Grid — 1-col on mobile, 2-col on laptop+ */}
+        <div className="mt-2">
+          {/* Essential Items */}
+          {essentialItems.length > 0 && (
+            <div className="mb-8">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                <h2 className="text-xs font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-widest">Essential</h2>
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-600">({essentialItems.length})</span>
+              </div>
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {essentialItems.map((item) => (
+                  <ChecklistItem key={item.id} item={item} checked={checks[item.id] === true} ignored={checks[item.id] === false} onToggle={onToggle} onIgnore={onIgnore} color={section.color} />
+                ))}
+              </div>
+            </div>
+          )}
 
-          {/* Checklist Items */}
-          <div className="flex flex-col">
-            {section.items.map((item) => (
-              <ChecklistItem key={item.id} item={item} checked={checks[item.id] === true} ignored={checks[item.id] === false} onToggle={onToggle} onIgnore={onIgnore} color={section.color} />
-            ))}
-          </div>
+          {/* Recommended Items */}
+          {recommendedItems.length > 0 && (
+            <div className="mb-8">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-2 h-2 rounded-full bg-purple-500" />
+                <h2 className="text-xs font-bold text-purple-700 dark:text-purple-400 uppercase tracking-widest">Recommended</h2>
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-600">({recommendedItems.length})</span>
+              </div>
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {recommendedItems.map((item) => (
+                  <ChecklistItem key={item.id} item={item} checked={checks[item.id] === true} ignored={checks[item.id] === false} onToggle={onToggle} onIgnore={onIgnore} color={section.color} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Optional Items */}
+          {optionalItems.length > 0 && (
+            <div className="mb-8">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-2 h-2 rounded-full bg-blue-500" />
+                <h2 className="text-xs font-bold text-blue-700 dark:text-blue-400 uppercase tracking-widest">Optional</h2>
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-600">({optionalItems.length})</span>
+              </div>
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {optionalItems.map((item) => (
+                  <ChecklistItem key={item.id} item={item} checked={checks[item.id] === true} ignored={checks[item.id] === false} onToggle={onToggle} onIgnore={onIgnore} color={section.color} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer Navigation */}

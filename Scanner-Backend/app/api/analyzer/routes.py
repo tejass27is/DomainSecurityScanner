@@ -1,5 +1,6 @@
 from datetime import timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.db.base import get_db
@@ -16,6 +17,29 @@ import os
 router = APIRouter(prefix="/score", tags=["Scoring"])
 
 ABUSEIPDB_URL = "https://api.abuseipdb.com/api/v2/check"
+
+
+@router.get("/report")
+def download_scan_report(
+    domain: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Download the branded PDF report for a scanned domain owned by this org."""
+    import urllib.parse
+    from app.api.admin.service import build_authenticated_scan_pdf
+    if not current_user.org_id:
+        raise HTTPException(status_code=403, detail="This account is not linked to an organization")
+    pdf_bytes = build_authenticated_scan_pdf(db, current_user.org_id, domain)
+    filename = f"{domain.strip().lower()}-scan-report.pdf"
+    quoted = urllib.parse.quote(filename)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"; filename*=UTF-8\'\'{quoted}'
+        },
+    )
 
 def build_categorized_vulnerabilities(scans: ScanSummary) -> dict:
     categorized = {}
@@ -130,13 +154,6 @@ def get_score(
         if score_data.get("weighted_score") is not None and score_data["domain_score"] is not None
         else breakdown.total_score
     )
-
-    # Extract IP reputation score if available
-    ip_reputation_score = None
-    if score_data["ips"] and isinstance(score_data["ips"], list) and len(score_data["ips"]) > 0:
-        first_ip = score_data["ips"][0]
-        if isinstance(first_ip, dict):
-            ip_reputation_score = first_ip.get("abuseConfidenceScore")
 
     response = {
         # New weighted scoring fields — total_score == stored domain_score (merged)

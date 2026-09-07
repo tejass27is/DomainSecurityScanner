@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { getAuditLogs, getSecurityAlerts } from "../services/api";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { getAuditLogs, getSecurityAlerts, updateSecurityAlertStatus } from "../services/api";
 
 function AdminAudit() {
   const [adminFilter, setAdminFilter] = useState("All admins");
@@ -8,12 +8,13 @@ function AdminAudit() {
   const [search, setSearch] = useState("");
   const [auditLogs, setAuditLogs] = useState([]);
   const [alerts, setAlerts] = useState([]);
+  const [alertStatusFilter, setAlertStatusFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
+  const load = useCallback(() => {
     const token = localStorage.getItem("token");
-    Promise.all([getAuditLogs(token), getSecurityAlerts(token)])
+    Promise.all([getAuditLogs(token), getSecurityAlerts(token, alertStatusFilter)])
       .then(([logsRes, alertsRes]) => {
         const logs = Array.isArray(logsRes?.logs) ? logsRes.logs : [];
         const alertList = Array.isArray(alertsRes?.alerts) ? alertsRes.alerts : [];
@@ -22,7 +23,21 @@ function AdminAudit() {
       })
       .catch((err) => setError(err.message || "Failed to fetch audit data"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [alertStatusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleAlertStatus = async (alertId, status) => {
+    const token = localStorage.getItem("token");
+    try {
+      await updateSecurityAlertStatus(alertId, status, token);
+      load();
+    } catch (err) {
+      setError(err.message || "Failed to update alert");
+    }
+  };
 
   const adminOptions = useMemo(() => ["All admins", ...Array.from(new Set(auditLogs.map((item) => item.admin_email || "System")))], [auditLogs]);
   const actionOptions = useMemo(() => ["All actions", ...Array.from(new Set(auditLogs.map((item) => item.action)))], [auditLogs]);
@@ -59,6 +74,7 @@ function AdminAudit() {
 
   const highAlerts = alerts.filter((item) => String(item.severity).toLowerCase() === "high").length;
   const mediumAlerts = alerts.filter((item) => String(item.severity).toLowerCase() === "medium").length;
+  const openAlerts = alerts.filter((item) => String(item.status || "open").toLowerCase() === "open").length;
 
   return (
     <div className="space-y-6">
@@ -85,10 +101,11 @@ function AdminAudit() {
         </div>
       )}
 
-      <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-5">
         <StatCard label="Total events" value={auditLogs.length} icon="receipt_long" tone="primary" />
         <StatCard label="High alerts" value={highAlerts} icon="error" tone="danger" />
         <StatCard label="Medium alerts" value={mediumAlerts} icon="warning" tone="amber" />
+        <StatCard label="Open alerts" value={openAlerts} icon="notifications_active" tone="amber" />
         <StatCard label="Visible logs" value={filteredLogs.length} icon="search" tone="tertiary" />
       </section>
 
@@ -97,26 +114,68 @@ function AdminAudit() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <h3 className="text-xl font-bold text-on-surface">Security alerts</h3>
-              <p className="text-sm text-on-surface-variant">Live rules for suspicious admin behavior.</p>
+              <p className="text-sm text-on-surface-variant">Auto-detected rules, now with triage — acknowledge or resolve.</p>
             </div>
-            <span className="rounded-full bg-red-100 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.35em] text-red-700">Auto-detected</span>
+            <select
+              value={alertStatusFilter}
+              onChange={(e) => setAlertStatusFilter(e.target.value)}
+              className="rounded-xl border border-surface-container bg-white px-3 py-2 text-sm text-on-surface shadow-sm"
+            >
+              <option value="all">All statuses</option>
+              <option value="open">Open</option>
+              <option value="acknowledged">Acknowledged</option>
+              <option value="resolved">Resolved</option>
+            </select>
           </div>
           <div className="mt-5 space-y-4">
-            {alerts.length === 0 && !loading && <p className="text-sm text-on-surface-variant">No security alerts have been generated yet.</p>}
-            {alerts.map((item) => (
-              <div key={item.id} className="rounded-2xl border border-surface-container bg-white p-4 shadow-sm">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-sm font-bold text-on-surface">{item.message}</p>
-                    <p className="mt-1 text-sm text-on-surface-variant">{item.details?.triggered_by || item.details?.email || "Automated security rule"}</p>
+            {alerts.length === 0 && !loading && <p className="text-sm text-on-surface-variant">No security alerts match the current filter.</p>}
+            {alerts.map((item) => {
+              const status = String(item.status || "open").toLowerCase();
+              return (
+                <div key={item.id} className={`rounded-2xl border bg-white p-4 shadow-sm ${status === "resolved" ? "border-emerald-200 opacity-70" : "border-surface-container"}`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-bold text-on-surface">{item.message}</p>
+                      <p className="mt-1 text-sm text-on-surface-variant">{item.details?.triggered_by || item.details?.email || item.details?.org_id || "Automated security rule"}</p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <span className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.35em] ${String(item.severity).toLowerCase() === "high" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                        {item.severity}
+                      </span>
+                      <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${status === "open" ? "bg-red-100 text-red-700" : status === "acknowledged" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+                        {status}
+                      </span>
+                    </div>
                   </div>
-                  <span className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.35em] ${String(item.severity).toLowerCase() === "high" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
-                    {item.severity}
-                  </span>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs text-on-surface-variant">
+                      {item.created_at ? new Date(item.created_at).toLocaleString() : "Recently"}
+                      {item.resolved_by ? ` · resolved by ${item.resolved_by}` : ""}
+                    </p>
+                    {status !== "resolved" && (
+                      <div className="flex gap-2">
+                        {status !== "acknowledged" && (
+                          <button
+                            type="button"
+                            onClick={() => handleAlertStatus(item.id, "acknowledged")}
+                            className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-700 hover:bg-amber-100"
+                          >
+                            Acknowledge
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleAlertStatus(item.id, "resolved")}
+                          className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 hover:bg-emerald-100"
+                        >
+                          Resolve
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <p className="mt-3 text-xs text-on-surface-variant">{item.created_at ? new Date(item.created_at).toLocaleString() : "Recently"}</p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </article>
 

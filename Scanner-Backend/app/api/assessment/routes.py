@@ -21,5 +21,5 @@ async def save_assessment(
     db: Session = Depends(get_db),
     current_user=Depends(protect),
 ):
-    row = save_assessment_data(body, current_user.user_id, db)
+    save_assessment_data(body, current_user.user_id, db)
     return {"success": True, "message": "Assessment saved successfully"}

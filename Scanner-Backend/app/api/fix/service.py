@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime, timezone 
 from sqlalchemy.orm import Session
-from app.core.websocket_manager import ws_manager
 from app.db.models import (
     ScanSummary,
     PortFixRequest,
@@ -9,7 +8,6 @@ from app.db.models import (
     TlsFixRequest,
 )
 from app.core.redis_queue import redis_client
-from collections import defaultdict
 from app.api.analyzer.controller import get_cvss_severity
 from app.api.analyzer.scoring_service import (
     calculate_weighted_score,
@@ -40,7 +38,7 @@ async def create_fix_request_in_db(
     if not scan_record:
         raise HTTPException(
             status_code=400,
-            detail=f"No scan found for this organization. Please run a scan first."
+            detail="No scan found for this organization. Please run a scan first."
         )
 
     root_domain = scan_record.domain  # ✅ exact value stored in scan_summary

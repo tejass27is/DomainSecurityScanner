@@ -28,7 +28,8 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
 
 
   // SOC analysts only have read-only access to the platform VAPT report library.
-  // Guard every admin path except the VAPT library, rescan requests page, and profile.
+  // Guard every admin path except the VAPT library, rescan requests page, profile,
+  // and SOC console.
   if (
     isSocAnalyst &&
     location.pathname !== "/admin/vapt-reports" &&
@@ -36,6 +37,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
     location.pathname !== "/admin/vapt-upload" &&
     location.pathname !== "/admin/vapt-access-requests" &&
     location.pathname !== "/admin/rescan-requests" &&
+    location.pathname !== "/admin/soc-dashboard" &&
     location.pathname !== "/admin/profile"
   ) {
     return <Navigate to="/admin/vapt-reports" replace />;
@@ -68,12 +70,14 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
                 { to: "/admin/vapt-upload", label: "Upload Report", icon: "upload_file" },
                 { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
                 { to: "/admin/vapt-access-requests", label: "VAPT Access Requests", icon: "verified_user" },
+                { to: "/admin/soc-dashboard", label: "SOC Console", icon: "monitoring" },
               ]
             : [
                 { to: "/admin", label: "User Management", icon: "group" },
                 { to: "/admin/subscription", label: "Subscription Management", icon: "payments" },
                 { to: "/admin/audit", label: "Audit & Security", icon: "shield" },
                 { to: "/admin/reports", label: "Reported Issues", icon: "flag" },
+                { to: "/admin/soc-dashboard", label: "SOC Console", icon: "monitoring" },
                 { to: "/admin/vapt-access-requests", label: "VAPT Access Requests", icon: "verified_user" },
                 { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
               ]

@@ -2,7 +2,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from sqlalchemy import desc, text
+from sqlalchemy import text
 import json
 import uuid
 from app.api.analyzer.scoring_service import (

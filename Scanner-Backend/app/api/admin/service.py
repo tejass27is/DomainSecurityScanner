@@ -2,6 +2,7 @@ import os
 import random
 import secrets
 import string
+import time
 import uuid
 
 from datetime import datetime, timedelta, timezone
@@ -10,13 +11,14 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.api.auth.service import hashPassword, verifyPassword
+from app.api.auth.service import hashPassword
 from app.db.models import (
     AuditLog,
     Blacklist,
     Organization,
     PersonalEmailInvitation,
     PromoCode,
+    PublicReportRequest,
     ScanScoreHistory,
     ScanSummary,
     SecurityAlert,
@@ -32,6 +34,7 @@ from app.db.models import (
     OrganizationRegion,
     VaptOnboardingChecklist,
     VaptImport,
+    NotificationPreference,
 )
 from app.utils.email import send_new_admin_credentials_email, send_personal_email_invitation_email
 
@@ -830,20 +833,6 @@ def get_audit_logs(db: Session) -> list[dict]:
     ]
 
 
-def get_security_alerts(db: Session) -> list[dict]:
-    alerts = db.query(SecurityAlert).order_by(SecurityAlert.created_at.desc()).all()
-    return [
-        {
-            "id": alert.id,
-            "severity": alert.severity,
-            "message": alert.message,
-            "details": alert.details or {},
-            "created_at": alert.created_at.isoformat() if alert.created_at else None,
-        }
-        for alert in alerts
-    ]
-
-
 def provision_admin_account(email: str, current_admin: User, db: Session, ip_address: str | None = None, public_ip: str | None = None) -> dict:
     normalized = _normalize_email(email)
 
@@ -1183,3 +1172,510 @@ def delete_subscription_plan(plan_id: str, db: Session) -> dict:
     db.commit()
 
     return {"message": "Subscription plan deleted successfully", "plan_id": plan_id}
+
+
+# ─── Security alert triage ──────────────────────────────────────────────────
+
+def get_security_alerts(
+    db: Session,
+    status: str | None = None,
+    severity: str | None = None,
+) -> list[dict]:
+    query = db.query(SecurityAlert)
+    if status and status != "all":
+        query = query.filter(SecurityAlert.status == status)
+    if severity and severity != "all":
+        query = query.filter(SecurityAlert.severity == severity)
+    alerts = query.order_by(SecurityAlert.created_at.desc()).all()
+
+    resolved_by_ids = {a.resolved_by for a in alerts if a.resolved_by}
+    resolvers = {}
+    if resolved_by_ids:
+        resolvers = {
+            u.user_id: u.email
+            for u in db.query(User).filter(User.user_id.in_(resolved_by_ids)).all()
+        }
+
+    return [
+        {
+            "id": alert.id,
+            "severity": alert.severity,
+            "status": alert.status or "open",
+            "message": alert.message,
+            "details": alert.details or {},
+            "resolved_by": resolvers.get(alert.resolved_by) if alert.resolved_by else None,
+            "resolved_at": alert.resolved_at.isoformat() if alert.resolved_at else None,
+            "created_at": alert.created_at.isoformat() if alert.created_at else None,
+        }
+        for alert in alerts
+    ]
+
+
+def update_security_alert_status(
+    alert_id: int,
+    status: str,
+    current_admin: User,
+    db: Session,
+) -> dict:
+    """Acknowledge or resolve a security alert (triage console)."""
+    status = (status or "").strip().lower()
+    if status not in ("open", "acknowledged", "resolved"):
+        raise HTTPException(status_code=400, detail="status must be open, acknowledged, or resolved")
+
+    alert = db.query(SecurityAlert).filter(SecurityAlert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Security alert not found")
+
+    alert.status = status
+    if status == "resolved":
+        alert.resolved_by = current_admin.user_id
+        alert.resolved_at = datetime.now(timezone.utc)
+    else:
+        alert.resolved_by = None
+        alert.resolved_at = None
+    db.add(alert)
+    db.commit()
+    db.refresh(alert)
+
+    _record_audit_log(
+        db,
+        current_admin,
+        "SECURITY_ALERT_UPDATED",
+        "security_alert",
+        str(alert.id),
+        {"status": status, "message": alert.message},
+    )
+
+    resolver = None
+    if alert.resolved_by:
+        resolver_user = db.query(User).filter(User.user_id == alert.resolved_by).first()
+        resolver = resolver_user.email if resolver_user else None
+
+    return {
+        "id": alert.id,
+        "status": alert.status,
+        "resolved_by": resolver,
+        "resolved_at": alert.resolved_at.isoformat() if alert.resolved_at else None,
+    }
+
+
+# ─── SOC dashboard KPIs ───────────────────────────────────────────────────────
+
+_OPEN_FINDING_STATUSES = {"pending", "open", "not_solved", "in_progress", ""}
+
+
+def _finding_is_open(finding: dict) -> bool:
+    return (finding.get("status") or "pending").strip().lower() in _OPEN_FINDING_STATUSES
+
+
+def _org_domain_label(org) -> str:
+    if org is None or not org.domain:
+        return ""
+    value = org.domain if isinstance(org.domain, list) else [org.domain]
+    return ", ".join(str(d) for d in value if d)
+
+
+def get_soc_dashboard(db: Session) -> dict:
+    """Platform-wide SOC KPIs: severity distribution, aging, leaderboard, alerts."""
+    imports = db.query(VaptImport).order_by(VaptImport.created_at.desc()).all()
+    org_ids = {imp.org_id for imp in imports}
+    orgs = {
+        org.org_id: org
+        for org in db.query(Organization).filter(Organization.org_id.in_(org_ids)).all()
+    } if org_ids else {}
+
+    severity_order = ["critical", "high", "medium", "low", "info"]
+    severity_counts = {label: 0 for label in severity_order}
+    total_findings = 0
+    open_findings = 0
+    open_critical = 0
+    open_high = 0
+    latest_by_org: dict[str, VaptImport] = {}
+
+    for imp in imports:
+        latest_by_org.setdefault(imp.org_id, imp)
+        findings = imp.findings or []
+        for f in findings:
+            sev = (f.get("severity_label") or "info").lower()
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+            total_findings += 1
+            if _finding_is_open(f):
+                open_findings += 1
+                if sev == "critical":
+                    open_critical += 1
+                elif sev == "high":
+                    open_high += 1
+
+    now = datetime.now(timezone.utc)
+
+    # Remediation aging: latest import per org that still has open findings.
+    aging = []
+    for org_id, imp in latest_by_org.items():
+        findings = imp.findings or []
+        open_count = sum(1 for f in findings if _finding_is_open(f))
+        if open_count == 0:
+            continue
+        created = imp.created_at
+        if created and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        days_open = (now - created).days if created else 0
+        due = imp.next_vapt_due_at
+        if due and due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        aging.append({
+            "org_id": org_id,
+            "org_domain": _org_domain_label(orgs.get(org_id)),
+            "import_id": str(imp.import_id),
+            "file_name": imp.file_name,
+            "cycle_number": imp.cycle_number,
+            "open_findings": open_count,
+            "days_open": max(0, days_open),
+            "next_vapt_due_at": due.isoformat() if due else None,
+            "overdue": bool(due and now > due),
+            "lifecycle_status": imp.lifecycle_status,
+        })
+    aging.sort(key=lambda a: a["days_open"], reverse=True)
+
+    # Org risk leaderboard by latest report risk_score.
+    leaderboard = []
+    for org_id, imp in latest_by_org.items():
+        findings = imp.findings or []
+        leaderboard.append({
+            "org_id": org_id,
+            "org_domain": _org_domain_label(orgs.get(org_id)),
+            "cycle_number": imp.cycle_number,
+            "risk_score": imp.risk_score,
+            "severity": imp.severity,
+            "total_findings": imp.total_findings,
+            "open_findings": sum(1 for f in findings if _finding_is_open(f)),
+            "last_scan_at": imp.created_at.isoformat() if imp.created_at else None,
+            "lifecycle_status": imp.lifecycle_status,
+            "next_vapt_due_at": imp.next_vapt_due_at.isoformat() if imp.next_vapt_due_at else None,
+        })
+    leaderboard.sort(key=lambda r: (r["risk_score"] or 0), reverse=True)
+
+    open_alerts = db.query(SecurityAlert).filter(SecurityAlert.status == "open").count()
+    total_alerts = db.query(SecurityAlert).count()
+
+    # Average remediation days across closed cycles.
+    closed = [imp for imp in imports if imp.lifecycle_status == "closed" and imp.created_at]
+    avg_remediation_days = None
+    if closed:
+        total_days = 0
+        for imp in closed:
+            created = imp.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            total_days += max(0, (now - created).days)
+        avg_remediation_days = round(total_days / len(closed), 1)
+
+    return {
+        "totals": {
+            "organizations": len(latest_by_org),
+            "reports": len(imports),
+            "total_findings": total_findings,
+            "open_findings": open_findings,
+            "open_critical": open_critical,
+            "open_high": open_high,
+            "open_alerts": open_alerts,
+            "total_alerts": total_alerts,
+            "avg_remediation_days": avg_remediation_days,
+        },
+        "severity_distribution": severity_counts,
+        "remediation_aging": aging,
+        "org_leaderboard": leaderboard,
+    }
+
+
+# ─── Cross-cycle vulnerability aging ──────────────────────────────────────────
+
+def get_vulnerability_aging(db: Session) -> dict:
+    """Track the same vulnerability (plugin + host) across VAPT cycles."""
+    imports = db.query(VaptImport).order_by(VaptImport.cycle_number.asc()).all()
+    orgs = {
+        org.org_id: org
+        for org in db.query(Organization).all()
+    }
+
+    by_org: dict[str, dict[tuple, dict]] = {}
+    for imp in imports:
+        org_key = by_org.setdefault(imp.org_id, {})
+        for f in imp.findings or []:
+            title = (f.get("title") or "Untitled finding").strip()
+            plugin_id = str(f.get("plugin_id") or "").strip()
+            hosts = f.get("affected_hosts") or []
+            key_base = (plugin_id or title.lower(),)
+            for host in hosts:
+                key = key_base + (host,)
+                entry = org_key.setdefault(key, {
+                    "title": title,
+                    "plugin_id": plugin_id,
+                    "host": host,
+                    "first_seen_cycle": imp.cycle_number,
+                    "first_seen_at": imp.created_at,
+                    "last_seen_cycle": imp.cycle_number,
+                    "last_seen_at": imp.created_at,
+                    "latest_severity": (f.get("severity_label") or "info").lower(),
+                    "latest_status": (f.get("status") or "pending").strip() or "pending",
+                    "still_open": _finding_is_open(f),
+                })
+                if imp.cycle_number < entry["first_seen_cycle"]:
+                    entry["first_seen_cycle"] = imp.cycle_number
+                    entry["first_seen_at"] = imp.created_at
+                if imp.cycle_number > entry["last_seen_cycle"]:
+                    entry["last_seen_cycle"] = imp.cycle_number
+                    entry["last_seen_at"] = imp.created_at
+                entry["latest_severity"] = (f.get("severity_label") or entry["latest_severity"] or "info").lower()
+                entry["latest_status"] = (f.get("status") or entry["latest_status"] or "pending").strip() or "pending"
+                entry["still_open"] = _finding_is_open(f) or entry["still_open"]
+
+    items = []
+    for org_id, entries in by_org.items():
+        for entry in entries.values():
+            items.append({
+                "org_id": org_id,
+                "org_domain": _org_domain_label(orgs.get(org_id)),
+                **entry,
+                "first_seen_at": entry["first_seen_at"].isoformat() if entry["first_seen_at"] else None,
+                "last_seen_at": entry["last_seen_at"].isoformat() if entry["last_seen_at"] else None,
+            })
+
+    items.sort(key=lambda i: (i["still_open"], i["latest_severity"]), reverse=True)
+    severity_order = ["critical", "high", "medium", "low", "info"]
+    items.sort(key=lambda i: severity_order.index(i["latest_severity"]) if i["latest_severity"] in severity_order else 99)
+    still_open = sum(1 for i in items if i["still_open"])
+    return {
+        "total_distinct": len(items),
+        "still_open": still_open,
+        "items": items,
+    }
+
+
+# ─── CVE / threat-intel enrichment ───────────────────────────────────────────
+
+_CVE_CACHE: dict = {}
+_CVE_CACHE_TTL = 24 * 3600
+
+
+def _lookup_cve(cve_id: str) -> dict | None:
+    import httpx
+    now = time.time()
+    cached = _CVE_CACHE.get(cve_id)
+    if cached and (now - cached[0]) < _CVE_CACHE_TTL:
+        return cached[1]
+    try:
+        response = httpx.get(
+            f"https://cve.circl.lu/api/cve/{cve_id}",
+            timeout=6,
+        )
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or not data.get("id"):
+            return None
+        summary = {
+            "cve": cve_id,
+            "cvss": data.get("cvss"),
+            "cvss_vector": data.get("cvss_vector") or "",
+            "summary": (data.get("summary") or "")[:500],
+            "published": data.get("Published") or data.get("published"),
+            "references": (data.get("references") or [])[:5],
+        }
+        _CVE_CACHE[cve_id] = (now, summary)
+        return summary
+    except Exception:
+        return None
+
+
+def get_cve_enrichment(db: Session, import_id: str) -> dict:
+    """Unique CVEs found in a VAPT import, enriched from the public CIRCL CVE API.
+
+    Falls back gracefully to the raw CVEs (with finding severity context) when
+    the enrichment API is unreachable.
+    """
+    from app.api.admin.routes import _platform_import_or_404
+    record = _platform_import_or_404(db, import_id)
+
+    cve_map: dict[str, dict] = {}
+    for f in record.findings or []:
+        sev = (f.get("severity_label") or "info").lower()
+        for cve in f.get("cves") or []:
+            cve_id = str(cve).strip().upper()
+            if not cve_id:
+                continue
+            entry = cve_map.setdefault(cve_id, {
+                "cve": cve_id,
+                "finding_count": 0,
+                "worst_severity": sev,
+                "titles": [],
+            })
+            entry["finding_count"] += 1
+            if sev:
+                rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+                if rank.get(sev, 9) < rank.get(entry["worst_severity"], 9):
+                    entry["worst_severity"] = sev
+            title = (f.get("title") or "").strip()
+            if title and title not in entry["titles"]:
+                entry["titles"].append(title)
+
+    enriched = []
+    for cve_id, entry in cve_map.items():
+        info = _lookup_cve(cve_id)
+        if info:
+            entry = {**entry, **info}
+        entry["enriched"] = bool(info)
+        enriched.append(entry)
+
+    enriched.sort(key=lambda e: {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}.get(e["worst_severity"], 9))
+    return {
+        "import_id": str(record.import_id),
+        "file_name": record.file_name,
+        "org_id": record.org_id,
+        "total_unique_cves": len(enriched),
+        "cves": enriched,
+    }
+
+
+# ─── Escalation rules ─────────────────────────────────────────────────────────
+
+def check_escalation_rules(db: Session, current_user: User | None = None) -> list[dict]:
+    """Raise security alerts when open critical/high findings age past thresholds.
+
+    Default thresholds: critical findings untouched for 7 days, high for 14.
+    Duplicate alerts are suppressed by checking for a recent alert on the same
+    import + rule combo.
+    """
+    now = datetime.now(timezone.utc)
+    imports = db.query(VaptImport).all()
+    latest_by_org: dict[str, VaptImport] = {}
+    for imp in imports:
+        latest_by_org.setdefault(imp.org_id, imp)
+
+    # Per-org escalation thresholds from the org owner's notification
+    # preferences (fall back to 7 days critical / 14 days high defaults).
+    org_owner_ids = {
+        o.org_id: o.user_id
+        for o in db.query(Organization).filter(Organization.org_id.in_(list(latest_by_org.keys()))).all()
+    }
+    pref_rows = (
+        db.query(NotificationPreference)
+        .filter(NotificationPreference.user_id.in_(list(org_owner_ids.values())))
+        .all()
+        if org_owner_ids else []
+    )
+    org_rules: dict[str, dict] = {}
+    user_to_org = {uid: oid for oid, uid in org_owner_ids.items()}
+    for pref in pref_rows:
+        org_rules[user_to_org.get(pref.user_id, "")] = pref.escalation_rules or {}
+
+    escalated = []
+    for org_id, imp in latest_by_org.items():
+        created = imp.created_at
+        if created is None:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        days_open = (now - created).days
+        rules = org_rules.get(org_id, {})
+        critical_days = int(rules.get("critical_finding_open_days") or 7)
+        high_days = int(rules.get("high_finding_open_days") or 14)
+        for f in imp.findings or []:
+            if not _finding_is_open(f):
+                continue
+            sev = (f.get("severity_label") or "info").lower()
+            threshold = critical_days if sev == "critical" else high_days if sev == "high" else None
+            if threshold is None or days_open < threshold:
+                continue
+            title = (f.get("title") or "Untitled finding").strip()
+            dup = db.query(SecurityAlert).filter(
+                SecurityAlert.message.like(f"{title[:60]}%"),
+                SecurityAlert.created_at >= (now - timedelta(days=1)),
+            ).first()
+            if dup:
+                continue
+            _maybe_create_alert(
+                db,
+                severity=sev,
+                message=f"Escalation: {title[:120]} open for {days_open} days",
+                details={
+                    "org_id": org_id,
+                    "import_id": str(imp.import_id),
+                    "severity": sev,
+                    "days_open": days_open,
+                    "rule": f"{sev}_finding_open_days",
+                    "threshold_days": threshold,
+                },
+            )
+            escalated.append({
+                "org_id": org_id,
+                "import_id": str(imp.import_id),
+                "title": title,
+                "severity": sev,
+                "days_open": days_open,
+            })
+
+    if current_user and escalated:
+        _record_audit_log(
+            db,
+            current_user,
+            "ESCALATION_RULES_RAN",
+            "vapt_import",
+            "",
+            {"escalated": len(escalated)},
+        )
+    return escalated
+
+
+# ─── Authenticated domain scan PDF report ────────────────────────────────────
+
+def build_authenticated_scan_pdf(db: Session, org_id: str, domain: str) -> bytes:
+    """Generate the branded scan PDF for an org-owned, already-scanned domain."""
+    from app.api.public.routes import _build_report_data
+    from app.utils.generate_scan_report_pdf import generate_domain_scan_report_pdf_bytes
+    normalized = domain.strip().lower()
+    row = db.query(ScanSummary).filter(
+        ScanSummary.domain == normalized,
+        ScanSummary.org_id == org_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="No scan report available for this domain")
+    categories, ip_reps, score, grade_label = _build_report_data(row)
+    return generate_domain_scan_report_pdf_bytes(
+        domain=normalized,
+        score=score,
+        grade_label=grade_label,
+        categories=categories,
+        ip_reps=ip_reps,
+    )
+
+
+
+def create_public_report_request(
+    db: Session,
+    email: str,
+    domain: str,
+    first_name: str,
+    last_name: str,
+    report_payload: dict | None = None,
+) -> PublicReportRequest:
+    """Persist a request for a report copy from the public (no-login) scan flow."""
+    normalized_email = _normalize_email(email)
+    normalized_domain = domain.strip().lower() if domain else ""
+    normalized_first_name = first_name.strip() if first_name else ""
+    normalized_last_name = last_name.strip() if last_name else ""
+
+    if not normalized_email or not normalized_domain or not normalized_first_name or not normalized_last_name:
+        raise HTTPException(status_code=400, detail="Email, first name, last name, and domain are required")
+
+    record = PublicReportRequest(
+        first_name=normalized_first_name,
+        last_name=normalized_last_name,
+        email=normalized_email,
+        domain=normalized_domain,
+        report_payload=report_payload or {},
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record

@@ -12,10 +12,10 @@ import {
   computeSectionProgress,
 } from "../data/checklistData";
 // ScoringBreakdown removed — no criticality selector import
-import { getScore, getMalwareLatestReport, getProfile, getAssessment, getIpReputation } from "../services/api";
+import { getScore, getMalwareLatestReport, getProfile, getAssessment, getIpReputation, downloadScanReport } from "../services/api";
 
 import {
-  FileText, Link2, Globe, Zap, ShieldAlert, CheckCircle2, Bug,
+  FileText, Link2, Globe, Zap, ShieldAlert, CheckCircle2, Bug, Download,
 } from "lucide-react";
 
 // ─── Domain helpers ───────────────────────────────────────────────────────────
@@ -495,6 +495,7 @@ function ScanDashboard() {
   const [ipRepsLoading, setIpRepsLoading] = useState(false);
   const [selections, setSelections] = useState({});
   const [loading, setLoading] = useState(true);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   // Load profile and default domain
   useEffect(() => {
@@ -662,6 +663,19 @@ function ScanDashboard() {
   }
   const primaryIp = rootIp || data?.ips?.[0] || "Unknown";
   const domainName = data?.host?.domain || domain || "No Domain Selected";
+
+  const handleDownloadPdf = async () => {
+    if (!domain) return;
+    setDownloadingPdf(true);
+    try {
+      await downloadScanReport(domain, localStorage.getItem("token"));
+    } catch (err) {
+      console.error("PDF download failed", err);
+      alert(err?.message || "Failed to download the PDF report.");
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
 
   // Malware summary
   const mw = extractMalwareSummary(malware?.result?.report);
@@ -836,10 +850,18 @@ function ScanDashboard() {
                 </div>
               </div>
 
-              <div className="shrink-0 flex items-center mt-6 md:mt-0 justify-center">
+              <div className="shrink-0 flex flex-col items-stretch mt-6 md:mt-0 justify-center gap-3">
                 <Link to={`/scan-details?domain=${encodeURIComponent(domain)}`} className="px-8 py-3 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-purple-700 dark:text-purple-400 text-sm font-bold rounded-xl border border-slate-200 dark:border-slate-700 transition-colors flex items-center justify-center gap-2 w-full md:w-auto">
                   Detailed Report <span className="material-symbols-outlined text-sm">arrow_forward</span>
                 </Link>
+                <button
+                  type="button"
+                  onClick={handleDownloadPdf}
+                  disabled={!domain || downloadingPdf}
+                  className="px-8 py-3 bg-gradient-to-r from-purple-600 to-purple-700 text-white text-sm font-bold rounded-xl transition-all duration-300 flex items-center justify-center gap-2 w-full md:w-auto disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg"
+                >
+                  <Download size={15} /> {downloadingPdf ? "Preparing…" : "Download PDF Report"}
+                </button>
               </div>
             </div>
           )}
