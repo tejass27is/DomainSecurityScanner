@@ -412,6 +412,13 @@ class VaptImport(Base):
     remediation_reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     remediation_reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
     next_vapt_due_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Due-date reminder tracking (hourly background job):
+    # due_soon_reminder_sent_at — set once when the 7-days-before reminder fires.
+    # overdue_notice_sent_at   — set once when the overdue notice fires.
+    # Both reset to NULL when the client picks a new due date, so the next
+    # cycle's reminders fire fresh.
+    due_soon_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    overdue_notice_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     # Timestamp when SOC last logged a support-offered action while in
     # remediation_required.  Reset on each call so the 7-day follow-up
     # reminder timer always counts from the most recent outreach.

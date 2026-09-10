@@ -235,7 +235,7 @@ export default function SocAnalystVaptReports() {
     <div className="min-h-screen text-slate-900 dark:text-slate-100">
       <div className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6 lg:px-10">
         {/* ── Page header ── */}
-        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <div className="mb-2 flex items-center gap-2">
               <span className="material-symbols-outlined text-purple-600 dark:text-purple-400">fact_check</span>
@@ -261,76 +261,58 @@ export default function SocAnalystVaptReports() {
             )}
             <span className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400">
               <ShieldCheck size={15} />
-              Library view is read-only
+              Read-only
             </span>
           </div>
         </div>
 
-        {/* ── Summary strip ── */}
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400">
-              <Database size={20} />
-            </div>
-            <div>
-              <p className="text-2xl font-extrabold leading-none">{filteredImports.length}</p>
-              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Reports</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-400">
-              <Layers size={20} />
-            </div>
-            <div>
-              <p className="text-2xl font-extrabold leading-none">{totalFindings}</p>
-              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Normalized findings</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
-              <Activity size={20} />
-            </div>
-            <div>
-              <p className="text-2xl font-extrabold leading-none">{worstScore}</p>
-              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Highest risk score</p>
-            </div>
-          </div>
+        {/* ── Compact stats + pending rescan banner ── */}
+        <div className="mb-6 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-2 rounded-xl border border-purple-200 bg-purple-50 px-3.5 py-2 text-xs font-bold text-purple-700 dark:border-purple-900 dark:bg-purple-950/30 dark:text-purple-300">
+            <Database size={14} />
+            {filteredImports.length} report{filteredImports.length === 1 ? "" : "s"}
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs font-bold text-sky-700 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300">
+            <Layers size={14} />
+            {totalFindings} findings
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+            <Activity size={14} />
+            highest risk {worstScore}/100
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+            <FileText size={14} />
+            {rescanRequests.length} pending rescan{rescanRequests.length === 1 ? "" : "s"}
+            {rescanRequests.length > 0 && (
+              <button
+                type="button"
+                onClick={() => navigate('/admin/rescan-requests')}
+                className="ml-1 font-extrabold text-purple-600 hover:underline dark:text-purple-400"
+              >
+                Open →
+              </button>
+            )}
+          </span>
         </div>
         {nextRescan && (
-          <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Next rescan</p>
-                <p className="mt-3 text-xl font-extrabold text-slate-900 dark:text-slate-100">{nextRescan.file_name || nextRescan.import_id}</p>
-                <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">Scheduled for <span className="font-semibold text-slate-900 dark:text-slate-100">{new Date(nextRescan.scheduled_at).toLocaleString()}</span></p>
-                {nextRescan.note && <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Note: {nextRescan.note}</p>}
-              </div>
-              <button onClick={() => navigate('/admin/rescan-requests')} className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-300 dark:hover:bg-slate-900">
-                View rescan requests
-              </button>
+          <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-sky-200 bg-sky-50 px-5 py-4 dark:border-sky-900 dark:bg-sky-950/30 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-[10px] font-black uppercase tracking-[0.22em] text-sky-700 dark:text-sky-300">Next rescan</p>
+              <p className="mt-1 truncate text-sm font-bold text-slate-900 dark:text-slate-100">{nextRescan.file_name || nextRescan.import_id}</p>
+              <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">
+                Scheduled for <span className="font-semibold">{new Date(nextRescan.scheduled_at).toLocaleString()}</span>
+                {nextRescan.note ? <span className="text-slate-500 dark:text-slate-400"> · {nextRescan.note}</span> : null}
+              </p>
             </div>
+            <button onClick={() => navigate('/admin/rescan-requests')} className="inline-flex shrink-0 items-center rounded-xl border border-sky-300 bg-white px-4 py-2 text-xs font-semibold text-sky-700 transition hover:bg-sky-50 dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-slate-800">
+              View requests
+            </button>
           </div>
         )}
 
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-400">
-              <FileText size={20} />
-            </div>
-            <div className="flex-1">
-              <p className="text-2xl font-extrabold leading-none">{rescanRequests.length}</p>
-              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Pending rescan requests</p>
-              {rescanRequests.length > 0 && (
-                <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">Latest: {rescanRequests[0].file_name || rescanRequests[0].import_id}</p>
-              )}
-              <button onClick={() => navigate('/admin/rescan-requests')} className="mt-2 rounded-full border px-3 py-1 text-xs font-semibold">Open requests</button>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Client → year → month filter ── */}
+        {/* ── Filter + search toolbar ── */}
         {imports.length > 0 && (
-          <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
                 <Building2 size={15} className="shrink-0 text-purple-600 dark:text-purple-400" />
@@ -350,13 +332,11 @@ export default function SocAnalystVaptReports() {
                   </option>
                 ))}
               </select>
-            </div>
 
-            {clientImports.length > 0 && availableYears.length > 0 && (
-              <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                <div className="rounded-2xl bg-slate-50 p-4 shadow-sm dark:bg-slate-950/60">
-                  <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Year</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
+              {clientImports.length > 0 && availableYears.length > 0 && (
+                <>
+                  <span className="hidden h-5 w-px bg-slate-200 dark:bg-slate-700 sm:block" />
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {availableYears.map((year) => (
                       <PeriodChip
                         key={year}
@@ -367,10 +347,8 @@ export default function SocAnalystVaptReports() {
                       </PeriodChip>
                     ))}
                   </div>
-                </div>
-                <div className="rounded-2xl bg-slate-50 p-4 shadow-sm dark:bg-slate-950/60">
-                  <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Month</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
+                  <span className="hidden h-5 w-px bg-slate-200 dark:bg-slate-700 sm:block" />
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <PeriodChip active={monthFilter == null} onClick={() => setMonthFilter(null)}>All</PeriodChip>
                     {availableMonths.map((month) => (
                       <PeriodChip
@@ -382,25 +360,22 @@ export default function SocAnalystVaptReports() {
                       </PeriodChip>
                     ))}
                   </div>
-                </div>
+                </>
+              )}
+
+              <div className="relative ml-auto w-full sm:w-72">
+                <SearchIcon />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search file, user…"
+                  className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-800 shadow-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                />
               </div>
-            )}
+            </div>
           </div>
         )}
-
-        {/* ── Search ── */}
-        <div className="mb-6">
-          <div className="relative max-w-md">
-            <SearchIcon />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search file, user…"
-              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-800 shadow-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-            />
-          </div>
-        </div>
 
         {error && (
           <div className="mb-6 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">

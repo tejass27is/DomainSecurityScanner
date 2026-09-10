@@ -1661,11 +1661,12 @@ def create_public_report_request(
     """Persist a request for a report copy from the public (no-login) scan flow."""
     normalized_email = _normalize_email(email)
     normalized_domain = domain.strip().lower() if domain else ""
+    # Name is optional — the public flow only collects an email address.
     normalized_first_name = first_name.strip() if first_name else ""
     normalized_last_name = last_name.strip() if last_name else ""
 
-    if not normalized_email or not normalized_domain or not normalized_first_name or not normalized_last_name:
-        raise HTTPException(status_code=400, detail="Email, first name, last name, and domain are required")
+    if not normalized_email or not normalized_domain:
+        raise HTTPException(status_code=400, detail="Email and domain are required")
 
     record = PublicReportRequest(
         first_name=normalized_first_name,

@@ -51,6 +51,24 @@ func normalizePublicStage(stage string) string {
 	}
 }
 
+// progressOrgID returns the org id used in Redis keys and webhook payloads.
+// Scan jobs created by the backend use the "<org_id>:<domain>" scan_id format
+// (the webhooks split on the first colon to resolve the org), so derive the
+// org from the scan_id unless the job carries an explicit OrgID.
+func progressOrgID(job *models.ScanJob) string {
+	if job == nil {
+		return ""
+	}
+	if org := strings.TrimSpace(job.OrgID); org != "" {
+		return org
+	}
+	scanID := strings.TrimSpace(job.ScanID)
+	if idx := strings.Index(scanID, ":"); idx > 0 {
+		return scanID[:idx]
+	}
+	return scanID
+}
+
 func syncPublicScanProgress(job *models.ScanJob, stage string, progress int, message string, status string) {
 	if job == nil || job.ScanID == "" || job.Target == "" {
 		return
@@ -78,7 +96,8 @@ func syncPublicScanProgress(job *models.ScanJob, stage string, progress int, mes
 		return
 	}
 
-	key := fmt.Sprintf("scan_progress:%s:%s", job.ScanID, strings.ToLower(job.Target))
+	// Match the backend's key layout: scan_progress:<org_id>:<domain>.
+	key := fmt.Sprintf("scan_progress:%s:%s", progressOrgID(job), strings.ToLower(job.Target))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -105,6 +124,7 @@ func updateScanProgress(job *models.ScanJob, stage string, progress int, message
 func emitScanEvent(job *models.ScanJob, event string, status string, progress int, message string, evidence []map[string]any) error {
 	payload := models.ScanNotification{
 		ScanID:        job.ScanID,
+		OrgID:         progressOrgID(job),
 		Target:        job.Target,
 		Event:         event,
 		Status:        status,
@@ -232,6 +252,7 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 	updateScanProgress(job, "discovery", 35, "Discovery completed", "running", "", map[string]any{"subdomains_found": len(results.Data.([]string))})
 	discovery_payload := models.ScanNotification{
 		ScanID:     job.ScanID,
+		OrgID:      progressOrgID(job),
 		Target:     job.Target,
 		Event:      "subdomain_discovery_completed",
 		Status:     "completed",
@@ -278,6 +299,7 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 	updateScanProgress(job, "filter", 65, "Filtering completed", "running", "", map[string]any{"filtered_subdomains": len(filter_pipeline_results.Data.([]interface{}))})
 	filter_payload := models.ScanNotification{
 		ScanID:     job.ScanID,
+		OrgID:      progressOrgID(job),
 		Target:     job.Target,
 		Event:      "subdomain_filter_completed",
 		Status:     "completed",
@@ -326,6 +348,7 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 	updateScanProgress(job, "collection", 90, "Collection completed", "running", "", map[string]any{"collection_items": len(collection_data_results.Data.(map[string]interface{}))})
 	collection_payload := models.ScanNotification{
 		ScanID:     job.ScanID,
+		OrgID:      progressOrgID(job),
 		Target:     job.Target,
 		Event:      "subdomain_collection_completed",
 		Status:     "completed",
@@ -345,7 +368,7 @@ func RunMain(ctx context.Context, job *models.ScanJob) (any, error) {
 	scanResult := models.ScanResult{
 		ScanID:       job.ScanID,
 		ScheduleID:   job.ScheduleID,
-		OrgID:        job.OrgID,
+		OrgID:        progressOrgID(job),
 		Target:       job.Target,
 		Status:       "completed",
 		Data:         collection_data_results.Data,

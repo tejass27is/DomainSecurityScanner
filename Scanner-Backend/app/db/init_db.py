@@ -65,6 +65,10 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reviewed_by VARCHAR(36) NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reviewed_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS next_vapt_due_at TIMESTAMPTZ NULL"))
+        # Due-date reminder tracking: one shot 7 days before the due date and
+        # one shot when it passes (overdue). NULL = never sent.
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS due_soon_reminder_sent_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS overdue_notice_sent_at TIMESTAMPTZ NULL"))
         conn.execute(text("DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vapt_imports' AND column_name='import_id' AND data_type IN ('character varying','text')) THEN ALTER TABLE vapt_imports ALTER COLUMN import_id TYPE UUID USING import_id::uuid; END IF; END $$;"))
 
         # ── vapt_rescan_schedules ────────────────────────────────────────────

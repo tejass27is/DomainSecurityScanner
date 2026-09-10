@@ -155,6 +155,10 @@ def _onboarding_to_dict(record: VaptOnboardingChecklist) -> dict:
         "review_status": record.review_status,
         "reviewed_at": record.reviewed_at,
         "review_note": record.review_note or "",
+        # True when the checklist was reset for a new cycle (the previous
+        # cycle's report is closed) — the client UI uses this to show a
+        # "new cycle" banner instead of a generic onboarding screen.
+        "is_new_cycle": bool(record.cycle_number and record.cycle_number > 1),
     }
 
 
@@ -1000,13 +1004,44 @@ async def upload_vapt_report(
     checklist = db.query(VaptOnboardingChecklist).filter(
         VaptOnboardingChecklist.org_id == target_org_id,
     ).first()
-    if not checklist or not _is_onboarding_complete(checklist) or checklist.review_status != "approved":
+    latest_record = db.query(VaptImport).filter(
+        VaptImport.org_id == target_org_id,
+    ).order_by(VaptImport.cycle_number.desc()).first()
+    if latest_record and latest_record.lifecycle_status != "closed":
+        raise HTTPException(
+            status_code=409,
+            detail="The current VAPT cycle must be closed by SOC before the next full report can be uploaded.",
+        )
+    if latest_record:
+        # Cycle 2+ requires the client to have re-onboarded: their new-cycle
+        # checklist must be complete AND approved by SOC. This keeps
+        # authorization (scope, testing window, ROE) fresh for every cycle.
+        # Checked BEFORE the generic gate so the client/SOC see the correct
+        # "new-cycle" message instead of the first-cycle one.
+        if (
+            not checklist
+            or not checklist.completed_at
+            or (checklist.review_status or "").lower() != "approved"
+            or checklist.cycle_number != latest_record.cycle_number + 1
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The client must complete and SOC must approve the new-cycle "
+                    "checklist before the next report can be uploaded. Ask the "
+                    "client to finish their VAPT onboarding for cycle "
+                    f"{latest_record.cycle_number + 1}."
+                ),
+            )
+    elif not checklist or not _is_onboarding_complete(checklist) or checklist.review_status != "approved":
         raise HTTPException(
             status_code=403,
             detail="The client's completed VAPT checklist must be approved by SOC before the initial scan can be published.",
         )
 
     # Optional region tag: must match an active region code (e.g. ACC-IND).
+    # Validated after the checklist/cycle gates so authorization problems are
+    # reported first.
     region = (region or "").strip().upper()
     if region:
         known_region = db.query(Region).filter(Region.code == region, Region.is_active.is_(True)).first()
@@ -1024,15 +1059,6 @@ async def upload_vapt_report(
             )
     else:
         raise HTTPException(status_code=400, detail="An approved region is required for every VAPT report.")
-
-    latest_record = db.query(VaptImport).filter(
-        VaptImport.org_id == target_org_id,
-    ).order_by(VaptImport.cycle_number.desc()).first()
-    if latest_record and latest_record.lifecycle_status != "closed":
-        raise HTTPException(
-            status_code=409,
-            detail="The current VAPT cycle must be closed by SOC before the next full report can be uploaded.",
-        )
 
     filename = file.filename or "unnamed"
     ext = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
@@ -1997,6 +2023,9 @@ async def set_client_next_vapt_due_date(
 
     record.lifecycle_status = "closed"
     record.next_vapt_due_at = next_due
+    # Fresh due date → fire the new cycle's reminders fresh.
+    record.due_soon_reminder_sent_at = None
+    record.overdue_notice_sent_at = None
     db.add(record)
     db.commit()
     _record_audit_log(db, current_user, "VAPT_CYCLE_CLOSED", "vapt_import", str(record.import_id), {"next_vapt_due_at": next_due.isoformat(), "selected_by": "client"})
@@ -2593,6 +2622,111 @@ def check_remediation_followup_reminders(
         except Exception:
             db.rollback()
     return {"success": True, "reminders_sent": len(fired), "import_ids": fired}
+
+
+@router.post("/admin/check-vapt-due-dates")
+def check_vapt_due_dates(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_soc_analyst),
+):
+    """Fire due-date notifications for closed VAPT cycles.
+
+    - 7 days before ``next_vapt_due_at``: one reminder to the client org.
+    - Once the due date passes with no new cycle started: one overdue notice
+      to the client org + all SOC analysts.
+
+    Each notice fires at most once per due date; both timestamps reset when
+    the client picks a new due date. Called hourly by the backend maintenance
+    task (and available for SOC to trigger manually).
+    """
+    try:
+        from app.utils.email import send_vapt_due_soon_email, send_vapt_overdue_email
+    except Exception:
+        return {"success": True, "due_soon_reminders": 0, "overdue_notices": 0, "due_soon_import_ids": [], "overdue_import_ids": []}
+    now = datetime.now(timezone.utc)
+    fired_due_soon: list[str] = []
+    fired_overdue: list[str] = []
+
+    closed_reports = (
+        db.query(VaptImport)
+        .filter(
+            VaptImport.lifecycle_status == "closed",
+            VaptImport.next_vapt_due_at.isnot(None),
+        )
+        .all()
+    )
+
+    for record in closed_reports:
+        due = record.next_vapt_due_at
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+
+        org = db.query(Organization).filter(Organization.org_id == record.org_id).first()
+        org_domain = None
+        if org and org.domain:
+            org_domain = ", ".join(str(d) for d in (org.domain if isinstance(org.domain, list) else [org.domain]) if d)
+        client_emails = [
+            u.email
+            for u in db.query(User).filter(User.org_id == record.org_id).all()
+            if u.email
+        ]
+        file_name = record.display_name or record.file_name
+
+        if due <= now:
+            # ── Overdue: due date passed, no new cycle uploaded yet. ──
+            if record.overdue_notice_sent_at:
+                continue
+            days_overdue = max(1, (now - due).days)
+            soc_emails = [u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email]
+            try:
+                for email in set(client_emails) | set(soc_emails):
+                    try:
+                        send_vapt_overdue_email(
+                            to_email=email,
+                            file_name=file_name,
+                            org_domain=org_domain,
+                            next_vapt_due_at=due.isoformat(),
+                            days_overdue=days_overdue,
+                        )
+                    except Exception:
+                        pass
+                record.overdue_notice_sent_at = now
+                db.add(record)
+                db.commit()
+                fired_overdue.append(str(record.import_id))
+            except Exception:
+                db.rollback()
+        elif due <= now + timedelta(days=7):
+            # ── Due soon: 7-day window before the due date. ──
+            if record.due_soon_reminder_sent_at:
+                continue
+            days_left = max(0, (due - now).days)
+            try:
+                for email in set(client_emails):
+                    try:
+                        send_vapt_due_soon_email(
+                            to_email=email,
+                            file_name=file_name,
+                            org_domain=org_domain,
+                            next_vapt_due_at=due.isoformat(),
+                            days_left=days_left,
+                        )
+                    except Exception:
+                        pass
+                record.due_soon_reminder_sent_at = now
+                db.add(record)
+                db.commit()
+                fired_due_soon.append(str(record.import_id))
+            except Exception:
+                db.rollback()
+
+    return {
+        "success": True,
+        "due_soon_reminders": len(fired_due_soon),
+        "overdue_notices": len(fired_overdue),
+        "due_soon_import_ids": fired_due_soon,
+        "overdue_import_ids": fired_overdue,
+    }
 
 
 @router.delete("/imports/{import_id}")

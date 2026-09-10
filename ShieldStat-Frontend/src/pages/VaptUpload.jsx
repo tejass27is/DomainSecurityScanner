@@ -330,7 +330,6 @@ export default function VaptUpload() {
       title: "Testing Window & Approval",
       description: "Scheduling, approval, and engagement constraints.",
       questions: [
-        { id: "preferred_vapt_date_window", label: "Preferred VAPT date / window", type: "text", short: true, helper: "Preferred testing date or window.", example: "Example: 9/4/2026, 11:00 PM to 3:00 AM IST" },
         { id: "dates_times_not_perform", label: "Are there any dates/times when VAPT should not be performed?", type: "textarea", helper: "Blackout dates or times.", example: "Example: No testing during payroll week or on weekends." },
         { id: "formal_approver_authorization", label: "Who will provide formal approval/authorization for the VAPT?", type: "text", short: true, helper: "Approver or approval authority.", example: "Example: CTO or Security Head" },
         { id: "rules_of_engagement_authorization_requirements", label: "Are there any Rules of Engagement or authorization requirements that must be completed before testing?", type: "textarea", helper: "ROE or authorization steps required before testing.", example: "Example: Signed authorization document and ROE approval required." },
@@ -1092,6 +1091,22 @@ export default function VaptUpload() {
             </div>
           )}
 
+          {(Number(onboarding?.cycle_number) || 0) > 1 && (
+            <div className="rounded-xl border border-violet-200 bg-violet-50 px-5 py-4 dark:border-violet-900 dark:bg-violet-950/30">
+              <div className="flex items-start gap-3">
+                <span className="material-symbols-outlined mt-0.5 text-violet-600 dark:text-violet-400">autorenew</span>
+                <div>
+                  <p className="text-sm font-bold text-violet-900 dark:text-violet-100">
+                    New assessment cycle — Cycle {onboarding.cycle_number}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-violet-700 dark:text-violet-300">
+                    Your previous cycle is closed. Complete this checklist once so the SOC team can schedule the new assessment — your published reports stay available in the meantime.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="w-full">
             {/* Region Fields + Progress — clean rectangular layout */}
             <div className="mb-6 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
@@ -1475,151 +1490,179 @@ export default function VaptUpload() {
 
         {!preview ? (
           <>
-            {/* ── Drop zone ── */}
-            <DropZone onFile={handleFile} error={fileError} isUploading={isUploading} />
+            {/* ── 3-step import flow ── */}
+            <div className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              {/* Step 1 — pick file */}
+              <div className="p-5 sm:p-6">
+                <div className="mb-4 flex items-center gap-2.5">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-purple-600 text-[11px] font-black text-white">1</span>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Choose scanner export</h3>
+                  <span className="ml-auto text-[11px] font-medium text-slate-400">Nessus · OpenVAS · Qualys · CSV · Excel</span>
+                </div>
+                <DropZone onFile={handleFile} error={fileError} isUploading={isUploading} />
+              </div>
 
-            {/* ── Publish-to organization picker (SOC analysts / admins) ── */}
-            <div className="mx-auto mt-5 max-w-3xl rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-              {canUpload && verificationSchedules.length > 0 && (
-                <div className="mb-5 rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30">
-                  <label htmlFor="vapt-verification-schedule" className="mb-2 block text-xs font-black uppercase tracking-[0.2em] text-sky-700 dark:text-sky-300">
-                    Manual verification upload
+              {/* Step 2 — choose where to publish */}
+              <div className="border-t border-slate-100 p-5 dark:border-slate-800 sm:p-6">
+                <div className="mb-4 flex items-center gap-2.5">
+                  <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-black text-white ${selectedFile ? "bg-purple-600" : "bg-slate-300 dark:bg-slate-700"}`}>2</span>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Choose where to publish</h3>
+                </div>
+              {/* 2×2 field grid: verification | title / org | region */}
+              <div className="grid gap-4 lg:grid-cols-2">
+                {canUpload && verificationSchedules.length > 0 && (
+                  <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30">
+                    <label htmlFor="vapt-verification-schedule" className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-sky-700 dark:text-sky-300">
+                      Manual verification upload
+                    </label>
+                    <select
+                      id="vapt-verification-schedule"
+                      value={selectedVerificationSchedule}
+                      onChange={(e) => setSelectedVerificationSchedule(e.target.value)}
+                      className="w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100"
+                    >
+                      <option value="">Upload an initial report</option>
+                      {verificationSchedules.map((schedule) => (
+                        <option key={schedule.id} value={schedule.id}>
+                          Verification · {schedule.file_name || schedule.import_id} · {new Date(schedule.scheduled_at).toLocaleString()}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-2 text-xs leading-5 text-sky-700 dark:text-sky-300">
+                      Attach the SOC retest export to complete that manual verification.
+                    </p>
+                  </div>
+                )}
+
+                {/* Report Title */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 dark:border-slate-700 dark:bg-slate-800/30">
+                  <label htmlFor="report-title" className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Report title <span className="font-medium normal-case text-slate-400">(optional)</span>
+                  </label>
+                  <input
+                    id="report-title"
+                    type="text"
+                    value={reportTitle}
+                    onChange={(e) => setReportTitle(e.target.value)}
+                    placeholder={selectedFile ? selectedFile.name.replace(/\.[^.]+$/, "").replace(/_/g, " ") : "e.g. SA OPT First Security Assessment"}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                  />
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    A clean name shown to the client. Leave blank to use the filename.
+                  </p>
+                </div>
+
+                {/* Publish to organization */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 dark:border-slate-700 dark:bg-slate-800/30">
+                  <label htmlFor="vapt-target-org" className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Publish to organization
                   </label>
                   <select
-                    id="vapt-verification-schedule"
-                    value={selectedVerificationSchedule}
-                    onChange={(e) => setSelectedVerificationSchedule(e.target.value)}
-                    className="w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100"
+                    id="vapt-target-org"
+                    value={selectedOrgId}
+                    onChange={(e) => {
+                      const orgId = e.target.value;
+                      setSelectedVerificationSchedule("");
+                      setSelectedOrgId(orgId);
+                      const org = orgs.find((o) => o.org_id === orgId);
+                      const regions = org?.approved_regions || [];
+                      const firstRegion = regions[0];
+                      setSelectedRegion(typeof firstRegion === "string" ? firstRegion : firstRegion?.code || "");
+                    }}
+                    disabled={Boolean(selectedVerificationSchedule)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
                   >
-                    <option value="">Upload an initial report</option>
-                    {verificationSchedules.map((schedule) => (
-                      <option key={schedule.id} value={schedule.id}>
-                        Verification · {schedule.file_name || schedule.import_id} · {new Date(schedule.scheduled_at).toLocaleString()}
+                    <option value="">Select an organization…</option>
+                    {orgs.map((org) => (
+                      <option key={org.org_id} value={org.org_id}>
+                        {org.domain || org.org_id}
                       </option>
                     ))}
                   </select>
-                  <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">
-                    Select the approved rescan to attach the SOC retest export. This upload completes that manual verification.
+                  {orgsError ? (
+                    <p className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{orgsError}</p>
+                  ) : (
+                    <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                      The finished report is published here — its users see it read-only.
+                    </p>
+                  )}
+                </div>
+
+                {/* Assessment region */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 dark:border-slate-700 dark:bg-slate-800/30">
+                  <label htmlFor="vapt-target-region" className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Assessment region
+                  </label>
+                  <select
+                    id="vapt-target-region"
+                    value={selectedRegion}
+                    onChange={(e) => setSelectedRegion(e.target.value)}
+                    disabled={!selectedOrgId || Boolean(selectedVerificationSchedule)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+                  >
+                    {!selectedOrgId ? (
+                      <option value="">Select an organization first…</option>
+                    ) : (selectedOrg?.approved_regions || []).length === 0 ? (
+                      <option value="">No approved regions for this organization</option>
+                    ) : (
+                      (selectedOrg?.approved_regions || []).map((region) => {
+                        const code = typeof region === "string" ? region : region.code;
+                        const name = typeof region === "string" ? "" : region.name;
+                        return (
+                          <option key={code} value={code}>
+                            {code}{name ? ` - ${name}` : ""}
+                          </option>
+                        );
+                      })
+                    )}
+                  </select>
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    Users of the organization only see reports for their approved regions.
                   </p>
                 </div>
-              )}
-              <label htmlFor="vapt-target-org" className="mb-2 block text-xs font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
-                Publish to organization
-              </label>
-              <select
-                id="vapt-target-org"
-                value={selectedOrgId}
-                onChange={(e) => {
-                  const orgId = e.target.value;
-                  setSelectedVerificationSchedule("");
-                  setSelectedOrgId(orgId);
-                  const org = orgs.find((o) => o.org_id === orgId);
-                  const regions = org?.approved_regions || [];
-                  const firstRegion = regions[0];
-                  setSelectedRegion(typeof firstRegion === "string" ? firstRegion : firstRegion?.code || "");
-                }}
-                disabled={Boolean(selectedVerificationSchedule)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-              >
-                <option value="">Select an organization…</option>
-                {orgs.map((org) => (
-                  <option key={org.org_id} value={org.org_id}>
-                    {org.domain || org.org_id}
-                  </option>
-                ))}
-              </select>
-              {orgsError && (
-                <p className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{orgsError}</p>
-              )}
-              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                The finished report is published to this organization — its users see it read-only.
-              </p>
-
-              <div className="mt-4">
-                <label htmlFor="vapt-target-region" className="mb-2 block text-xs font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
-                  Assessment region
-                </label>
-                <select
-                  id="vapt-target-region"
-                  value={selectedRegion}
-                  onChange={(e) => setSelectedRegion(e.target.value)}
-                  disabled={!selectedOrgId || Boolean(selectedVerificationSchedule)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-                >
-                  {!selectedOrgId ? (
-                    <option value="">Select an organization first…</option>
-                  ) : (selectedOrg?.approved_regions || []).length === 0 ? (
-                    <option value="">No approved regions for this organization</option>
-                  ) : (
-                    (selectedOrg?.approved_regions || []).map((region) => {
-                      const code = typeof region === "string" ? region : region.code;
-                      const name = typeof region === "string" ? "" : region.name;
-                      return (
-                        <option key={code} value={code}>
-                          {code}{name ? ` - ${name}` : ""}
-                        </option>
-                      );
-                    })
-                  )}
-                </select>
-                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                  The region the assessment was performed in. The organization's users see reports
-                  filtered by their approved regions.
-                </p>
               </div>
 
-              {/* Report Title */}
-              <div className="mt-4">
-                <label htmlFor="report-title" className="mb-2 block text-xs font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
-                  Report Title
-                </label>
-                <input
-                  id="report-title"
-                  type="text"
-                  value={reportTitle}
-                  onChange={(e) => setReportTitle(e.target.value)}
-                  placeholder={selectedFile ? selectedFile.name.replace(/\.[^.]+$/, "").replace(/_/g, " ") : "e.g. SA OPT First Security Assessment"}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-                />
-                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                  A clean name shown to the client in reports and notifications. Leave blank to use the filename.
-                </p>
-              </div>
-            </div>
-
-            {selectedFile && !fileError && (
-              <div className="mx-auto mt-5 flex max-w-3xl flex-col items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400">
-                    <FileUp size={18} />
-                  </div>
+              {/* Step 3 — import & score */}
+              <div className="border-t border-slate-100 p-5 dark:border-slate-800 sm:p-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-200">{selectedFile.name}</p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      {formatBytes(selectedFile.size)} · ready to import
+                    <div className="flex items-center gap-2.5">
+                      <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-black text-white ${selectedFile ? "bg-purple-600" : "bg-slate-300 dark:bg-slate-700"}`}>3</span>
+                      <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Import & score</h3>
+                    </div>
+                    <p className="ml-9 mt-1 truncate text-xs text-slate-500 dark:text-slate-400">
+                      {selectedFile ? (
+                        <>
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">{selectedFile.name}</span> · {formatBytes(selectedFile.size)} ready
+                        </>
+                      ) : (
+                        "Pick a file in step 1 to enable import."
+                      )}
                     </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleUpload}
+                    disabled={!selectedFile || isUploading}
+                    title={!selectedFile ? "Choose a file first" : undefined}
+                    className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-purple-600 px-6 py-3 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {isUploading ? (
+                      <>
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                        {progressMsg || "Uploading…"}
+                      </>
+                    ) : (
+                      <>
+                        <Zap size={15} />
+                        {selectedVerificationSchedule ? "Upload verification" : "Import & Score"}
+                      </>
+                    )}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleUpload}
-                  disabled={isUploading}
-                  className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-purple-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95 disabled:opacity-50"
-                >
-                  {isUploading ? (
-                    <>
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                      {progressMsg || "Uploading…"}
-                    </>
-                  ) : (
-                    <>
-                      <Zap size={15} />
-                      {selectedVerificationSchedule ? "Upload verification" : "Import & Score"}
-                    </>
-                  )}
-                </button>
               </div>
-            )}
+              </div>
+            </div>
 
             {uploadError && (
               <div

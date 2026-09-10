@@ -41,6 +41,7 @@ type FixScanResult struct {
 }
 type ScanNotification struct {
 	ScanID        string           `json:"scan_id"`
+	OrgID         string           `json:"org_id,omitempty"`
 	Target        string           `json:"target"`
 	Event         string           `json:"event"`
 	Status        string           `json:"status"`

@@ -285,41 +285,43 @@ export default function AdminVaptAccessRequests() {
         )}
 
         {/* Header */}
-        <div className="mb-8">
-          <div className="mb-2 flex items-center gap-2">
-            <span className="material-symbols-outlined text-purple-600 dark:text-purple-400">fact_check</span>
-            <span className="text-xs font-black uppercase tracking-[0.28em] text-purple-700 dark:text-purple-400">
-              VAPT Access Management
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <div className="mb-2 flex items-center gap-2">
+              <span className="material-symbols-outlined text-purple-600 dark:text-purple-400">fact_check</span>
+              <span className="text-[11px] font-black uppercase tracking-[0.28em] text-purple-700 dark:text-purple-400">
+                VAPT Access Management
+              </span>
+            </div>
+            <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">VAPT Review Queue</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-400">
+              Unified review queue for Admin and SOC. Region approvals, checklist status, and testing windows — all in one place.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50 px-3.5 py-2 text-xs font-bold text-violet-700 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300">
+              <ShieldCheck size={14} /> Admin
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs font-bold text-sky-700 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300">
+              <BriefcaseBusiness size={14} /> SOC
             </span>
           </div>
-          <h1 className="text-4xl font-extrabold tracking-tight">VAPT Review Queue</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-400">
-            Unified review queue for Admin and SOC. Every pending VAPT request is shown here with region approvals, checklist status, and testing window in one place to avoid confusion.
-          </p>
         </div>
 
-        <div className="mb-6 grid gap-4 md:grid-cols-3">
-          <div className="rounded-2xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-900 dark:bg-violet-950/30">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-700 dark:text-violet-300">Combined reviews</p>
-            <p className="mt-3 text-3xl font-extrabold text-violet-900 dark:text-violet-100">{reviewSummary.combinedCount}</p>
-            <p className="mt-2 text-xs text-violet-700 dark:text-violet-300">Requests with both region + checklist pending</p>
-          </div>
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-700 dark:text-amber-300">Region approvals</p>
-            <p className="mt-3 text-3xl font-extrabold text-amber-900 dark:text-amber-100">{reviewSummary.regionCount}</p>
-            <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">Pending region decisions</p>
-          </div>
-          <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-700 dark:text-sky-300">Checklist reviews</p>
-            <p className="mt-3 text-3xl font-extrabold text-sky-900 dark:text-sky-100">{reviewSummary.checklistCount}</p>
-            <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">Pending client onboarding checks</p>
-          </div>
-        </div>
-
+        {/* Compact summary pills */}
         <div className="mb-6 flex flex-wrap items-center gap-2">
-          <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-violet-700 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-300">Admin</span>
-          <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">SOC</span>
-          <span className="text-xs text-slate-500 dark:text-slate-400">Shared queue with a single review decision path for every request.</span>
+          <span className="inline-flex items-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3.5 py-2 text-xs font-bold text-violet-700 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300">
+            Combined: <b className="font-black">{reviewSummary.combinedCount}</b>
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+            Regions: <b className="font-black">{reviewSummary.regionCount}</b>
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs font-bold text-sky-700 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300">
+            Checklists: <b className="font-black">{reviewSummary.checklistCount}</b>
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+            Total: <b className="font-black">{pendingReviewQueue.length}</b>
+          </span>
         </div>
 
         <div className="mb-6 flex flex-wrap gap-2">

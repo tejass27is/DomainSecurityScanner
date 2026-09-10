@@ -519,6 +519,90 @@ def send_vapt_cycle_closed_email(to_email: str, file_name: str, next_vapt_due_at
     return True
 
 
+def send_vapt_due_soon_email(
+    to_email: str,
+    file_name: str,
+    org_domain: str | None,
+    next_vapt_due_at: str,
+    days_left: int,
+):
+    """Remind the client 7 days before their next VAPT assessment is due."""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
+    if not FRONTEND_URL:
+        raise ValueError("FRONTEND_URL must be configured.")
+    start_link = f"{FRONTEND_URL.rstrip('/')}/vapt"
+    subject = f"Upcoming VAPT due in {days_left} day{'s' if days_left != 1 else ''}: {file_name}"
+    plain_text = (
+        f"Your next VAPT assessment for {file_name} (org: {org_domain or 'your organization'}) "
+        f"is due on {next_vapt_due_at} — {days_left} day(s) from now. "
+        f"Complete the checklist so the SOC team can schedule the new cycle.\n\nStart here: {start_link}"
+    )
+    body_html = f"""
+        <p style="font-size:14px;color:#334155;margin:0 0 16px">Hello,</p>
+        <p style="font-size:14px;color:#334155;margin:0 0 20px">Your next VAPT assessment is approaching.</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0">
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px;width:170px">Report</td><td style="padding:9px 0;font-weight:600;font-size:13px">{file_name}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Organization</td><td style="padding:9px 0;font-weight:600;font-size:13px">{org_domain or '—'}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Due</td><td style="padding:9px 0;font-weight:600;font-size:13px">{next_vapt_due_at}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Time remaining</td><td style="padding:9px 0;font-weight:600;font-size:13px">{days_left} day{'s' if days_left != 1 else ''}</td></tr>
+        </table>
+        <p style="font-size:13px;color:#334155;margin:16px 0">Complete the VAPT checklist so the SOC team can schedule the new assessment cycle on time.</p>
+        <p style="margin:20px 0"><a href="{start_link}" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 24px;border-radius:6px;font-size:13px;font-weight:600">Open VAPT Checklist</a></p>
+        <p style="font-size:13px;color:#64748b;margin:24px 0 0">Regards,<br><strong>{EMAIL_FROM_NAME}</strong></p>
+    """
+    html = _vapt_email_shell("Upcoming VAPT Due", body_html)
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["To"] = to_email
+    msg.attach(MIMEText(plain_text, "plain"))
+    msg.attach(MIMEText(html, "html"))
+    _smtp_send(msg)
+    return True
+
+
+def send_vapt_overdue_email(
+    to_email: str,
+    file_name: str,
+    org_domain: str | None,
+    next_vapt_due_at: str,
+    days_overdue: int,
+):
+    """Notify client + SOC when the next VAPT due date has passed with no new cycle."""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
+    if not FRONTEND_URL:
+        raise ValueError("FRONTEND_URL must be configured.")
+    start_link = f"{FRONTEND_URL.rstrip('/')}/vapt"
+    subject = f"VAPT overdue by {days_overdue} day{'s' if days_overdue != 1 else ''}: {file_name}"
+    plain_text = (
+        f"The next VAPT assessment for {file_name} (org: {org_domain or 'your organization'}) "
+        f"was due on {next_vapt_due_at} and is now {days_overdue} day(s) overdue. "
+        f"No new assessment cycle has started yet.\n\nOpen VAPT: {start_link}"
+    )
+    body_html = f"""
+        <p style="font-size:14px;color:#334155;margin:0 0 16px">Hello,</p>
+        <p style="font-size:14px;color:#334155;margin:0 0 20px">The scheduled next VAPT assessment is now <strong>overdue</strong>.</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0">
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px;width:170px">Report</td><td style="padding:9px 0;font-weight:600;font-size:13px">{file_name}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Organization</td><td style="padding:9px 0;font-weight:600;font-size:13px">{org_domain or '—'}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Was due</td><td style="padding:9px 0;font-weight:600;font-size:13px">{next_vapt_due_at}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Overdue by</td><td style="padding:9px 0;font-weight:600;font-size:13px;color:#b91c1c">{days_overdue} day{'s' if days_overdue != 1 else ''}</td></tr>
+        </table>
+        <p style="font-size:13px;color:#334155;margin:16px 0">No new assessment cycle has started. Please complete the checklist (client) or upload the next report (SOC) to keep the assessment cadence on track.</p>
+        <p style="margin:20px 0"><a href="{start_link}" style="display:inline-block;background:#b91c1c;color:#fff;text-decoration:none;padding:10px 24px;border-radius:6px;font-size:13px;font-weight:600">Open VAPT</a></p>
+        <p style="font-size:13px;color:#64748b;margin:24px 0 0">Regards,<br><strong>{EMAIL_FROM_NAME}</strong></p>
+    """
+    html = _vapt_email_shell("VAPT Overdue", body_html)
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["To"] = to_email
+    msg.attach(MIMEText(plain_text, "plain"))
+    msg.attach(MIMEText(html, "html"))
+    _smtp_send(msg)
+    return True
+
+
 def send_vapt_verification_result_email(
     to_email: str,
     file_name: str,

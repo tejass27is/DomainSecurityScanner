@@ -307,8 +307,8 @@ class PublicScanRequest(BaseModel):
 class PublicReportEmailRequest(BaseModel):
     domain: str
     email: str
-    first_name: str
-    last_name: str
+    first_name: str = ""
+    last_name: str = ""
 
 
 def ensure_public_org_exists(db: Session) -> None:
@@ -361,7 +361,16 @@ async def public_scan(
     ensure_public_org_exists(db)
     _clear_existing_public_scan_results(db, domain)
 
-    scan_job = {"scan_id": PUBLIC_ORG_ID, "target": domain}
+    # scan_id MUST use the "org_id:domain" format (same as the authenticated
+    # scanner flow) — the webhook handler splits on ":" to resolve the org_id.
+    # A bare org UUID here is why public scans died with "org_id or scan_id
+    # missing" and never stored results.
+    scan_job = {
+        "scan_id": f"{PUBLIC_ORG_ID}:{domain}",
+        "org_id": PUBLIC_ORG_ID,
+        "domain": domain,
+        "target": domain,
+    }
     print(f"[PUBLIC SCAN] Queueing job: {scan_job}")
     try:
         await redis_client.PushToQueue(data=scan_job)
@@ -472,17 +481,14 @@ def send_report_email(
 ):
     domain = request.domain.strip().lower()
     email = request.email.strip().lower()
-    first_name = request.first_name.strip()
-    last_name = request.last_name.strip()
+    # Names are optional — the public flow only asks for an email address.
+    first_name = (request.first_name or "").strip()
+    last_name = (request.last_name or "").strip()
 
     if not domain:
         raise HTTPException(status_code=400, detail="Domain is required")
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
-    if not first_name:
-        raise HTTPException(status_code=400, detail="First name is required")
-    if not last_name:
-        raise HTTPException(status_code=400, detail="Last name is required")
 
     row = db.query(ScanSummary).filter(ScanSummary.domain == domain).first()
     if not row:

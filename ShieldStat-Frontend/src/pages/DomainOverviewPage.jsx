@@ -22,8 +22,6 @@ function DomainOverviewPage() {
   const [error, setError] = useState("");
   const [scanStatus, setScanStatus] = useState(null);
   const [polling, setPolling] = useState(false);
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [reportSending, setReportSending] = useState(false);
   const [reportMessage, setReportMessage] = useState("");
@@ -149,8 +147,8 @@ function DomainOverviewPage() {
 
   const handleSendReport = async (event) => {
     event.preventDefault();
-    if (!domain || !firstName.trim() || !lastName.trim() || !email.trim()) {
-      setReportMessage("Please enter first name, last name, and a valid email address.");
+    if (!domain || !email.trim()) {
+      setReportMessage("Please enter a valid email address.");
       return;
     }
 
@@ -158,10 +156,8 @@ function DomainOverviewPage() {
     setReportMessage("");
 
     try {
-      const result = await sendPublicScanReport(domain, firstName.trim(), lastName.trim(), email.trim());
-      setReportMessage(result?.message || "Report sent successfully.");
-      setFirstName("");
-      setLastName("");
+      const result = await sendPublicScanReport(domain, email.trim());
+      setReportMessage(result?.message || "Report sent! Check your inbox for the full PDF.");
       setEmail("");
     } catch (err) {
       setReportMessage(err?.message || "Unable to send the report right now.");
@@ -285,8 +281,11 @@ function DomainOverviewPage() {
                   </div>
                   <form onSubmit={handleSendReport} className="mt-6 space-y-3">
                     <label className="text-sm font-semibold text-slate-700 dark:text-slate-300" htmlFor="report-email">
-                      Email full report
+                      Get the full PDF report
                     </label>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">
+                      This is a limited preview. Enter your email and we&apos;ll send you the complete report as a PDF.
+                    </p>
                     <div className="flex flex-col gap-3 sm:flex-row">
                       <input
                         id="report-email"
@@ -301,15 +300,13 @@ function DomainOverviewPage() {
                         disabled={reportSending || !email.trim()}
                         className="inline-flex items-center justify-center rounded-full bg-[#800080] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#800080] disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {reportSending ? "Sending..." : "Send report"}
+                        {reportSending ? "Sending..." : "Email me the report"}
                       </button>
                     </div>
-                    {reportMessage ? (
-                      <p className={`text-sm ${reportMessage.toLowerCase().includes("success") ? "text-emerald-600" : "text-rose-600"}`}>
+                    {reportMessage && (
+                      <p className={`text-sm ${reportMessage.toLowerCase().includes("success") || reportMessage.toLowerCase().includes("sent") ? "text-emerald-600" : "text-rose-600"}`}>
                         {reportMessage}
                       </p>
-                    ) : (
-                      <p className="text-sm text-slate-500 dark:text-slate-400">Enter your email to have the full report sent to you.</p>
                     )}
                   </form>
                 </div>

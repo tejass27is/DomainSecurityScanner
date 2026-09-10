@@ -451,9 +451,12 @@ def test_upload_cycle_number_derived_from_latest_import_not_row_count():
         db.add(region)
         db.commit()
         db.add(OrganizationRegion(org_id="org-cycle", region_id=region.region_id, status="approved", schedule_status="confirmed", testing_start_at=datetime(2026, 1, 1, tzinfo=timezone.utc), testing_timezone="UTC"))
+        # The upload gate (Gap 3) requires the client to have re-onboarded for
+        # the NEXT cycle: checklist.cycle_number must equal latest import + 1.
+        # In production _get_onboarding_or_create bumps this after closure.
         db.add(VaptOnboardingChecklist(
             org_id="org-cycle",
-            cycle_number=2,
+            cycle_number=3,
             review_status="approved",
             checklist_answers={"general_information": {"organization_name": {"answer": "Acme Corp", "na": False}}},
             testing_start_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
