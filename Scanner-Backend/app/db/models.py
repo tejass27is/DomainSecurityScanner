@@ -78,6 +78,7 @@ class User(Base):
     # Admin can revoke an individual user's VAPT access without touching the
     # org-level approvals in organization_regions (reversible via unblock).
     vapt_blocked              = Column(Boolean, nullable=False, server_default="false")
+    is_active                 = Column(Boolean, nullable=False, server_default="true")
 
     # ── NEW: TOTP columns ─────────────────────────────────────────────────────
     totp_secret     = Column(String(64), nullable=True)
@@ -435,6 +436,8 @@ class VaptImport(Base):
     category_distribution = Column(JSON, nullable=True)
     summary = Column(JSON, nullable=True)  # also carries excluded_info_findings + raw_findings_parsed
     findings = Column(JSON, nullable=True)
+    # Immutable snapshot of the first SOC-published report.
+    initial_findings = Column(JSON, nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -500,8 +503,11 @@ class VaptRescanSchedule(Base):
     created_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
     hosts = Column(JSON, nullable=True)  # list of host strings to rescan
     scheduled_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    scheduled_timezone = Column(String(64), nullable=False, default="UTC", server_default="'UTC'")
     recurrence = Column(JSON, nullable=True)
     result_data = Column(JSON, nullable=True)
+    uploaded_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    uploaded_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     verification_outcome = Column(String(20), nullable=False, default="pending", server_default="'pending'")
     verified_at = Column(TIMESTAMP(timezone=True), nullable=True)
     verified_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
@@ -517,6 +523,20 @@ class VaptRescanSchedule(Base):
         Index("idx_vapt_rescan_scheduled", "scheduled_at"),
         Index("idx_vapt_rescan_status", "status"),
     )
+
+
+class VaptFindingHistory(Base):
+    __tablename__ = "vapt_finding_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    import_id = Column(UUID(as_uuid=True), ForeignKey("vapt_imports.import_id"), nullable=False, index=True)
+    schedule_id = Column(UUID(as_uuid=True), ForeignKey("vapt_rescan_schedules.id"), nullable=True, index=True)
+    finding_id = Column(String(255), nullable=False)
+    actor_id = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    old_status = Column(String(32), nullable=True)
+    new_status = Column(String(32), nullable=False)
+    comment = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
 
 class NotificationPreference(Base):

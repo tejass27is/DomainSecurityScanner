@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useSearchParams, Link } from "react-router-dom";
 import {
   getScore,

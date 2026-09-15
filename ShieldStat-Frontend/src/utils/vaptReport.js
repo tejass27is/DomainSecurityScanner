@@ -71,16 +71,34 @@ export function severityMeta(severity) {
   return SEVERITY_META[String(severity || "").toLowerCase()] || SEVERITY_META.info;
 }
 
-export function fmtDate(value) {
+export function fmtDate(value, timeZone, assumeUtc = false) {
   if (!value) return "—";
-  const d = new Date(value);
+  const rawValue = String(value);
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(rawValue);
+  const normalizedValue = assumeUtc && !hasTimezone && rawValue.includes("T")
+    ? `${rawValue}Z`
+    : rawValue;
+  const d = new Date(normalizedValue);
   if (Number.isNaN(d.getTime())) return String(value);
+  let effectiveTimeZone = timeZone;
+  if (!effectiveTimeZone) {
+    try {
+      const profile = JSON.parse(localStorage.getItem("user") || "null");
+      if (profile?.role === "admin" || profile?.role === "soc_analyst") {
+        effectiveTimeZone = "Asia/Kolkata";
+      }
+    } catch {
+      // Use the browser timezone for client accounts.
+    }
+  }
   return d.toLocaleString("en-GB", {
     day: "2-digit",
     month: "short",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: true,
+    ...(effectiveTimeZone ? { timeZone: effectiveTimeZone } : {}),
   });
 }
 

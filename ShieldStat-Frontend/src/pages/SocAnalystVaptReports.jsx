@@ -490,7 +490,7 @@ export default function SocAnalystVaptReports() {
                             {item.status ? item.status.replace("_", " ") : "published"}
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-xs text-slate-500 dark:text-slate-400">{fmtDate(item.created_at)}</td>
+                        <td className="px-6 py-4 text-xs text-slate-500 dark:text-slate-400">{fmtDate(item.created_at, "Asia/Kolkata")}</td>
                         <td className="px-6 py-4">
                           <div className="flex items-center justify-end gap-1.5">
                             <button

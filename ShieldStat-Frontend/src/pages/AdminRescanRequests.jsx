@@ -54,7 +54,7 @@ export default function AdminRescanRequests() {
           setConfirmModal({ open: false, scheduleId: null, action: null });
           return;
         }
-        await postAdminRequestNewDate(scheduleId, { proposed_at: new Date(proposed).toISOString() }, token);
+        await postAdminRequestNewDate(scheduleId, { proposed_at: proposed, proposed_timezone: "Asia/Kolkata" }, token);
         setToast({ text: "New date proposed to the user", type: "success" });
       }
       await load();
@@ -103,7 +103,7 @@ export default function AdminRescanRequests() {
           message={
             confirmModal.action === "approve"
               ? "Approve this rescan request? The SOC team will perform the retest manually and upload the verification result."
-              : `Propose ${proposedMap[confirmModal.scheduleId] ? new Date(proposedMap[confirmModal.scheduleId]).toLocaleString() : "this date"} to the user? They will be notified and can accept or reject it.`
+              : `Propose ${proposedMap[confirmModal.scheduleId] ? new Date(proposedMap[confirmModal.scheduleId]).toLocaleString("en-GB", { timeZone: "Asia/Kolkata", hour12: true }) : "this date"} to the user? They will be notified and can accept or reject it.`
           }
           confirmLabel={confirmModal.action === "approve" ? "Approve" : "Propose Date"}
           variant={confirmModal.action === "approve" ? "primary" : "primary"}
@@ -187,7 +187,7 @@ export default function AdminRescanRequests() {
                     <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
                       <span className="inline-flex items-center gap-1.5"><Globe size={14} />{r.org_domain || r.org_id}</span>
                       <span className="inline-flex items-center gap-1.5"><User size={14} />{r.requested_by || "—"}</span>
-                      <span className="inline-flex items-center gap-1.5"><Clock size={14} />{r.scheduled_at ? new Date(r.scheduled_at).toLocaleString() : "—"}</span>
+                      <span className="inline-flex items-center gap-1.5"><Clock size={14} />{r.scheduled_at ? new Date(r.scheduled_at).toLocaleString("en-GB", { timeZone: "Asia/Kolkata" }) : "—"}</span>
                     </div>
                   </div>
 

@@ -6,7 +6,7 @@ import {
   ShieldAlert, FilterX, Database, Clock, CheckCircle2,
 } from "lucide-react";
 import { getVaptImport, getVaptImportAdmin, updateVaptFindingStatus, submitVaptImport, deleteVaptImport, deleteVaptImportAdmin, getVaptAccessStatus, getWebSocketUrl, downloadVaptVerificationReport, downloadVaptVerificationReportAdmin, postAdminRemediationReview, requestRescanDateChange, updateVerificationFindingStatus, submitVerificationReview } from "../services/api";
-import { downloadVaptClosureBundle, downloadVaptReportExcel, downloadVaptVerificationReportExcel, downloadVaptReportAdminExcel, downloadVaptVerificationReportAdminExcel, logSupportOffered, postAdminCloseWithoutVerification, postClientNextVaptDueDate } from "../services/api";
+import { downloadVaptClosureBundle, downloadVaptReportExcel, downloadVaptVerificationReportExcel, downloadVaptReportAdminExcel, downloadVaptVerificationReportAdminExcel, logSupportOffered, postAdminCloseWithoutVerification, postClientNextVaptDueDate, approveClientNextVaptDueDate } from "../services/api";
 import { getVaptRescanSchedules, postAdminApproveReschedule, postAdminRequestNewDate, postAdminVerificationDecision, acceptRescanDate, rejectRescanDate } from "../services/api";
 import RescanModal from "../components/RescanModal";
 import {
@@ -367,6 +367,8 @@ function RescanRequestsPanel({
               const isDecisionable = ["completed", "completed_with_errors", "failed"].includes(rowStatus) && s.verification_outcome === "pending";
               const isApprovable = ["scheduled", "approval_pending"].includes(rowStatus);
               const canRequestNewDate = ["scheduled", "requested", "approval_pending", "rejected"].includes(rowStatus);
+              const isExpired = Boolean(s.scheduled_at) && new Date(s.scheduled_at).getTime() <= Date.now();
+              const canSocRescheduleExpiredProposal = rowStatus === "requested" && isExpired;
               return (
                 <tr key={s.id} className="border-t border-slate-100 align-top dark:border-slate-800">
                   <td className="px-4 py-3 font-mono text-[12px]">{fmtDate(s.scheduled_at || s.requested_date || s.proposed_date)}</td>
@@ -400,7 +402,7 @@ function RescanRequestsPanel({
                           <p className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{closureBlockReason}</p>
                         )}
                       </div>
-                    ) : isApprovable || rowStatus === "rejected" ? (
+                    ) : isApprovable || rowStatus === "rejected" || canSocRescheduleExpiredProposal ? (
                       <div className="space-y-3">
                         <div className="flex flex-wrap gap-2">
                           {isApprovable && (
@@ -413,18 +415,21 @@ function RescanRequestsPanel({
                               {actionLoading[s.id] ? "Working…" : "Approve"}
                             </button>
                           )}
-                          {canRequestNewDate && (
+                          {((canRequestNewDate && rowStatus !== "requested") || canSocRescheduleExpiredProposal) && (
                             <button
                               type="button"
                               onClick={() => onToggleNewDate(s.id)}
                               className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:text-slate-300"
                             >
-                              Request new date
+                              {canSocRescheduleExpiredProposal ? "Propose replacement date" : "Request new date"}
                             </button>
                           )}
                         </div>
                         {rowStatus === "rejected" && (
                           <p className="text-xs text-amber-600 dark:text-amber-400">The client rejected the proposed date — propose a new verification date.</p>
+                        )}
+                        {canSocRescheduleExpiredProposal && (
+                          <p className="text-xs text-amber-600 dark:text-amber-400">This SOC proposal has expired — propose a new future verification date.</p>
                         )}
                         {draft.open && (
                           <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/60">
@@ -548,6 +553,11 @@ function RescanTimeline({ schedules, record }) {
 
 function NotificationPanel({ record, schedules, isPlatformView }) {
   const items = [];
+  const scheduleDate = (schedule) => fmtDate(
+    schedule?.scheduled_at,
+    isPlatformView ? "Asia/Kolkata" : (schedule?.scheduled_timezone || "UTC"),
+    true,
+  );
   if (record?.status === "client_completed") {
     const solvedCount = (record.findings || []).filter(f => (f.status || "") === "solved").length;
     const total = (record.findings || []).length;
@@ -591,7 +601,7 @@ function NotificationPanel({ record, schedules, isPlatformView }) {
         key: "requested",
         icon: Clock,
         title: "New date requested",
-        description: `SOC requested a new scan date for ${fmtDate(next.scheduled_at)}. ${next.note ? `Note: ${next.note}` : ""}`,
+        description: `SOC requested a new scan date for ${scheduleDate(next)}. ${next.note ? `Note: ${next.note}` : ""}`,
       });
     } else if (status === "approval_pending") {
       items.push({
@@ -599,8 +609,8 @@ function NotificationPanel({ record, schedules, isPlatformView }) {
         icon: Clock,
         title: "New date proposed",
         description: isPlatformView
-          ? `The client proposed a new verification date for ${fmtDate(next.scheduled_at)}. Approve it or propose another.`
-          : `Your proposed date for ${fmtDate(next.scheduled_at)} is awaiting SOC approval.`,
+          ? `The client proposed a new verification date for ${scheduleDate(next)}. Approve it or propose another.`
+          : `Your proposed date for ${scheduleDate(next)} is awaiting SOC approval.`,
       });
     } else if (status === "rejected") {
       items.push({
@@ -608,29 +618,29 @@ function NotificationPanel({ record, schedules, isPlatformView }) {
         icon: AlertCircle,
         title: "Proposed date rejected",
         description: isPlatformView
-          ? `The client rejected the proposed date for ${fmtDate(next.scheduled_at)}. Propose a new verification date.`
-          : `You rejected the proposed date for ${fmtDate(next.scheduled_at)}. SOC will propose a new verification date.`,
+          ? `The client rejected the proposed date for ${scheduleDate(next)}. Propose a new verification date.`
+          : `You rejected the proposed date for ${scheduleDate(next)}. SOC will propose a new verification date.`,
       });
     } else if (status === "approved") {
       items.push({
         key: "approved",
         icon: CheckCircle2,
         title: "Scan approved",
-        description: `SOC approved the next scan for ${fmtDate(next.scheduled_at)}. ${next.note ? `Note: ${next.note}` : ""}`,
+        description: `SOC approved the next scan for ${scheduleDate(next)}. ${next.note ? `Note: ${next.note}` : ""}`,
       });
     } else if (["completed", "completed_with_errors", "failed"].includes(status)) {
       items.push({
         key: "completed-scan",
         icon: CheckCircle2,
         title: status === "completed_with_errors" ? "Verification completed with target errors" : "Verification scan completed",
-        description: next.message || (status === "completed_with_errors" ? "Some targets failed. SOC review is required before closing this cycle." : `Verification scan completed for ${fmtDate(next.scheduled_at)}.`),
+        description: next.message || (status === "completed_with_errors" ? "Some targets failed. SOC review is required before closing this cycle." : `Verification scan completed for ${scheduleDate(next)}.`),
       });
     } else {
       items.push({
         key: "scheduled",
         icon: Clock,
         title: "Next scan scheduled",
-        description: `A verification scan is scheduled for ${fmtDate(next.scheduled_at)}. ${next.note ? `Note: ${next.note}` : ""}`,
+        description: `A verification scan is scheduled for ${scheduleDate(next)}. ${next.note ? `Note: ${next.note}` : ""}`,
       });
     }
   }
@@ -743,38 +753,58 @@ function ReportSwitcherTabs({ selectedReport, onSelect, initialCount, verificati
 // Renders all verification findings in the same table layout as the initial
 // report, with an additional Status column showing fixed / unresolved / pending.
 
-function VerificationReportTable({ schedule, record, isPlatformView }) {
+function VerificationReportTable({ schedule, record, isPlatformView, onSubmitted }) {
   const [drafts, setDrafts] = useState({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const result = schedule.result_data || {};
   const fixed = (result.fixed_findings || []).map((f) => ({ ...f, _verificationStatus: "fixed" }));
   const remaining = (result.remaining_findings || []).map((f) => ({ ...f, _verificationStatus: "unresolved" }));
-  const allFindings = [...fixed, ...remaining];
+  const allFindings = remaining;
   const scheduleIndex = record?._scheduleIndex ?? 0;
   const downloadPdf = isPlatformView ? downloadVaptVerificationReportAdmin : downloadVaptVerificationReport;
   const downloadExcelFn = isPlatformView ? downloadVaptVerificationReportAdminExcel : downloadVaptVerificationReportExcel;
   const reviewComplete = result.client_review_status === "client_completed";
 
   const updateDraft = (findingId, field, value) => setDrafts((prev) => ({ ...prev, [findingId]: { ...prev[findingId], [field]: value } }));
+  // Rows the client still needs to triage: every unresolved finding must be
+  // marked Solved / Ignore / False positive, and Ignore / False positive
+  // require a comment (mirrors the backend validation rules).
+  const untriaged = remaining.filter((finding) => {
+    const draft = drafts[finding.id] || finding;
+    const status = draft.status || "pending";
+    const comment = (draft.comment || "").trim();
+    return status === "pending" || ((status === "ignore" || status === "false_positive") && !comment);
+  });
+  const canSubmitReview = untriaged.length === 0;
   const saveReview = async () => {
+    if (!record || !schedule) return;
+    if (untriaged.length > 0) {
+      setMessage(`Mark every unresolved finding as Solved, Ignore, or False positive — a comment is required for Ignore and False positive. ${untriaged.length} remaining.`);
+      return;
+    }
     setSaving(true);
     setMessage("");
     try {
+      const token = localStorage.getItem("token");
+      // Only PATCH rows the client actually changed; untouched rows are
+      // already valid on the server and sending "pending" would be rejected.
       for (const finding of remaining) {
-        const draft = drafts[finding.id] || finding;
-        await updateVerificationFindingStatus(record.import_id, schedule.id, finding.id, { status: draft.status || "pending", comment: draft.comment || "" }, localStorage.getItem("token"));
+        const draft = drafts[finding.id];
+        if (!draft) continue;
+        await updateVerificationFindingStatus(record.import_id, schedule.id, finding.id, { status: draft.status, comment: (draft.comment || "").trim() }, token);
       }
-      await submitVerificationReview(record.import_id, schedule.id, localStorage.getItem("token"));
+      await submitVerificationReview(record.import_id, schedule.id, token);
       setMessage("Verification review submitted to SOC.");
+      onSubmitted?.();
     } catch (err) {
-      setMessage(err?.message || "Complete every unresolved finding before submitting.");
+      setMessage(err?.message || "Failed to submit the verification review.");
     } finally {
       setSaving(false);
     }
   };
 
-  if (allFindings.length === 0) {
+  if (fixed.length === 0 && remaining.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white/60 p-12 text-center dark:border-slate-700 dark:bg-slate-900/40">
         <FileText size={26} className="mb-3 text-slate-400" />
@@ -800,7 +830,7 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
               Verification {scheduleIndex + 1}
             </h2>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Uploaded {fmtDate(result.uploaded_at || schedule.scheduled_at)}
+              Uploaded {fmtDate(result.uploaded_at || schedule.scheduled_at, isPlatformView ? "Asia/Kolkata" : (schedule.scheduled_timezone || "UTC"), true)}
               {result.verification_file_name ? ` · ${result.verification_file_name}` : ""}
               {schedule.note ? ` · ${schedule.note}` : ""}
             </p>
@@ -836,8 +866,10 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
         </div>
       </div>
 
-      {/* Full finding table — same structure as initial report */}
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        {/* Only unresolved findings require client action. Confirmed-fixed
+          findings remain represented by the summary counts above. */}
+        {remaining.length > 0 ? (
+        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <div className="max-h-[70vh] overflow-auto rounded-t-2xl [scrollbar-gutter:stable]">
           <table className="w-full min-w-[1700px] border-collapse text-left">
             <thead className="text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
@@ -879,13 +911,18 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
               {statusCounts.fixed} confirmed fixed · {statusCounts.unresolved} still unresolved
             </p>
             {!isPlatformView && remaining.length > 0 && !reviewComplete && (
-              <div className="flex items-center gap-3">
+              <div className="flex flex-col items-start gap-2 sm:items-end">
                 {message && <p className="text-xs font-semibold text-sky-800 dark:text-sky-200">{message}</p>}
+                {!message && !canSubmitReview && (
+                  <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+                    Mark every unresolved finding as Solved, Ignore, or False positive (comment required for Ignore / False positive) before submitting.
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={saveReview}
-                  disabled={saving}
-                  className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:opacity-50"
+                  disabled={saving || !canSubmitReview}
+                  className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {saving ? "Submitting..." : "Submit verification review to SOC"}
                 </button>
@@ -894,6 +931,11 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
           </div>
         </div>
       </div>
+      ) : (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-sm font-semibold text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
+          All tested findings were confirmed fixed. No client verification review is required.
+        </div>
+      )}
     </div>
   );
 }
@@ -1106,9 +1148,9 @@ export default function VaptReport() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
+        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_verification_review_completed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
           refreshRescanSchedules();
-          if (["report_published", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
+          if (["report_published", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_verification_review_completed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
             const token2 = localStorage.getItem("token");
             if (token2) {
               const loadFn = isPlatformView ? getVaptImportAdmin : getVaptImport;
@@ -1282,6 +1324,28 @@ export default function VaptReport() {
     }
   }, [clientDueDate, record]);
 
+  const handleConfirmRecommendedDueDate = useCallback(async () => {
+    if (!record?.next_vapt_due_at) return;
+    try {
+      const result = await postClientNextVaptDueDate(record.import_id, record.next_vapt_due_at, localStorage.getItem("token"));
+      setRecord((prev) => prev ? { ...prev, lifecycle_status: result.lifecycle_status, next_vapt_due_at: result.next_vapt_due_at } : prev);
+      setToast({ text: "Recommended four-month date confirmed and VAPT cycle closed", type: "success" });
+    } catch (err) {
+      setToast({ text: err?.message || "Failed to confirm the recommended due date", type: "error" });
+    }
+  }, [record]);
+
+  const handleApproveClientDueDate = useCallback(async () => {
+    if (!record) return;
+    try {
+      const result = await approveClientNextVaptDueDate(record.import_id, localStorage.getItem("token"));
+      setRecord((prev) => prev ? { ...prev, lifecycle_status: result.lifecycle_status, next_vapt_due_at: result.next_vapt_due_at } : prev);
+      setToast({ text: "Client-proposed due date approved and VAPT cycle closed", type: "success" });
+    } catch (err) {
+      setToast({ text: err?.message || "Failed to approve the client due date", type: "error" });
+    }
+  }, [record]);
+
   const toggleNewDateForm = useCallback((scheduleId) => {
     setNewDateDraft((prev) => ({
       ...prev,
@@ -1296,6 +1360,16 @@ export default function VaptReport() {
     }));
   }, []);
 
+  useEffect(() => {
+    const activeSchedule = rescanSchedules[0];
+    if (!activeSchedule || !["requested", "approval_pending"].includes(activeSchedule.status)) return;
+    setNewDateDraft((prev) => {
+      const draft = prev[activeSchedule.id];
+      if (!draft?.open && !draft?.date && !draft?.note) return prev;
+      return { ...prev, [activeSchedule.id]: { date: "", note: "", open: false } };
+    });
+  }, [rescanSchedules]);
+
   const handleRequestNewDate = useCallback(async (scheduleId) => {
     const token = localStorage.getItem("token");
     const draft = newDateDraft[scheduleId];
@@ -1303,12 +1377,12 @@ export default function VaptReport() {
     setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
     setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
     try {
-      const proposedAt = new Date(draft.date).toISOString();
-      const updated = await postAdminRequestNewDate(scheduleId, { proposed_at: proposedAt, note: draft.note || "" }, token);
+      const proposedAt = draft.date;
+      const updated = await postAdminRequestNewDate(scheduleId, { proposed_at: proposedAt, proposed_timezone: "Asia/Kolkata", note: draft.note || "" }, token);
       setRescanSchedules((prev) =>
         prev.map((s) =>
           String(s.id) === String(scheduleId)
-            ? { ...s, status: "requested", scheduled_at: updated.proposed_at, note: updated.note || s.note }
+            ? { ...s, status: "requested", scheduled_at: updated.proposed_at, scheduled_timezone: updated.proposed_timezone || "Asia/Kolkata", note: updated.note || s.note }
             : s
         )
       );
@@ -1328,12 +1402,14 @@ export default function VaptReport() {
     setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
     setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
     try {
-      const proposedAt = new Date(draft.date).toISOString();
-      const updated = await requestRescanDateChange(record.import_id, scheduleId, { proposed_at: proposedAt, note: draft.note || "" }, token);
+      const proposedAt = draft.date;
+      const schedule = rescanSchedules.find((item) => String(item.id) === String(scheduleId));
+      const proposedTimezone = schedule?.scheduled_timezone || "UTC";
+      const updated = await requestRescanDateChange(record.import_id, scheduleId, { proposed_at: proposedAt, proposed_timezone: proposedTimezone, note: draft.note || "" }, token);
       setRescanSchedules((prev) =>
         prev.map((s) =>
           String(s.id) === String(scheduleId)
-            ? { ...s, status: updated.status || "approval_pending", scheduled_at: updated.proposed_at, note: updated.note || s.note }
+            ? { ...s, status: updated.status || "approval_pending", scheduled_at: updated.proposed_at, scheduled_timezone: updated.proposed_timezone || s.scheduled_timezone || "UTC", note: updated.note || s.note }
             : s
         )
       );
@@ -1344,7 +1420,7 @@ export default function VaptReport() {
     } finally {
       setRescanActionLoading((p) => ({ ...p, [scheduleId]: false }));
     }
-  }, [newDateDraft, record]);
+  }, [newDateDraft, record, rescanSchedules]);
 
   // ── User accept/reject proposed dates ──
   const handleAcceptDate = useCallback(async (scheduleId) => {
@@ -1687,20 +1763,28 @@ export default function VaptReport() {
             )}
             {record.next_vapt_due_at && record.lifecycle_status === "closed" && (
               <p className="mt-2 text-sm text-emerald-700 dark:text-emerald-400">
-                Next VAPT assessment: <strong>{new Date(record.next_vapt_due_at).toLocaleString()}</strong>
+                Next VAPT assessment: <strong>{fmtDate(record.next_vapt_due_at)}</strong>
               </p>
             )}
             {!isPlatformView && record.lifecycle_status === "closure_pending_client_due_date" && (
               <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30">
                 <p className="text-sm font-bold text-sky-800 dark:text-sky-200">SOC approved closure</p>
-                <p className="mt-1 text-sm text-sky-700 dark:text-sky-300">Choose the next VAPT due date and time to complete closure.</p>
+                <p className="mt-1 text-sm text-sky-700 dark:text-sky-300">Recommended next VAPT date (4 calendar months): <strong>{fmtDate(record.next_vapt_due_at, "UTC")}</strong>. Confirm it or propose a different date for SOC approval.</p>
                 <div className="mt-3 flex flex-wrap items-end gap-3">
+                  <button type="button" onClick={handleConfirmRecommendedDueDate} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Confirm recommended date</button>
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    Next VAPT due date/time
+                    Propose a different date/time
                     <input type="datetime-local" value={clientDueDate} onChange={(e) => setClientDueDate(e.target.value)} className="mt-1 block rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
                   </label>
-                  <button type="button" onClick={handleClientDueDate} disabled={!clientDueDate} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Complete closure</button>
+                  <button type="button" onClick={handleClientDueDate} disabled={!clientDueDate} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Submit proposal to SOC</button>
                 </div>
+              </div>
+            )}
+            {isPlatformView && record.lifecycle_status === "closure_pending_soc_due_date" && (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
+                <p className="text-sm font-bold text-amber-800 dark:text-amber-200">Client proposed a different next VAPT date</p>
+                <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">Proposed date: <strong>{fmtDate(record.next_vapt_due_at, "UTC")}</strong>. Approve it to close this VAPT cycle.</p>
+                <button type="button" onClick={handleApproveClientDueDate} className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Approve proposed date</button>
               </div>
             )}
             {isPlatformView && record.remediation_review_status === "pending_soc_review" && (
@@ -1747,7 +1831,7 @@ export default function VaptReport() {
                 <div>
                   <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Next rescan</p>
                   <p className="mt-2 text-lg font-extrabold text-slate-900 dark:text-slate-100">
-                    {rescanSchedules.length > 0 ? new Date(rescanSchedules[0].scheduled_at).toLocaleString() : "No rescan scheduled"}
+                    {rescanSchedules.length > 0 ? fmtDate(rescanSchedules[0].scheduled_at, isPlatformView ? "Asia/Kolkata" : (rescanSchedules[0].scheduled_timezone || "UTC")) : "No rescan scheduled"}
                   </p>
                   {rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && !isPlatformView && (
                     <p className="mt-1 text-xs font-semibold text-amber-600 dark:text-amber-400">SOC proposed a new date — review below</p>
@@ -1764,7 +1848,7 @@ export default function VaptReport() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {/* User: accept/reject proposed dates */}
-                  {!isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && (
+                  {!isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && new Date(rescanSchedules[0].scheduled_at).getTime() > Date.now() && (
                     <>
                       <button
                         type="button"
@@ -1830,7 +1914,7 @@ export default function VaptReport() {
                   : "No next rescan has been scheduled yet."
                 }
               </p>
-              {!isPlatformView && newDateDraft[rescanSchedules[0]?.id]?.open && (
+              {!isPlatformView && ["scheduled", "rejected"].includes(rescanSchedules[0]?.status) && newDateDraft[rescanSchedules[0]?.id]?.open && (
                 <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
                   <p className="mb-2 text-xs font-black uppercase tracking-[0.22em] text-amber-700 dark:text-amber-300">Propose a different date</p>
                   <div className="grid gap-3 sm:grid-cols-[220px_1fr_auto] sm:items-end">
@@ -1863,6 +1947,13 @@ export default function VaptReport() {
                     </button>
                   </div>
                 </div>
+              )}
+              {!isPlatformView && rescanSchedules[0]?.status === "requested" && (
+                <p className="mt-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300">
+                  {new Date(rescanSchedules[0].scheduled_at).getTime() <= Date.now()
+                    ? "This proposed date has expired. SOC must propose a new future date."
+                    : "SOC has proposed this date. Accept or reject it first. You can propose a different date after rejecting it."}
+                </p>
               )}
               {rescanSchedules.length > 0 && rescanSchedules[0].note && (
                 <p className="mt-3 rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-300">Note: {rescanSchedules[0].note}</p>
@@ -2184,6 +2275,10 @@ export default function VaptReport() {
             schedule={rescanSchedules.find((s) => String(s.id) === String(selectedReport))}
             record={{ ...record, _scheduleIndex: rescanSchedules.findIndex((s) => String(s.id) === String(selectedReport)) }}
             isPlatformView={isPlatformView}
+            onSubmitted={() => {
+              refreshRescanSchedules();
+              setToast({ text: "Verification review submitted to SOC", type: "success" });
+            }}
           />
         )}
       </div>

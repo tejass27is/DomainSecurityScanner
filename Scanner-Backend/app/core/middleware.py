@@ -33,6 +33,8 @@ def protect(
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="This account has been deactivated by an administrator")
 
     blocked_user = db.query(Blacklist).filter(Blacklist.email == user.email.lower()).first()
     if blocked_user:

@@ -24,6 +24,7 @@ from app.api.admin.service import (
     delete_admin,
     delete_promo_code,
     delete_soc_analyst,
+    set_soc_analyst_active,
     disable_promo_code,
     delete_subscription_plan,
     generate_promo_code,
@@ -47,7 +48,7 @@ from app.api.admin.service import (
     update_subscription_plan,
 )
 from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
-from app.api.vapt.routes import _to_detail, _to_list_item, _uploader_email_map
+from app.api.vapt.routes import _region_display_name, _to_detail, _to_list_item, _uploader_email_map
 from app.api.vapt import schedule_service
 from app.core.middleware import (
     require_admin,
@@ -237,6 +238,27 @@ def delete_soc_analyst_account(
     )
 
 
+@router.patch("/soc-analyst/{email}/active")
+def set_soc_analyst_active_status(
+    email: str,
+    payload: dict,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    active = payload.get("is_active")
+    if not isinstance(active, bool):
+        raise HTTPException(status_code=400, detail="is_active must be a boolean")
+    return set_soc_analyst_active(
+        email,
+        active,
+        current_admin,
+        db,
+        ip_address=get_request_ip(request),
+        public_ip=get_public_ip(request),
+    )
+
+
 # ─── Platform-wide VAPT view (admins + SOC analysts, read-only) ──────────────
 
 def _platform_import_or_404(db: Session, import_id: str) -> VaptImport:
@@ -317,6 +339,7 @@ async def schedule_vapt_rescan_admin(
         hosts=body.hosts,
         recurrence=body.recurrence,
         note=body.note,
+        scheduled_timezone="Asia/Kolkata",
     )
 
     try:
@@ -410,7 +433,7 @@ def download_all_vapt_report(
     """Download the PDF report for any VAPT import on the platform."""
     record = _platform_import_or_404(db, import_id)
     try:
-        pdf_bytes = generate_vapt_report_pdf(record)
+        pdf_bytes = generate_vapt_report_pdf(record, client_name=_region_display_name(db, record))
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(
             status_code=500,
@@ -443,7 +466,7 @@ def download_vapt_verification_report_admin(
     if not schedule:
         raise HTTPException(status_code=404, detail="Verification schedule not found")
     try:
-        pdf_bytes = generate_vapt_verification_report_pdf(schedule, record)
+        pdf_bytes = generate_vapt_verification_report_pdf(schedule, record, prepared_for=_region_display_name(db, record))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to generate the verification PDF report: {exc}")
     return StreamingResponse(
@@ -490,7 +513,7 @@ def download_vapt_verification_report_admin_excel(
     if not schedule:
         raise HTTPException(status_code=404, detail="Verification schedule not found")
     try:
-        xlsx_bytes = generate_vapt_verification_report_xlsx(schedule, record)
+        xlsx_bytes = generate_vapt_verification_report_xlsx(schedule, record, prepared_for=_region_display_name(db, record))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to generate verification Excel: {exc}")
     return StreamingResponse(

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, blockVaptAccess, unblockVaptAccess, getScanSummaries, getTotalScans, createAdmin, deleteAdmin, createSocAnalyst, deleteSocAnalyst } from "../services/api";
+import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, blockVaptAccess, unblockVaptAccess, getScanSummaries, getTotalScans, createAdmin, deleteAdmin, createSocAnalyst, deleteSocAnalyst, setSocAnalystActive } from "../services/api";
 
 const ROLE_LABEL = {
   owner: "Owner",
@@ -78,6 +78,7 @@ function AdminUsers() {
   const [blacklistSearch, setBlacklistSearch] = useState("");
   const [deletingAdminEmail, setDeletingAdminEmail] = useState(null);
   const [deletingSocAnalystEmail, setDeletingSocAnalystEmail] = useState(null);
+  const [updatingSocAnalystEmail, setUpdatingSocAnalystEmail] = useState(null);
 
   const showNotification = (text, type = "success") => {
     setNotification({ text, type });
@@ -254,6 +255,22 @@ function AdminUsers() {
       showNotification(err.message, "error");
     } finally {
       setDeletingSocAnalystEmail(null);
+    }
+  };
+
+  const handleToggleSocActive = async (user) => {
+    const nextActive = !user.is_active;
+    const action = nextActive ? "reactivate" : "deactivate";
+    if (!window.confirm(`${nextActive ? "Reactivate" : "Deactivate"} SOC analyst ${user.email}?`)) return;
+    setUpdatingSocAnalystEmail(user.email);
+    try {
+      await setSocAnalystActive(user.email, nextActive, localStorage.getItem("token"));
+      showNotification(`SOC analyst ${nextActive ? "reactivated" : "deactivated"} successfully`);
+      fetchUsers();
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setUpdatingSocAnalystEmail(null);
     }
   };
 
@@ -482,7 +499,11 @@ function AdminUsers() {
                           >
                             <div className="flex items-center gap-3 flex-1 min-w-0">
                               <span className="text-sm font-semibold text-on-surface truncate">{u.email}</span>
-                              {u.is_blacklisted ? (
+                              {!u.is_active ? (
+                                <span className="shrink-0 px-2 py-0.5 bg-amber-100 text-amber-700 text-[10px] font-bold rounded-full uppercase">
+                                  Deactivated
+                                </span>
+                              ) : u.is_blacklisted ? (
                                 <span className="shrink-0 px-2 py-0.5 bg-red-100 text-red-700 text-[10px] font-bold rounded-full uppercase">
                                   Blocked
                                 </span>
@@ -492,6 +513,14 @@ function AdminUsers() {
                                 </span>
                               )}
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleSocActive(u)}
+                              disabled={updatingSocAnalystEmail === u.email}
+                              className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all disabled:opacity-60 disabled:cursor-not-allowed ${u.is_active ? "bg-amber-500 text-white hover:bg-amber-600" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}
+                            >
+                              {updatingSocAnalystEmail === u.email ? "Saving..." : u.is_active ? "Deactivate" : "Reactivate"}
+                            </button>
                             <button
                               type="button"
                               onClick={() => handleDeleteAdmin(u.email)}

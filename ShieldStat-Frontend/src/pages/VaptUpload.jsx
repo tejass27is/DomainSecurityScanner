@@ -433,7 +433,7 @@ export default function VaptUpload() {
     checklist_answers: buildEmptyChecklistAnswers(),
   };
   const [onboarding, setOnboarding] = useState(emptyOnboarding);
-  const timezoneOptions = Array.from(new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, "UTC", "Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Australia/Sydney"].filter(Boolean)));
+  const timezoneOptions = Array.from(new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, "UTC", "Asia/Kolkata", "Africa/Johannesburg", "Asia/Manila", "Asia/Dubai", "Asia/Singapore", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Australia/Sydney"].filter(Boolean)));
   const [accessCode, setAccessCode] = useState("");
   const [accessName, setAccessName] = useState("");
   const [requestRegionCode, setRequestRegionCode] = useState("");
@@ -623,6 +623,14 @@ export default function VaptUpload() {
       })
       .catch(() => setOrgsError("Could not load organizations or approved rescans. Please try again."));
   }, [canUpload]);
+
+  useEffect(() => {
+    if (!selectedVerificationSchedule) return;
+    const schedule = verificationSchedules.find((item) => item.id === selectedVerificationSchedule);
+    if (!schedule) return;
+    setSelectedOrgId(schedule.org_id || "");
+    setSelectedRegion(schedule.region || "");
+  }, [selectedVerificationSchedule, verificationSchedules]);
 
   const submitVaptRequest = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -934,7 +942,7 @@ export default function VaptUpload() {
         await requestVaptRegion({
           region_code: regionCode,
           region_name: regionName,
-          testing_start_at: new Date(onboarding.testing_start_at).toISOString(),
+          testing_start_at: onboarding.testing_start_at,
           testing_timezone: onboarding.testing_timezone,
         }, token);
         setVaptAccessStatus(await getVaptAccessStatus(token));
@@ -977,7 +985,7 @@ export default function VaptUpload() {
         tech_contact_email: onboarding.tech_contact_email || derivedPrimaryContact.email || "",
         tech_contact_phone: onboarding.tech_contact_phone,
         testing_window: onboarding.testing_window,
-        testing_start_at: new Date(onboarding.testing_start_at).toISOString(),
+            testing_start_at: onboarding.testing_start_at,
         testing_timezone: onboarding.testing_timezone,
         out_of_scope_systems: onboarding.out_of_scope_systems,
         checklist_answers: normalizedAnswers,
@@ -1423,7 +1431,7 @@ export default function VaptUpload() {
           {onboarding.schedule_status === "date_proposed" && onboarding.proposed_start_at && onboarding.proposed_end_at && (
             <div className="mt-5 rounded-xl border border-sky-200 bg-sky-50 p-4 text-left text-sm text-sky-900 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200">
               <p className="font-bold">SOC proposed a different testing window</p>
-              <p className="mt-1">{new Date(onboarding.proposed_start_at).toLocaleString()} to {new Date(onboarding.proposed_end_at).toLocaleString()} ({onboarding.proposed_timezone})</p>
+              <p className="mt-1">{fmtDate(onboarding.proposed_start_at, currentUser?.role === "admin" || currentUser?.role === "soc_analyst" ? "Asia/Kolkata" : onboarding.proposed_timezone)} to {fmtDate(onboarding.proposed_end_at, currentUser?.role === "admin" || currentUser?.role === "soc_analyst" ? "Asia/Kolkata" : onboarding.proposed_timezone)} ({onboarding.proposed_timezone})</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" onClick={() => handleInitialDateDecision("accepted")} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Accept date</button>
                 <button type="button" onClick={() => handleInitialDateDecision("rejected", "Please propose another first-scan window.")} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">Reject date</button>
@@ -1518,18 +1526,29 @@ export default function VaptUpload() {
                     <select
                       id="vapt-verification-schedule"
                       value={selectedVerificationSchedule}
-                      onChange={(e) => setSelectedVerificationSchedule(e.target.value)}
+                      onChange={(e) => {
+                        const scheduleId = e.target.value;
+                        setSelectedVerificationSchedule(scheduleId);
+                        const schedule = verificationSchedules.find((item) => item.id === scheduleId);
+                        if (scheduleId && schedule) {
+                          setSelectedOrgId(schedule.org_id || "");
+                          setSelectedRegion(schedule.region || "");
+                        } else if (!scheduleId) {
+                          setSelectedOrgId("");
+                          setSelectedRegion("");
+                        }
+                      }}
                       className="w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100"
                     >
                       <option value="">Upload an initial report</option>
                       {verificationSchedules.map((schedule) => (
                         <option key={schedule.id} value={schedule.id}>
-                          Verification · {schedule.file_name || schedule.import_id} · {new Date(schedule.scheduled_at).toLocaleString()}
+                          Verification · {schedule.file_name || schedule.import_id} · {fmtDate(schedule.scheduled_at, "Asia/Kolkata", true)} IST
                         </option>
                       ))}
                     </select>
                     <p className="mt-2 text-xs leading-5 text-sky-700 dark:text-sky-300">
-                      Attach the SOC retest export to complete that manual verification.
+                      Attach the SOC retest export to complete that manual verification. The scheduled IST time is informational; approved verifications can be uploaded immediately.
                     </p>
                   </div>
                 )}
@@ -1579,7 +1598,11 @@ export default function VaptUpload() {
                       </option>
                     ))}
                   </select>
-                  {orgsError ? (
+                  {selectedVerificationSchedule ? (
+                    <p className="mt-2 text-xs font-semibold text-sky-700 dark:text-sky-300">
+                      Automatically selected from the verification schedule.
+                    </p>
+                  ) : orgsError ? (
                     <p className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{orgsError}</p>
                   ) : (
                     <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
@@ -1617,7 +1640,7 @@ export default function VaptUpload() {
                     )}
                   </select>
                   <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                    Users of the organization only see reports for their approved regions.
+                    {selectedVerificationSchedule ? "Automatically selected from the verification schedule." : "Users of the organization only see reports for their approved regions."}
                   </p>
                 </div>
               </div>

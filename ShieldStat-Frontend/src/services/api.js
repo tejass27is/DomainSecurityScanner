@@ -958,6 +958,13 @@ export function postClientNextVaptDueDate(importId, nextDueAt, token) {
   });
 }
 
+export function approveClientNextVaptDueDate(importId, token) {
+  return request(`/vapt/admin/imports/${encodeURIComponent(importId)}/next-due-date/approve`, {
+    method: "POST",
+    token,
+  });
+}
+
 // VAPT rescan scheduling APIs
 export function postVaptRescanSchedule(importId, body, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule`, { method: "POST", body, token });
@@ -1010,10 +1017,6 @@ export function getVaptOnboarding(token) {
 
 export function updateVaptOnboarding(fields, token) {
   return request("/vapt/onboarding", { method: "PATCH", body: fields, token });
-}
-
-export function getHasCompletedScans(token) {
-  return request("/vapt/has-completed-scans", { token, skipCache: true });
 }
 
 // ─── Excel exports ──────────────────────────────────────────────────────────
@@ -1081,5 +1084,15 @@ export function proposeInitialVaptDate(orgId, body, token) {
     method: "POST",
     body,
     token,
+  });
+}
+
+export async function setSocAnalystActive(email, isActive, token) {
+  const publicIp = await getPublicIp();
+  return request(`/admin/soc-analyst/${encodeURIComponent(email)}/active`, {
+    method: "PATCH",
+    body: { is_active: isActive },
+    token,
+    publicIp,
   });
 }

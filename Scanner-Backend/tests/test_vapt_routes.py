@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 
 from app.db.base import Base, engine
 from app.db.models import VaptImport, User, VaptOnboardingChecklist, Region, OrganizationRegion, Organization
+from app.core.middleware import require_owner, require_admin, require_admin_or_soc_analyst, require_soc_analyst
 from app.api.vapt.routes import (
     _closure_blockers,
     _evaluate_manual_verification,
+    _verification_finding_key,
     _normalize_finding_status,
     _reopen_unresolved_findings,
     request_vapt_access,
@@ -70,6 +72,27 @@ def test_update_vapt_finding_status_persists_comment_and_status():
         assert record.findings[0]["comment"] == "Fixed in patch"
     finally:
         db.close()
+
+
+def test_vapt_role_permission_matrix():
+    owner = User(user_id="owner", org_id="org-1", email="owner@example.com", password="x", role="owner")
+    client = User(user_id="client", org_id="org-1", email="client@example.com", password="x", role="client")
+    soc = User(user_id="soc", org_id=None, email="soc@example.com", password="x", role="soc_analyst")
+    admin = User(user_id="admin", org_id=None, email="admin@example.com", password="x", role="admin")
+
+    assert require_owner(current_user=owner) is owner
+    assert require_admin(current_user=admin) is admin
+    assert require_admin_or_soc_analyst(current_user=soc) is soc
+    assert require_admin_or_soc_analyst(current_user=admin) is admin
+    assert require_soc_analyst(current_user=soc) is soc
+
+    for gate, user in ((require_owner, client), (require_admin, soc), (require_soc_analyst, owner), (require_soc_analyst, admin)):
+        try:
+            gate(current_user=user)
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 403
+        else:
+            raise AssertionError(f"{gate.__name__} unexpectedly allowed {user.role}")
 
 
 def test_vapt_import_submit_sets_status_submitted():
@@ -177,6 +200,15 @@ def test_manual_verification_marks_no_confirmed_fix_as_failed():
     assert error
     assert fixed == []
     assert remaining == original
+
+
+def test_verification_matching_includes_host_context():
+    first = {"plugin_id": "100", "title": "TLS issue", "affected_hosts": ["10.0.0.1"], "port": 443, "protocol": "tcp"}
+    same_check_other_host = {**first, "affected_hosts": ["10.0.0.2"]}
+    same_check_same_host = {**first, "affected_hosts": ["10.0.0.1"]}
+
+    assert _verification_finding_key(first) != _verification_finding_key(same_check_other_host)
+    assert _verification_finding_key(first) == _verification_finding_key(same_check_same_host)
 
 
 def test_severity_gated_closure_blocks_only_pending_medium_and_above():

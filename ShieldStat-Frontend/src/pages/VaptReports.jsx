@@ -406,7 +406,7 @@ export default function VaptReports() {
                         <td className="px-6 py-4 text-slate-600 dark:text-slate-300">
                           <span className="inline-flex items-center gap-1.5"><Server size={13} className="text-slate-400" />{item.unique_hosts}</span>
                         </td>
-                        <td className="px-6 py-4 text-xs text-slate-500 dark:text-slate-400">{fmtDate(item.created_at)}</td>
+                        <td className="px-6 py-4 text-xs text-slate-500 dark:text-slate-400">{fmtDate(item.created_at, "Asia/Kolkata")}</td>
                         <td className="px-6 py-4">
                           <div className="flex items-center justify-end gap-1.5">
                             <button

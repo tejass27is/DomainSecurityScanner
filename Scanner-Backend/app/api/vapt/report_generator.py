@@ -42,6 +42,7 @@ for transparency, on the executive dashboard.
 
 import json
 import os
+from copy import copy
 from datetime import datetime, timezone
 from io import BytesIO
 from types import SimpleNamespace
@@ -842,8 +843,6 @@ def _section_findings_summary(record, styles):
         ("BACKGROUND", (0, 0), (-1, 0), PRIMARY),
         ("ROUNDEDCORNERS", [3, 3, 3, 3]),
         ("GRID", (0, 0), (-1, -1), 0.4, BORDER),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]
     for i in range(1, len(data)):
@@ -1049,7 +1048,11 @@ def _section_remediation_roadmap(record, styles):
             Paragraph(str(count), styles["table_cell"]),
             Paragraph(SEVERITY_TIMELINE[sev], styles["table_cell"]),
             Paragraph(_esc(owner), styles["table_cell"]),
-            Paragraph("Pending" if count else "—", styles["table_cell"]),
+            Paragraph(
+                "Closed" if count and getattr(record, "lifecycle_status", "") == "closed"
+                else ("Pending" if count else "—"),
+                styles["table_cell"],
+            ),
         ])
     t = Table(data, colWidths=[24 * mm, 22 * mm, 30 * mm, None, 22 * mm], hAlign="LEFT")
     style = [
@@ -1138,8 +1141,8 @@ def _section_appendix(record, styles):
 # Record filtering (unchanged behavior — informational entries excluded)
 # ─────────────────────────────────────────────────────────────────────────
 
-def _reported_only(record):
-    findings = [f for f in (record.findings or [])
+def _reported_only(record, findings_override=None):
+    findings = [f for f in (findings_override if findings_override is not None else (record.findings or []))
                 if (f.get("severity_label") or "").lower() in _REPORTED_SEVERITIES]
     findings.sort(key=lambda f: (-SEVERITY_RANK.get((f.get("severity_label") or "").lower(), 0),
                                   -(f.get("cvss_score") or 0)))
@@ -1151,6 +1154,7 @@ def _reported_only(record):
         file_format=record.file_format,
         source_tool=record.source_tool,
         status=getattr(record, "status", ""),
+        lifecycle_status=getattr(record, "lifecycle_status", ""),
         total_findings=len(findings),
         unique_hosts=len(hosts),
         risk_score=record.risk_score,
@@ -1193,6 +1197,8 @@ def generate_vapt_report_pdf(
     scope: str = None,
     cover_logo_path: str = None,
     back_logo_path: str = None,
+    findings_override: list[dict] = None,
+    report_title: str = "Initial VAPT Security Report",
 ) -> bytes:
     """Build the full VAPT PDF report for a stored import and return raw bytes.
 
@@ -1202,7 +1208,7 @@ def generate_vapt_report_pdf(
     call sites keep working unchanged.
     """
     raw_info_count = (record.severity_distribution or {}).get("info", 0)
-    record = _reported_only(record)
+    record = _reported_only(record, findings_override=findings_override)
     _register_fonts()
     styles = _build_styles()
 
@@ -1211,7 +1217,6 @@ def generate_vapt_report_pdf(
     engagement_start = engagement_start or created.strftime("%d %b %Y")
     engagement_end = engagement_end or created.strftime("%d %b %Y")
     assessment_date = created.strftime("%d %b %Y")
-    report_title = "Initial VAPT Security Report"
 
     assessment_type = assessment_type or "External & Internal Vulnerability Assessment and Penetration Testing"
     methodology = methodology or ("Grey-box testing aligned with the OWASP Testing Guide, PTES, "
@@ -1266,79 +1271,73 @@ def generate_vapt_report_pdf(
     return out.getvalue()
 
 
-def generate_vapt_verification_report_pdf(schedule, original_record) -> bytes:
-    """Build a report containing only one verification schedule's results."""
-    _register_fonts()
-    styles = _build_styles()
-    buffer = BytesIO()
-    doc = BaseDocTemplate(
-        buffer,
-        pagesize=A4,
-        leftMargin=MARGIN,
-        rightMargin=MARGIN,
-        topMargin=20 * mm,
-        bottomMargin=18 * mm,
-        title=f"VAPT Verification Report - {original_record.file_name}",
-        author="iSecurify",
-    )
-    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="verification")
-    doc.addPageTemplates([PageTemplate(id="verification", frames=[frame])])
-
+def generate_vapt_verification_report_pdf(schedule, original_record, prepared_for: str = None) -> bytes:
+    """Build a verification report using the same layout as the initial report."""
     result_data = schedule.result_data or {}
-    targets = result_data.get("targets", {}) if isinstance(result_data, dict) else {}
     findings = result_data.get("findings", []) if isinstance(result_data, dict) else []
     fixed_findings = result_data.get("fixed_findings", []) if isinstance(result_data, dict) else []
     remaining_findings = result_data.get("remaining_findings", []) if isinstance(result_data, dict) else []
-    if not isinstance(targets, dict):
-        targets = {}
     if not isinstance(findings, list):
         findings = []
     if not isinstance(fixed_findings, list):
         fixed_findings = []
     if not isinstance(remaining_findings, list):
         remaining_findings = []
-    outcome = getattr(schedule, "verification_outcome", None) or "pending"
-    outcome_label = {"closed": "CLOSED", "reopened": "REOPENED - REMEDIATION REQUIRED"}.get(outcome, "AWAITING SOC DECISION")
-    schedule_id = str(schedule.id)
+    prepared_for = prepared_for or getattr(original_record, "region", None) or "Not specified"
+    if not findings:
+        findings = fixed_findings + remaining_findings
+    severity_distribution = {severity: 0 for severity in SEVERITY_ORDER}
+    category_distribution = {}
+    for finding in findings:
+        severity = (finding.get("severity_label") or "").lower()
+        if severity in severity_distribution:
+            severity_distribution[severity] += 1
+        category = finding.get("category") or "Other"
+        category_distribution[category] = category_distribution.get(category, 0) + 1
+    verification_record = SimpleNamespace(
+        import_id=getattr(original_record, "import_id", None),
+        org_id=getattr(original_record, "org_id", ""),
+        region=getattr(original_record, "region", ""),
+        file_name="Verification assessment",
+        file_format=getattr(original_record, "file_format", ""),
+        source_tool=getattr(original_record, "source_tool", "generic"),
+        status=getattr(schedule, "status", "completed"),
+        risk_score=getattr(original_record, "risk_score", 0) if findings else 0,
+        severity=max(severity_distribution, key=severity_distribution.get) if findings else "none",
+        severity_distribution=severity_distribution,
+        category_distribution=category_distribution,
+        summary={"raw_findings_parsed": len(findings), "verification_findings": len(findings)},
+        findings=findings,
+        created_at=getattr(schedule, "uploaded_at", None) or getattr(original_record, "created_at", None),
+        unique_hosts=len({host for finding in findings for host in (finding.get("affected_hosts") or [])}),
+    )
+    return generate_vapt_report_pdf(
+        verification_record,
+        client_name=prepared_for,
+        report_title="VAPT Verification Report",
+        assessment_type="Verification Assessment",
+        methodology="Targeted re-validation of previously reported findings",
+        scope=f"Verification assessment for {prepared_for}",
+    )
 
-    story = [
-        Paragraph("VAPT Verification Report", styles["cover_title"]),
-        Paragraph("Re-validation results for one scheduled verification scan", styles["body"]),
-        Spacer(1, 8),
-        Paragraph(f"<b>Original report:</b> {_esc(original_record.file_name)}", styles["body"]),
-        Paragraph(f"<b>VAPT cycle:</b> {getattr(original_record, 'cycle_number', 1)}", styles["body"]),
-        Paragraph(f"<b>Verification date:</b> {_esc(schedule.scheduled_at)}", styles["body"]),
-        Paragraph(f"<b>Schedule ID:</b> {_esc(schedule_id)}", styles["body"]),
-        Paragraph(f"<b>SOC outcome:</b> {_esc(outcome_label)}", styles["body"]),
-        Spacer(1, 12),
-        Paragraph("Verification scan data", styles["h1"]),
-        Paragraph("Only data from this verification upload is included. The original VAPT findings are not repeated.", styles["body"]),
-        Paragraph(f"<b>Findings confirmed fixed:</b> {len(fixed_findings)} &nbsp;&nbsp; <b>Findings still present:</b> {len(remaining_findings)}", styles["body"]),
-        Spacer(1, 6),
+
+def generate_vapt_closure_report_pdf(record, prepared_for: str = None) -> bytes:
+    """Build a polished closure report using the initial report layout."""
+    closure_record = copy(record)
+    closure_record.file_name = "VAPT Closure Assessment"
+    closed_findings = [
+        {**finding, "remediation_status": "closed"}
+        for finding in (closure_record.findings or [])
+        if (finding.get("status") or "").lower() in {"solved", "ignore", "false_positive"}
     ]
-    if findings:
-        story.extend([
-            Paragraph("Verification findings", styles["h2"]),
-            Preformatted(_latin1_safe(json.dumps(findings, indent=2, default=str)), styles["body"]),
-            Spacer(1, 8),
-        ])
-        if remaining_findings:
-            story.extend([
-                Paragraph("Findings still present", styles["h2"]),
-                Preformatted(_latin1_safe(json.dumps(remaining_findings, indent=2, default=str)), styles["body"]),
-            ])
-    elif not targets:
-        story.append(Paragraph("No verification result data has been received yet.", styles["body"]))
-    else:
-        for target, payload in targets.items():
-            story.extend([
-                Paragraph(f"Target: {_esc(target)}", styles["h2"]),
-                Preformatted(_latin1_safe(json.dumps(payload, indent=2, default=str)), styles["body"]),
-                Spacer(1, 8),
-            ])
-    doc.build(story)
-    return buffer.getvalue()
-
+    return generate_vapt_report_pdf(
+        closure_record,
+        client_name=prepared_for or getattr(closure_record, "region", None) or "Not specified",
+        report_title="VAPT Closure Report",
+        assessment_type="VAPT Closure Assessment",
+        methodology="Consolidated review of the completed VAPT cycle and verification results",
+        findings_override=closed_findings,
+    )
 
 # ─────────────────────────────────────────────────────────────────────────
 # Excel (.xlsx) generation — same normalized data, different container
@@ -1416,7 +1415,7 @@ def _build_findings_xlsx_sheet(wb, findings, sheet_name="Findings"):
     return ws
 
 
-def generate_vapt_report_xlsx(record) -> bytes:
+def generate_vapt_report_xlsx(record, findings_override=None) -> bytes:
     """Build an Excel workbook containing the VAPT findings and return raw bytes.
 
     Uses the same filtered-and-sorted finding set as the PDF report.
@@ -1425,7 +1424,7 @@ def generate_vapt_report_xlsx(record) -> bytes:
     from openpyxl import Workbook
 
     raw_info_count = (record.severity_distribution or {}).get("info", 0)
-    filtered = _reported_only(record)
+    filtered = _reported_only(record, findings_override=findings_override)
 
     wb = Workbook()
 
@@ -1475,7 +1474,7 @@ def generate_vapt_report_xlsx(record) -> bytes:
     return buf.getvalue()
 
 
-def generate_vapt_verification_report_xlsx(schedule, original_record) -> bytes:
+def generate_vapt_verification_report_xlsx(schedule, original_record, prepared_for: str = None) -> bytes:
     """Build an Excel workbook for one verification schedule's results."""
     from io import BytesIO
     from openpyxl import Workbook
@@ -1491,6 +1490,7 @@ def generate_vapt_verification_report_xlsx(schedule, original_record) -> bytes:
         fixed_findings = []
     if not isinstance(remaining_findings, list):
         remaining_findings = []
+    prepared_for = prepared_for or getattr(original_record, "region", None) or "Not specified"
 
     wb = Workbook()
 
@@ -1539,8 +1539,7 @@ def generate_vapt_verification_report_xlsx(schedule, original_record) -> bytes:
     summary_ws = wb.create_sheet("Verification Summary")
     summary_data = [
         ["Field", "Value"],
-        ["Original Report", original_record.file_name],
-        ["Schedule ID", str(schedule.id)],
+        ["Prepared For", prepared_for],
         ["Verification Date", str(schedule.scheduled_at)],
         ["SOC Outcome", getattr(schedule, "verification_outcome", "pending")],
         ["Findings in Verification Export", len(findings)],

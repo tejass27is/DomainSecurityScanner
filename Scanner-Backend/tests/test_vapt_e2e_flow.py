@@ -75,12 +75,15 @@ from app.db.models import (
     Region,
     User,
     VaptImport,
+    AuditLog,
+    VaptFindingHistory,
     VaptOnboardingChecklist,
     VaptRescanSchedule,
 )
 import app.api.vapt.routes as vapt_routes
 from app.api.vapt.routes import (
     admin_approve_reschedule,
+    approve_client_next_vapt_due_date,
     approve_vapt_access,
     check_vapt_due_dates,
     decide_vapt_verification,
@@ -335,7 +338,8 @@ def _run_flow(db: Session) -> None:
         detail["cycle_number"] == 1
         and detail["lifecycle_status"] == "report_published"
         and detail["risk_score"] > 0
-        and {f["id"] for f in (f1, f2)} == {"F001", "F002"},
+        and {f["id"] for f in (f1, f2)} == {"F001", "F002"}
+        and db.query(AuditLog).filter_by(action="VAPT_REPORT_VERSION_UPLOADED", target_id=str(rec.import_id)).count() == 1,
         f"cycle={detail['cycle_number']} risk={detail['risk_score']} findings={[f['id'] for f in (f1, f2)]}",
     )
 
@@ -373,9 +377,9 @@ def _run_flow(db: Session) -> None:
     )
     r("pending" in detail.lower(), detail[:80])
 
-    r = step("S12", "verification schedule before client submit rejected (400)")
+    r = step("S12", "verification schedule before client submit rejected (409)")
     detail = expect_http(
-        400,
+        409,
         coro=schedule_vapt_rescan(
             import_id=str(rec.import_id),
             body=RescanScheduleRequest(scheduled_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat()),
@@ -401,7 +405,8 @@ def _run_flow(db: Session) -> None:
         resp["success"] is True
         and rec.status == "client_completed"
         and rec.lifecycle_status == "awaiting_soc_remediation_acceptance"
-        and rec.remediation_review_status == "pending_soc_review",
+        and rec.remediation_review_status == "pending_soc_review"
+        and db.query(VaptFindingHistory).filter_by(import_id=rec.import_id, actor_id=client.user_id).count() >= 2,
         f"status={rec.status} lifecycle={rec.lifecycle_status}",
     )
 
@@ -482,11 +487,11 @@ def _run_flow(db: Session) -> None:
     sched = db.get(VaptRescanSchedule, sched.id)
     r(sched.status == "approved", f"schedule={sched.status}")
 
-    r = step("S18", "SOC uploads partial-fix retest → completed_with_errors")
+    r = step("S18", "SOC uploads immediately after approval → completed_with_errors")
     run(
         upload_vapt_verification(
             schedule_id=sched.id,
-            file=upload(nessus_xml(SSH_ITEM), "retest1.nessus"),
+            file=upload(nessus_xml(SSH_ITEM), "retest-early-approved.nessus"),
             db=db,
             current_user=soc,
         )
@@ -506,8 +511,29 @@ def _run_flow(db: Session) -> None:
         and rec.lifecycle_status == "revalidation_verification_pending",
         f"schedule={sched.status} fixed={sorted(fixed_plugins)} remaining={sorted(remaining_plugins)}",
     )
+    r = step("S19", "verification upload metadata and audit are stored")
+    verification_audit = db.query(AuditLog).filter_by(action="VAPT_VERIFICATION_UPLOADED", target_id=str(sched.id)).one()
+    r(
+        sched.uploaded_at is not None
+        and sched.uploaded_by == soc.user_id
+        and verification_audit.details.get("early_upload_override") is not True,
+        f"uploaded_by={sched.uploaded_by} audit={verification_audit.action}",
+    )
 
-    r = step("S19", "client triages remaining finding + submits verification review")
+    r = step("S20", "duplicate verification upload is rejected")
+    duplicate_detail = expect_http(
+        409,
+        coro=upload_vapt_verification(
+            schedule_id=sched.id,
+            file=upload(nessus_xml(SSH_ITEM), "retest-duplicate.nessus"),
+            allow_early_upload=True,
+            db=db,
+            current_user=soc,
+        ),
+    )
+    r("already has an uploaded result" in duplicate_detail.lower(), duplicate_detail[:80])
+
+    r = step("S21", "client triages remaining finding + submits verification review")
     remaining_id = str(remaining[0]["id"])
     update_verification_finding_status(
         import_id=str(rec.import_id),
@@ -590,6 +616,7 @@ def _run_flow(db: Session) -> None:
         upload_vapt_verification(
             schedule_id=sched2.id,
             file=upload(nessus_xml(NTP_ITEM), "retest2.nessus"),
+            allow_early_upload=True,
             db=db,
             current_user=soc,
         )
@@ -619,9 +646,9 @@ def _run_flow(db: Session) -> None:
     rec.due_soon_reminder_sent_at = datetime.now(timezone.utc)
     db.add(rec)
     db.commit()
-    r(rec.lifecycle_status == "closure_pending_client_due_date", f"lifecycle={rec.lifecycle_status}")
+    r(rec.lifecycle_status == "closure_pending_client_due_date" and rec.next_vapt_due_at is not None, f"lifecycle={rec.lifecycle_status} recommendation={rec.next_vapt_due_at}")
 
-    r = step("S25", "client picks next due date → cycle closed, reminder stamps reset")
+    r = step("S25", "client proposes a different due date → SOC approval required")
     due = datetime.now(timezone.utc) + timedelta(days=3)
     resp = run(
         set_client_next_vapt_due_date(
@@ -635,15 +662,26 @@ def _run_flow(db: Session) -> None:
     rec = db.get(VaptImport, rec.import_id)
     r(
         resp["success"] is True
-        and rec.lifecycle_status == "closed"
+        and rec.lifecycle_status == "closure_pending_soc_due_date"
         and rec.next_vapt_due_at is not None
+        ,
+        f"lifecycle={rec.lifecycle_status}",
+    )
+
+    r = step("S26", "SOC approves proposed due date → cycle closed")
+    resp = run(approve_client_next_vapt_due_date(import_id=str(rec.import_id), db=db, current_user=soc))
+    db.expire_all()
+    rec = db.get(VaptImport, rec.import_id)
+    r(
+        resp["success"] is True
+        and rec.lifecycle_status == "closed"
         and rec.due_soon_reminder_sent_at is None
         and rec.overdue_notice_sent_at is None,
         f"lifecycle={rec.lifecycle_status}",
     )
 
     # ═══ Gap 1 — due-date reminders ════════════════════════════════════════
-    r = step("S26", "due-soon reminder fires once inside the 7-day window (idempotent)")
+    r = step("S27", "due-soon reminder fires once inside the 7-day window (idempotent)")
     before = len(SENT_EMAILS)
     resp = check_vapt_due_dates(db=db, current_user=soc)
     after_one = len(SENT_EMAILS)
@@ -659,7 +697,7 @@ def _run_flow(db: Session) -> None:
         f"subjects={subjects}",
     )
 
-    r = step("S27", "overdue notice fires once after the date passes, to client + SOC (idempotent)")
+    r = step("S28", "overdue notice fires once after the date passes, to client + SOC (idempotent)")
     rec.next_vapt_due_at = datetime.now(timezone.utc) - timedelta(days=2)
     db.add(rec)
     db.commit()
@@ -679,7 +717,7 @@ def _run_flow(db: Session) -> None:
     )
 
     # ═══ Gap 2 + Gap 3 — new cycle ═════════════════════════════════════════
-    r = step("S28", "onboarding after closure: is_new_cycle=True, checklist reset to cycle 2")
+    r = step("S29", "onboarding after closure: is_new_cycle=True, checklist reset to cycle 2")
     onboard = get_onboarding_checklist(db=db, current_user=client)
     r(
         onboard["is_new_cycle"] is True
@@ -691,7 +729,7 @@ def _run_flow(db: Session) -> None:
         f"cycle={onboard['cycle_number']} review={onboard['review_status']}",
     )
 
-    r = step("S29", "cycle-2 upload rejected while the new-cycle checklist is unapproved (409)")
+    r = step("S30", "cycle-2 upload rejected while the new-cycle checklist is unapproved (409)")
     detail = expect_http(
         409,
         coro=upload_vapt_report(
@@ -704,7 +742,7 @@ def _run_flow(db: Session) -> None:
     )
     r("new-cycle" in detail.lower() and "cycle 2" in detail, detail[:120])
 
-    r = step("S30", "client re-onboards; SOC approves the cycle-2 checklist")
+    r = step("S31", "client re-onboards; SOC approves the cycle-2 checklist")
     update_onboarding_checklist(
         payload={
             "scope_ip_ranges": "10.0.0.0/8",
@@ -733,7 +771,7 @@ def _run_flow(db: Session) -> None:
         f"cycle={checklist.cycle_number} review={checklist.review_status}",
     )
 
-    r = step("S31", "cycle-2 upload succeeds with cycle_number=2")
+    r = step("S32", "cycle-2 upload succeeds with cycle_number=2")
     detail = run(
         upload_vapt_report(
             file=upload(nessus_xml(TLS_ITEM, SSH_ITEM), "cycle2.nessus"),

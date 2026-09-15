@@ -56,6 +56,7 @@ def _serialize_user(user: User, blocked_emails: set[str]) -> dict:
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "is_blacklisted": user.email.lower() in blocked_emails,
         "vapt_blocked": bool(getattr(user, "vapt_blocked", False)),
+        "is_active": bool(getattr(user, "is_active", True)),
         "email_verified": bool(user.email_verified),
     }
 
@@ -1035,6 +1036,28 @@ def delete_soc_analyst(email: str, current_admin: User, db: Session, ip_address:
         "message": "SOC analyst account deleted successfully",
         "email": normalized,
     }
+
+
+def set_soc_analyst_active(email: str, active: bool, current_admin: User, db: Session, ip_address: str | None = None, public_ip: str | None = None) -> dict:
+    """Deactivate or reactivate a SOC account while preserving its history."""
+    normalized = _normalize_email(email)
+    analyst = db.query(User).filter(User.email == normalized, User.role == "soc_analyst").first()
+    if not analyst:
+        raise HTTPException(status_code=404, detail="SOC analyst account not found")
+    analyst.is_active = active
+    db.add(analyst)
+    db.commit()
+    _record_audit_log(
+        db,
+        admin=current_admin,
+        action="SOC_ANALYST_ACTIVATED" if active else "SOC_ANALYST_DEACTIVATED",
+        target_type="soc_analyst",
+        target_id=normalized,
+        details={"email": normalized, "is_active": active, "changed_by": current_admin.email},
+        ip_address=ip_address,
+        public_ip=public_ip,
+    )
+    return {"success": True, "email": normalized, "is_active": active}
 
 
 def _serialize_plan(plan: SubscriptionPlan) -> dict:

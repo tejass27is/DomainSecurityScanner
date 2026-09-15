@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import {
   CHECKLIST_SECTIONS,

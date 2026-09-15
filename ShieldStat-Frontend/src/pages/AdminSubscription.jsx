@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { assignPromoCodeToUser, deletePromoCode, disablePromoCode, generatePromoCode, getPromoCodes, getSubscriptionPlans, createSubscriptionPlan, updateSubscriptionPlan, deleteSubscriptionPlan, getUsersByOrg } from "../services/api";
 
 function AdminSubscription() {

@@ -6,10 +6,12 @@ requesting user's organization — users only ever see their own imports.
 """
 
 import asyncio
+import calendar
 import io
 import json
 import uuid
 import zipfile
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -21,7 +23,7 @@ from app.api.vapt.parser import (
     parse_upload,
 )
 from app.api.vapt.normalizer import normalize_import
-from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
+from app.api.vapt.report_generator import generate_vapt_closure_report_pdf, generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
 from app.api.vapt.schemas import (
     VaptFindingStatusUpdate,
     VaptImportDetail,
@@ -30,7 +32,7 @@ from app.api.vapt.schemas import (
 )
 from app.core.middleware import protect, require_admin_or_soc_analyst, require_soc_analyst, require_vapt_access
 from app.db.base import get_db
-from app.db.models import AuditLog, Organization, User, VaptImport, VaptRescanSchedule, VaptOnboardingChecklist, Region, OrganizationRegion
+from app.db.models import AuditLog, Organization, User, VaptImport, VaptRescanSchedule, VaptOnboardingChecklist, VaptFindingHistory, Region, OrganizationRegion
 from app.api.vapt import schedule_service
 
 # A client organization can request/be approved for up to this many VAPT regions.
@@ -54,6 +56,56 @@ def _org_display_name(db: Session, org_id: str) -> str:
         return org_id
     domains = org.domain if isinstance(org.domain, list) else [org.domain]
     return ", ".join(str(d) for d in domains if d) or org_id
+
+
+def _region_display_name(db: Session, record: VaptImport) -> str:
+    """Return the human-readable region name for report covers."""
+    region_code = (getattr(record, "region", None) or "").strip()
+    if region_code:
+        region = db.query(Region).filter(Region.code == region_code).first()
+        if region and region.name:
+            return region.name
+        return region_code
+    return "Not specified"
+
+
+def _client_emails(db: Session, org_id: str) -> set[str]:
+    """Return client recipients without including platform administrators."""
+    return {
+        user.email
+        for user in db.query(User).filter(
+            User.org_id == org_id,
+            User.role.in_(("owner", "member")),
+        ).all()
+        if user.email
+    }
+
+
+def _schedule_time_utc(schedule: VaptRescanSchedule) -> datetime:
+    """Normalize a stored schedule time for comparisons with current UTC time.
+
+    SQLite drops timezone information from datetime columns, so a naive value
+    must be interpreted using the schedule's saved timezone rather than UTC.
+    """
+    scheduled_at = schedule.scheduled_at
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=ZoneInfo(schedule.scheduled_timezone or "UTC"))
+    return scheduled_at.astimezone(timezone.utc)
+
+
+def _add_calendar_months(value: datetime, months: int) -> datetime:
+    """Add calendar months while clamping dates to the target month."""
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def _recommended_next_due_at(value: datetime | None = None) -> datetime:
+    return _add_calendar_months(value or datetime.now(timezone.utc), 4)
+
+
 VALID_VAPT_FINDING_STATUSES = {"pending", "solved", "ignore", "false_positive"}
 
 # Finding status edits are only meaningful while the report is being triaged
@@ -214,7 +266,10 @@ def update_onboarding_checklist(
     for key, value in payload.items():
         if key in ALLOWED_FIELDS:
             if key in DATETIME_FIELDS:
-                value = _parse_datetime(value, key)
+                source_timezone = payload.get(
+                    "proposed_timezone" if key.startswith("proposed_") else "testing_timezone"
+                )
+                value = _parse_datetime(value, key, source_timezone)
             setattr(record, key, value)
 
     # Auto-complete if all required fields are filled
@@ -264,7 +319,7 @@ async def review_vapt_onboarding(
     db.commit()
     _record_audit_log(db, current_user, "VAPT_CHECKLIST_REVIEWED", "vapt_onboarding", org_id, {"status": status})
     event = "checklist_approved" if status == "approved" else "checklist_rejected"
-    for email in {u.email for u in db.query(User).filter(User.org_id == org_id).all() if u.email}:
+    for email in _client_emails(db, org_id):
         try:
             send_vapt_access_event_email(email, event, _org_display_name(db, org_id), "", "Organization onboarding", checklist.review_note or "")
         except Exception:
@@ -287,16 +342,22 @@ class InitialVaptDateProposal(BaseModel):
     note: str | None = None
 
 
-def _parse_datetime(value: str | datetime | None, field: str) -> datetime | None:
+def _parse_datetime(value: str | datetime | None, field: str, source_timezone: str | None = None) -> datetime | None:
     if not value:
         return None
     if isinstance(value, datetime):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail=f"{field} must be an ISO8601 datetime")
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{field} must be an ISO8601 datetime")
+    if parsed.tzinfo is None:
+        try:
+            parsed = parsed.replace(tzinfo=ZoneInfo(source_timezone or "UTC"))
+        except ZoneInfoNotFoundError:
+            raise HTTPException(status_code=400, detail=f"{field} has an invalid timezone")
+    return parsed.astimezone(timezone.utc)
 
 
 @router.post("/admin/onboarding/{org_id}/decision")
@@ -342,7 +403,7 @@ async def decide_initial_vapt_access(
     _record_audit_log(db, current_user, "VAPT_CHECKLIST_REVIEWED", "vapt_onboarding", org_id, {"status": status, "region": code})
     _record_audit_log(db, current_user, "VAPT_REGION_REVIEWED", "organization_region", str(org_region.id), {"status": status, "region": code, "reason": checklist.review_note})
     event = "initial_access_approved" if status == "approved" else "initial_access_rejected"
-    recipients = {u.email for u in db.query(User).filter(User.org_id == org_id).all() if u.email}
+    recipients = _client_emails(db, org_id)
     recipients.update(u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email)
     for email in recipients:
         try:
@@ -384,7 +445,7 @@ async def propose_initial_vapt_date(
         db.add(checklist)
     db.add(row)
     db.commit()
-    recipients = {u.email for u in db.query(User).filter(User.org_id == org_id).all() if u.email}
+    recipients = _client_emails(db, org_id)
     recipients.update(u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email)
     for email in recipients:
         try:
@@ -449,7 +510,7 @@ async def decide_initial_vapt_date(
     _record_audit_log(db, current_user, "VAPT_REGION_REVIEWED", "organization_region", str(row.id), {"status": row.status, "schedule_status": row.schedule_status, "region": code})
     event = "initial_date_accepted" if decision == "accepted" else "initial_date_rejected"
     recipients = {u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email}
-    recipients.update(u.email for u in db.query(User).filter(User.org_id == current_user.org_id).all() if u.email)
+    recipients.update(_client_emails(db, current_user.org_id))
     for email in recipients:
         try:
             send_vapt_access_event_email(email, event, _org_display_name(db, current_user.org_id), code, region.name, payload.get("note") or f"Client {decision} the proposed testing window.", row.testing_start_at.isoformat() if row.testing_start_at else "", row.testing_end_at.isoformat() if row.testing_end_at else "", row.testing_timezone or "")
@@ -503,7 +564,7 @@ async def request_vapt_region(
     row.status = "pending"
     row.schedule_status = "pending"
     row.rejection_reason = None
-    row.testing_start_at = _parse_datetime(payload.get("testing_start_at"), "testing_start_at")
+    row.testing_start_at = _parse_datetime(payload.get("testing_start_at"), "testing_start_at", payload.get("testing_timezone"))
     row.testing_timezone = str(payload.get("testing_timezone") or "").strip() or None
     if not row.testing_start_at or not row.testing_timezone:
         raise HTTPException(status_code=400, detail="A testing start and timezone are required.")
@@ -511,7 +572,7 @@ async def request_vapt_region(
     db.commit()
     _record_audit_log(db, current_user, "VAPT_REGION_REQUESTED", "organization_region", str(row.id), {"region": code})
     recipients = {u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email}
-    recipients.update(u.email for u in db.query(User).filter(User.org_id == current_user.org_id).all() if u.email)
+    recipients.update(_client_emails(db, current_user.org_id))
     for email in recipients:
         try:
             send_vapt_access_event_email(email, "region_access_requested", _org_display_name(db, current_user.org_id), code, region.name, "Awaiting SOC review.", row.testing_start_at.isoformat(), "", row.testing_timezone or "")
@@ -602,12 +663,12 @@ def _to_list_item(record: VaptImport, uploader_email: str | None = None) -> dict
     }
 
 
-def _to_detail(record: VaptImport, uploader_email: str | None = None) -> dict:
+def _to_detail(record: VaptImport, uploader_email: str | None = None, client_view: bool = False) -> dict:
     return {
         **_to_list_item(record, uploader_email=uploader_email),
         "category_distribution": record.category_distribution or {},
         "summary": record.summary or {},
-        "findings": record.findings or [],
+        "findings": (record.initial_findings if client_view and record.initial_findings is not None else record.findings) or [],
     }
 
 
@@ -618,6 +679,18 @@ def _normalize_finding_status(status: str) -> str:
     if value in {"false positive", "false-positive", "false_positive"}:
         return "false_positive"
     return value
+
+
+def _record_finding_history(db: Session, record: VaptImport, finding_id: str, actor: User, old_status: str | None, new_status: str, comment: str = "", schedule_id=None) -> None:
+    db.add(VaptFindingHistory(
+        import_id=record.import_id,
+        schedule_id=schedule_id,
+        finding_id=finding_id,
+        actor_id=actor.user_id if actor else None,
+        old_status=old_status,
+        new_status=new_status,
+        comment=comment,
+    ))
 
 
 def _get_org_region_status(db: Session, org_id: str | None, blocked: bool = False):
@@ -744,7 +817,10 @@ def request_vapt_access(
             if key in payload and payload.get(key) is not None:
                 value = payload.get(key)
                 if key in {"testing_start_at", "testing_end_at", "proposed_start_at", "proposed_end_at"}:
-                    value = _parse_datetime(value, key) if isinstance(value, str) else value
+                    source_timezone = payload.get(
+                        "proposed_timezone" if key.startswith("proposed_") else "testing_timezone"
+                    )
+                    value = _parse_datetime(value, key, source_timezone) if isinstance(value, str) else value
                 setattr(record, key, value)
         if _is_onboarding_complete(record) and not record.completed_at:
             record.completed_at = datetime.now(timezone.utc)
@@ -803,7 +879,7 @@ def request_vapt_access(
     db.commit()
     _record_audit_log(db, current_user, "VAPT_ACCESS_REQUESTED", "organization_region", org_id, {"regions": [item["code"] for item in requested], "combined_onboarding": bool(onboarding_fields.intersection(payload.keys()))})
     recipients = {u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email}
-    recipients.update(u.email for u in db.query(User).filter(User.org_id == org_id).all() if u.email)
+    recipients.update(_client_emails(db, org_id))
     for entry in requested:
         for email in recipients:
             try:
@@ -879,7 +955,7 @@ async def approve_vapt_access(
     db.refresh(org_region)
     event = "region_access_approved" if approved else "region_access_rejected"
     _record_audit_log(db, current_user, "VAPT_REGION_REVIEWED", "organization_region", str(org_region.id), {"status": org_region.status, "region": region.code, "reason": reason})
-    recipients = {u.email for u in db.query(User).filter(User.org_id == org_id).all() if u.email}
+    recipients = _client_emails(db, org_id)
     recipients.update(u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email)
     for email in recipients:
         try:
@@ -1111,12 +1187,27 @@ async def upload_vapt_report(
         category_distribution=normalized["category_distribution"],
         summary=normalized["summary"],
         findings=normalized["findings"],
+        initial_findings=normalized["findings"],
         lifecycle_status="report_published",
         cycle_number=cycle_number,
     )
     db.add(record)
     db.commit()
     db.refresh(record)
+    _record_audit_log(
+        db,
+        current_user,
+        "VAPT_REPORT_VERSION_UPLOADED",
+        "vapt_import",
+        str(record.import_id),
+        {
+            "version_type": "initial",
+            "cycle_number": cycle_number,
+            "file_name": filename,
+            "region": region,
+            "finding_count": len(normalized["findings"]),
+        },
+    )
 
     # Notify the org that a new report is published
     try:
@@ -1137,7 +1228,7 @@ async def upload_vapt_report(
         pass
     try:
         from app.utils.email import send_vapt_report_published_email
-        for email in {u.email for u in db.query(User).filter(User.org_id == target_org_id).all() if u.email}:
+        for email in _client_emails(db, target_org_id):
             try:
                 send_vapt_report_published_email(email, record.display_name or record.file_name, str(record.import_id))
             except Exception:
@@ -1173,11 +1264,29 @@ def list_vapt_imports(
 
 
 def _verification_finding_key(finding: dict) -> tuple:
-    """Build a stable identity for comparing an original and retest finding."""
+    """Build a stable finding identity for comparing original and retest data.
+
+    Plugin IDs identify the check, while host, port, and protocol identify the
+    affected target. Title/CVE data is retained as a fallback for exports that
+    do not provide a plugin ID.
+    """
     title = " ".join(str(finding.get("title") or "").lower().split())
     plugin_id = str(finding.get("plugin_id") or "").strip().lower()
     cves = tuple(sorted(str(cve).strip().lower() for cve in (finding.get("cves") or []) if cve))
-    return (plugin_id or title, finding.get("port"), str(finding.get("protocol") or "").lower(), cves)
+    hosts = finding.get("affected_hosts") or finding.get("hosts") or []
+    if isinstance(hosts, str):
+        hosts = [hosts]
+    if not hosts:
+        for field in ("host", "ip", "address", "hostname"):
+            if finding.get(field):
+                hosts = [finding[field]]
+                break
+    normalized_hosts = tuple(sorted(str(host).strip().lower() for host in hosts if host))
+    port = str(finding.get("port") or "").strip().lower()
+    protocol = str(finding.get("protocol") or "").strip().lower()
+    if plugin_id:
+        return ("plugin", plugin_id, normalized_hosts, port, protocol)
+    return ("fallback", title, cves, normalized_hosts, port, protocol)
 
 
 def _evaluate_manual_verification(original_solved: list[dict], verification_findings: list[dict]) -> tuple[str, str | None, list[dict], list[dict]]:
@@ -1270,19 +1379,34 @@ def _apply_verification_triage(record: VaptImport, verification_data: dict | Non
 async def upload_vapt_verification(
     schedule_id: str,
     file: UploadFile = File(...),
+    allow_early_upload: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_soc_analyst),
 ):
-    """Upload and synchronously evaluate a manual SOC verification export."""
+    """Upload and synchronously evaluate a manual SOC verification export.
+
+    The schedule time is informational; SOC may upload as soon as the
+    verification schedule is approved.
+    """
     schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Rescan schedule not found.")
+    if schedule.result_data:
+        raise HTTPException(
+            status_code=409,
+            detail="This verification schedule already has an uploaded result. Create a new verification attempt instead.",
+        )
     if schedule.status != "approved":
         raise HTTPException(status_code=409, detail="Only an approved rescan can receive a verification upload.")
 
     record = db.query(VaptImport).filter(VaptImport.import_id == schedule.import_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="VAPT import not found.")
+    if record.lifecycle_status != "verification_upload_pending":
+        raise HTTPException(
+            status_code=409,
+            detail="Verification upload is not allowed in the current VAPT lifecycle.",
+        )
 
     filename = file.filename or "verification-export"
     ext = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
@@ -1308,6 +1432,8 @@ async def upload_vapt_verification(
 
     schedule.status = status
     schedule.error_message = error_message
+    schedule.uploaded_at = datetime.now(timezone.utc)
+    schedule.uploaded_by = current_user.user_id
     schedule.result_data = {
         "verification_file_name": filename,
         "verification_file_format": file_format,
@@ -1340,7 +1466,7 @@ async def upload_vapt_verification(
         pass
     try:
         from app.utils.email import send_vapt_verification_result_email
-        for email in {u.email for u in db.query(User).filter(User.org_id == record.org_id).all() if u.email}:
+        for email in _client_emails(db, record.org_id):
             try:
                 send_vapt_verification_result_email(
                     email,
@@ -1353,7 +1479,18 @@ async def upload_vapt_verification(
                 pass
     except Exception:
         pass
-    _record_audit_log(db, current_user, "VAPT_VERIFICATION_UPLOADED", "vapt_rescan_schedule", str(schedule.id), {"status": status, "file_name": filename})
+    _record_audit_log(
+        db,
+        current_user,
+        "VAPT_VERIFICATION_UPLOADED",
+        "vapt_rescan_schedule",
+        str(schedule.id),
+        {
+            "status": status,
+            "file_name": filename,
+            "early_upload_override": allow_early_upload,
+        },
+    )
     return {
         "success": True,
         "schedule_id": str(schedule.id),
@@ -1380,7 +1517,7 @@ def get_vapt_import(
         )
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     emails = _uploader_email_map(db, [record])
-    return _to_detail(record, uploader_email=emails.get(str(record.uploaded_by)) if record.uploaded_by else None)
+    return _to_detail(record, uploader_email=emails.get(str(record.uploaded_by)) if record.uploaded_by else None, client_view=True)
 
 
 @router.get("/imports/{import_id}/report")
@@ -1398,7 +1535,7 @@ def download_vapt_report(
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
 
     try:
-        pdf_bytes = generate_vapt_report_pdf(record)
+        pdf_bytes = generate_vapt_report_pdf(record, client_name=_region_display_name(db, record), findings_override=record.initial_findings)
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(
             status_code=500,
@@ -1432,7 +1569,7 @@ def download_vapt_verification_report(
     if not schedule:
         raise HTTPException(status_code=404, detail="Verification schedule not found")
     try:
-        pdf_bytes = generate_vapt_verification_report_pdf(schedule, record)
+        pdf_bytes = generate_vapt_verification_report_pdf(schedule, record, prepared_for=_region_display_name(db, record))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to generate the verification PDF report: {exc}")
     return StreamingResponse(
@@ -1475,38 +1612,17 @@ def download_vapt_closure_bundle(
     schedules = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.import_id == record.import_id).order_by(VaptRescanSchedule.scheduled_at.asc()).all()
     exclusions = [finding for finding in (record.findings or []) if (finding.get("status") or "") in {"ignore", "false_positive"}]
     timeline = get_vapt_timeline(import_id, db, current_user)
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
     closure_buffer = io.BytesIO()
-    pdf = canvas.Canvas(closure_buffer, pagesize=A4)
-    y = 800
-    pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawString(48, y, "VAPT Closure Report")
-    y -= 32
-    pdf.setFont("Helvetica", 10)
-    lines = [
-        f"Import: {record.file_name}",
-        f"Organization: {record.org_id}",
-        f"Region: {record.region or 'Not specified'}",
-        f"Lifecycle: {record.lifecycle_status}",
-        f"Findings: {len(record.findings or [])}",
-        f"Exclusions: {len(exclusions)}",
-        f"Verification scans: {len(schedules)}",
-        f"Next VAPT due: {record.next_vapt_due_at or 'Not set'}",
-    ]
-    for line in lines:
-        pdf.drawString(48, y, line)
-        y -= 18
-    pdf.save()
+    closure_buffer.write(generate_vapt_closure_report_pdf(record, prepared_for=_region_display_name(db, record)))
     closure_buffer.seek(0)
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr("closure-report.pdf", closure_buffer.getvalue())
         bundle.writestr("exclusion-list.json", json.dumps(exclusions, default=str, indent=2))
         bundle.writestr("timeline.json", json.dumps(timeline, default=str, indent=2))
-        bundle.writestr("first-scan-report.pdf", generate_vapt_report_pdf(record))
+        bundle.writestr("first-scan-report.pdf", generate_vapt_report_pdf(record, client_name=_region_display_name(db, record), findings_override=record.initial_findings))
         for schedule in schedules:
-            bundle.writestr(f"verification-{str(schedule.id)[:8]}.pdf", generate_vapt_verification_report_pdf(schedule, record))
+            bundle.writestr(f"verification-{str(schedule.id)[:8]}.pdf", generate_vapt_verification_report_pdf(schedule, record, prepared_for=_region_display_name(db, record)))
     archive.seek(0)
     return StreamingResponse(iter([archive.getvalue()]), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="vapt-closure-{str(record.import_id)[:8]}.zip"'})
 
@@ -1547,6 +1663,7 @@ def update_vapt_finding_status(
     updated_findings = []
     for finding in findings:
         if str(finding.get("id")) == finding_id:
+            old_status = str(finding.get("status") or "pending")
             updated_finding = {
                 **finding,
                 "status": normalized_status,
@@ -1560,6 +1677,12 @@ def update_vapt_finding_status(
         raise HTTPException(status_code=404, detail="Finding not found in this import.")
 
     record.findings = updated_findings
+    # During the initial client review, keep the immutable report content in
+    # sync with the client's triage. Once verification starts, this snapshot
+    # is intentionally frozen and verification decisions only affect live data.
+    if record.lifecycle_status == "report_published":
+        record.initial_findings = updated_findings
+    _record_finding_history(db, record, finding_id, current_user, old_status, normalized_status, comment)
     db.add(record)
     db.commit()
     db.refresh(record)
@@ -1584,6 +1707,8 @@ async def submit_vapt_import(
             detail="User not associated with an organization.",
         )
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    if record.lifecycle_status not in {"report_published", "remediation_required"}:
+        raise HTTPException(status_code=409, detail="This VAPT report cannot be submitted in its current lifecycle.")
     findings = record.findings or []
 
     # Completion gate: all findings must be triaged
@@ -1652,12 +1777,18 @@ async def submit_vapt_import(
 
 class RescanScheduleRequest(BaseModel):
     scheduled_at: str
+    scheduled_timezone: str | None = None
     hosts: List[str] | None = None
     recurrence: dict | None = None
     note: str | None = None
 
 
 def _validate_rescan_prerequisites(record: VaptImport) -> None:
+    if record.lifecycle_status != "revalidation_required":
+        raise HTTPException(
+            status_code=409,
+            detail="A verification scan can only be scheduled when the VAPT cycle is ready for revalidation.",
+        )
     if record.status != "client_completed" or record.remediation_review_status != "approved":
         raise HTTPException(
             status_code=400,
@@ -1692,11 +1823,12 @@ async def schedule_vapt_rescan(
     if existing_schedule:
         raise HTTPException(status_code=409, detail="An active verification schedule already exists for this VAPT cycle")
 
+    scheduled_timezone = body.scheduled_timezone or "UTC"
     try:
         scheduled_at = datetime.fromisoformat(body.scheduled_at)
-        # Always normalize to UTC: naive = assume UTC, aware = convert
+        # Interpret client wall-clock values in the selected timezone.
         if scheduled_at.tzinfo is None:
-            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+            scheduled_at = scheduled_at.replace(tzinfo=ZoneInfo(scheduled_timezone))
         else:
             scheduled_at = scheduled_at.astimezone(timezone.utc)
     except Exception:
@@ -1708,7 +1840,7 @@ async def schedule_vapt_rescan(
     # optional: validate hosts format
     hosts = body.hosts or []
 
-    schedule = await schedule_service.create_schedule(db, record, current_user, scheduled_at, hosts=hosts, recurrence=body.recurrence, note=body.note)
+    schedule = await schedule_service.create_schedule(db, record, current_user, scheduled_at, hosts=hosts, recurrence=body.recurrence, note=body.note, scheduled_timezone=scheduled_timezone)
 
     # Notify SOC that a client requested a verification slot. Confirmation
     # email is intentionally sent only after SOC approves the request.
@@ -1746,6 +1878,8 @@ async def review_client_remediation(
     record = db.query(VaptImport).filter(VaptImport.import_id == parsed_import_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="VAPT import not found")
+    if record.lifecycle_status != "awaiting_soc_remediation_acceptance":
+        raise HTTPException(status_code=409, detail="SOC remediation review is not available in the current VAPT lifecycle.")
     record.remediation_review_status = decision
     record.remediation_reviewed_by = current_user.user_id
     record.remediation_reviewed_at = datetime.now(timezone.utc)
@@ -1762,7 +1896,7 @@ async def review_client_remediation(
     _record_audit_log(db, current_user, "VAPT_REMEDIATION_REVIEWED", "vapt_import", str(record.import_id), {"decision": decision})
     # Notify every user in the client organization, not only through the live
     # socket, so the decision is visible even when the client is offline.
-    for email in {u.email for u in db.query(User).filter(User.org_id == record.org_id).all() if u.email}:
+    for email in _client_emails(db, record.org_id):
         try:
             send_vapt_remediation_review_email(
                 to_email=email,
@@ -1811,6 +1945,8 @@ async def close_vapt_without_verification(
     record = db.query(VaptImport).filter(VaptImport.import_id == parsed_import_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="VAPT import not found")
+    if record.lifecycle_status != "revalidation_required":
+        raise HTTPException(status_code=409, detail="Direct closure is not available in the current VAPT lifecycle.")
     if record.status != "client_completed" or record.remediation_review_status != "approved":
         raise HTTPException(status_code=400, detail="The client must complete the report review before closure.")
     if any((finding.get("status") or "pending") == "pending" for finding in (record.findings or [])):
@@ -1821,7 +1957,7 @@ async def close_vapt_without_verification(
     if blockers:
         raise HTTPException(status_code=409, detail=_closure_block_message(blockers))
     record.lifecycle_status = "closure_pending_client_due_date"
-    record.next_vapt_due_at = None
+    record.next_vapt_due_at = _recommended_next_due_at()
     db.add(record)
     db.commit()
     _record_audit_log(db, current_user, "VAPT_CLOSURE_REQUESTED", "vapt_import", str(record.import_id), {"direct_close": True, "note": body.note or ""})
@@ -1831,7 +1967,7 @@ async def close_vapt_without_verification(
         await ws_manager.send("platform", payload)
     except Exception:
         pass
-    return {"success": True, "import_id": import_id, "lifecycle_status": record.lifecycle_status, "next_vapt_due_at": None}
+    return {"success": True, "import_id": import_id, "lifecycle_status": record.lifecycle_status, "next_vapt_due_at": record.next_vapt_due_at}
 
 
 @router.post("/admin/rescan-requests/{schedule_id}/decision")
@@ -1854,6 +1990,8 @@ async def decide_vapt_verification(
     record = db.query(VaptImport).filter(VaptImport.import_id == schedule.import_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="VAPT import not found")
+    if record.lifecycle_status != "revalidation_verification_pending":
+        raise HTTPException(status_code=409, detail="Verification decisions are not allowed in the current VAPT lifecycle.")
 
     if outcome == "closed":
         verification_data = schedule.result_data or {}
@@ -1882,7 +2020,7 @@ async def decide_vapt_verification(
         record.status = "open"
         record.remediation_review_status = "pending"
         record.lifecycle_status = "remediation_required"
-    record.next_vapt_due_at = None
+    record.next_vapt_due_at = _recommended_next_due_at(schedule.verified_at)
     db.add(schedule)
     db.add(record)
     db.commit()
@@ -1894,7 +2032,7 @@ async def decide_vapt_verification(
         "org_id": record.org_id,
         "outcome": outcome,
         "message": "SOC approved closure. Choose the next VAPT due date in the client app." if outcome == "closed" else "Findings remain open; remediation is required",
-        "next_vapt_due_at": None,
+        "next_vapt_due_at": record.next_vapt_due_at,
     }
     try:
         await ws_manager.send(record.org_id, payload)
@@ -1909,7 +2047,7 @@ async def decide_vapt_verification(
     if outcome == "reopened":
         try:
             from app.utils.email import send_vapt_cycle_reopened_email
-            for email in {u.email for u in db.query(User).filter(User.org_id == record.org_id).all() if u.email}:
+            for email in _client_emails(db, record.org_id):
                 try:
                     send_vapt_cycle_reopened_email(email, record.file_name, str(record.import_id))
                 except Exception:
@@ -1931,6 +2069,8 @@ def update_verification_finding_status(
 ):
     """Let the client triage a finding that remained after a manual verification."""
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    if record.lifecycle_status != "revalidation_verification_pending":
+        raise HTTPException(status_code=409, detail="Verification findings cannot be reviewed in the current VAPT lifecycle.")
     schedule = db.query(VaptRescanSchedule).filter(
         VaptRescanSchedule.id == schedule_id,
         VaptRescanSchedule.import_id == record.import_id,
@@ -1949,6 +2089,7 @@ def update_verification_finding_status(
     updated = None
     for index, finding in enumerate(remaining):
         if str(finding.get("id")) == finding_id:
+            old_status = str(finding.get("status") or "pending")
             updated = {**finding, "status": normalized_status, "comment": comment}
             remaining[index] = updated
             break
@@ -1957,6 +2098,7 @@ def update_verification_finding_status(
     result_data["remaining_findings"] = remaining
     result_data["client_review_status"] = "in_progress"
     schedule.result_data = result_data
+    _record_finding_history(db, record, finding_id, current_user, old_status, normalized_status, comment, schedule.id)
     db.add(schedule)
     db.commit()
     _record_audit_log(db, current_user, "VAPT_VERIFICATION_FINDING_UPDATED", "vapt_rescan_schedule", str(schedule.id), {"finding_id": finding_id, "status": normalized_status, "comment": comment})
@@ -1972,6 +2114,8 @@ async def submit_verification_review(
 ):
     """Submit the client's triage of findings still present after verification."""
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    if record.lifecycle_status != "revalidation_verification_pending":
+        raise HTTPException(status_code=409, detail="Verification review cannot be submitted in the current VAPT lifecycle.")
     schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == schedule_id, VaptRescanSchedule.import_id == record.import_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Verification schedule not found")
@@ -2009,7 +2153,7 @@ async def set_client_next_vapt_due_date(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_vapt_access),
 ):
-    """Let the client choose the next assessment date after SOC approves closure."""
+    """Confirm the recommendation or propose a different next assessment date."""
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     if record.lifecycle_status != "closure_pending_client_due_date":
         raise HTTPException(status_code=409, detail="SOC has not approved this cycle for closure yet.")
@@ -2020,6 +2164,26 @@ async def set_client_next_vapt_due_date(
         raise HTTPException(status_code=400, detail="next_vapt_due_at must be an ISO8601 datetime")
     if next_due <= datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="next_vapt_due_at must be in the future")
+
+    recommended_due = record.next_vapt_due_at
+    if recommended_due is not None:
+        if recommended_due.tzinfo is None:
+            recommended_due = recommended_due.replace(tzinfo=timezone.utc)
+        else:
+            recommended_due = recommended_due.astimezone(timezone.utc)
+    if recommended_due is not None and abs((next_due - recommended_due).total_seconds()) > 60:
+        record.lifecycle_status = "closure_pending_soc_due_date"
+        record.next_vapt_due_at = next_due
+        db.add(record)
+        db.commit()
+        _record_audit_log(db, current_user, "VAPT_DUE_DATE_PROPOSED", "vapt_import", str(record.import_id), {"next_vapt_due_at": next_due.isoformat(), "recommended_next_vapt_due_at": recommended_due.isoformat()})
+        payload = {"event": "vapt_due_date_proposed", "import_id": import_id, "org_id": record.org_id, "next_vapt_due_at": next_due.isoformat()}
+        try:
+            await ws_manager.send(record.org_id, payload)
+            await ws_manager.send("platform", payload)
+        except Exception:
+            pass
+        return {"success": True, "import_id": import_id, "lifecycle_status": record.lifecycle_status, "next_vapt_due_at": next_due}
 
     record.lifecycle_status = "closed"
     record.next_vapt_due_at = next_due
@@ -2037,7 +2201,7 @@ async def set_client_next_vapt_due_date(
         pass
     try:
         from app.utils.email import send_vapt_cycle_closed_email
-        for email in {u.email for u in db.query(User).filter(User.org_id == record.org_id).all() if u.email}:
+        for email in _client_emails(db, record.org_id):
             try:
                 send_vapt_cycle_closed_email(email, record.display_name or record.file_name, next_due.isoformat())
             except Exception:
@@ -2045,6 +2209,37 @@ async def set_client_next_vapt_due_date(
     except Exception:
         pass
     return {"success": True, "import_id": import_id, "lifecycle_status": record.lifecycle_status, "next_vapt_due_at": next_due}
+
+
+@router.post("/admin/imports/{import_id}/next-due-date/approve")
+async def approve_client_next_vapt_due_date(
+    import_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Approve a client-proposed next VAPT date and close the cycle."""
+    try:
+        parsed_import_id = uuid.UUID(import_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="VAPT import not found")
+    record = db.query(VaptImport).filter(VaptImport.import_id == parsed_import_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="VAPT import not found")
+    if record.lifecycle_status != "closure_pending_soc_due_date" or not record.next_vapt_due_at:
+        raise HTTPException(status_code=409, detail="No client-proposed due date is awaiting SOC approval.")
+    record.lifecycle_status = "closed"
+    record.due_soon_reminder_sent_at = None
+    record.overdue_notice_sent_at = None
+    db.add(record)
+    db.commit()
+    _record_audit_log(db, current_user, "VAPT_CYCLE_CLOSED", "vapt_import", str(record.import_id), {"next_vapt_due_at": record.next_vapt_due_at.isoformat(), "selected_by": "soc_approved_client_proposal"})
+    payload = {"event": "vapt_cycle_closed", "import_id": import_id, "org_id": record.org_id, "next_vapt_due_at": record.next_vapt_due_at.isoformat()}
+    try:
+        await ws_manager.send(record.org_id, payload)
+        await ws_manager.send("platform", payload)
+    except Exception:
+        pass
+    return {"success": True, "import_id": import_id, "lifecycle_status": record.lifecycle_status, "next_vapt_due_at": record.next_vapt_due_at}
 
 
 # ------------------ Admin: rescan requests management -------------------
@@ -2099,9 +2294,11 @@ def list_admin_rescan_requests(
             "import_id": str(s.import_id),
             "file_name": imp.file_name if imp else None,
             "org_id": s.org_id,
+            "region": imp.region if imp else None,
             "org_domain": org_domain,
             "requested_by": user.email if user else None,
             "scheduled_at": s.scheduled_at,
+            "scheduled_timezone": s.scheduled_timezone or "UTC",
             "status": s.status,
             "error_message": getattr(s, 'error_message', None),
             "created_at": s.created_at,
@@ -2111,6 +2308,7 @@ def list_admin_rescan_requests(
 
 class AdminRescheduleRequest(BaseModel):
     proposed_at: str
+    proposed_timezone: str | None = None
     note: str | None = None
 
 
@@ -2123,6 +2321,11 @@ async def _confirm_rescan_schedule(db: Session, schedule: VaptRescanSchedule, cu
     schedule.status = "approved"
     db.add(schedule)
     db.commit()
+    record = db.query(VaptImport).filter(VaptImport.import_id == schedule.import_id).first()
+    if record and record.lifecycle_status == "revalidation_scheduled":
+        record.lifecycle_status = "verification_upload_pending"
+        db.add(record)
+        db.commit()
 
     # Confirm the approved schedule by email to the client and SOC analysts.
     try:
@@ -2203,11 +2406,11 @@ async def admin_request_new_date(
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
+    proposed_timezone = body.proposed_timezone or "Asia/Kolkata"
     try:
         proposed = datetime.fromisoformat(body.proposed_at)
-        # Always normalize to UTC: naive = assume UTC, aware = convert
         if proposed.tzinfo is None:
-            proposed = proposed.replace(tzinfo=timezone.utc)
+            proposed = proposed.replace(tzinfo=ZoneInfo(proposed_timezone))
         else:
             proposed = proposed.astimezone(timezone.utc)
     except Exception:
@@ -2218,12 +2421,13 @@ async def admin_request_new_date(
 
     # update scheduled_at to proposed and mark as requested
     schedule.scheduled_at = proposed
+    schedule.scheduled_timezone = proposed_timezone
     if body.note is not None:
         schedule.note = body.note.strip() or None
     schedule.status = "requested"
     db.add(schedule)
     db.commit()
-    recipients = {u.email for u in db.query(User).filter(User.org_id == schedule.org_id).all() if u.email}
+    recipients = _client_emails(db, schedule.org_id)
     recipients.update(u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email)
     for email in recipients:
         try:
@@ -2260,6 +2464,7 @@ async def admin_request_new_date(
         "success": True,
         "schedule_id": schedule_id,
         "proposed_at": proposed.isoformat(),
+        "proposed_timezone": schedule.scheduled_timezone,
         "note": schedule.note,
         "status": schedule.status,
     }
@@ -2298,6 +2503,7 @@ def list_vapt_rescan_schedules(
         {
             "id": str(s.id),
             "scheduled_at": s.scheduled_at,
+            "scheduled_timezone": s.scheduled_timezone or "UTC",
             "hosts": s.hosts or [],
             "status": s.status,
             "created_at": s.created_at,
@@ -2334,10 +2540,11 @@ async def client_request_new_date(
     if schedule.status in ("requested", "approval_pending"):
         raise HTTPException(status_code=400, detail="This schedule is already awaiting a decision.")
 
+    proposed_timezone = body.proposed_timezone or schedule.scheduled_timezone or "UTC"
     try:
         proposed = datetime.fromisoformat(body.proposed_at)
         if proposed.tzinfo is None:
-            proposed = proposed.replace(tzinfo=timezone.utc)
+            proposed = proposed.replace(tzinfo=ZoneInfo(proposed_timezone))
         else:
             proposed = proposed.astimezone(timezone.utc)
     except Exception:
@@ -2350,6 +2557,7 @@ async def client_request_new_date(
     # from "requested" (a SOC proposal that the client must accept/reject) so the
     # client cannot approve its own proposed date.
     schedule.scheduled_at = proposed
+    schedule.scheduled_timezone = proposed_timezone
     if body.note is not None:
         schedule.note = body.note.strip() or None
     schedule.status = "approval_pending"
@@ -2363,6 +2571,7 @@ async def client_request_new_date(
             "schedule_id": str(schedule.id),
             "org_id": schedule.org_id,
             "proposed_at": proposed.isoformat(),
+            "proposed_timezone": schedule.scheduled_timezone,
             "note": schedule.note,
         })
     except Exception:
@@ -2377,6 +2586,7 @@ async def client_request_new_date(
         "success": True,
         "schedule_id": schedule_id,
         "proposed_at": proposed.isoformat(),
+        "proposed_timezone": schedule.scheduled_timezone,
         "note": schedule.note,
         "status": schedule.status,
     }
@@ -2402,6 +2612,12 @@ async def accept_proposed_date(
         raise HTTPException(status_code=404, detail="Schedule not found")
     if schedule.status != "requested":
         raise HTTPException(status_code=400, detail="This schedule is not awaiting acceptance.")
+    scheduled_at = _schedule_time_utc(schedule)
+    if scheduled_at <= datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=409,
+            detail="This proposed verification date has expired. SOC must propose a new future date.",
+        )
 
     await _confirm_rescan_schedule(db, schedule, current_user)
 
@@ -2482,7 +2698,7 @@ def download_vapt_report_excel(
         raise HTTPException(status_code=400, detail="User not associated with an organization.")
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     try:
-        xlsx_bytes = generate_vapt_report_xlsx(record)
+        xlsx_bytes = generate_vapt_report_xlsx(record, findings_override=record.initial_findings)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to generate the Excel report: {exc}")
     safe_name = "".join(c for c in record.file_name if c.isalnum() or c in "._-") or "vapt-report"
@@ -2510,7 +2726,7 @@ def download_vapt_verification_report_excel(
     if not schedule:
         raise HTTPException(status_code=404, detail="Verification schedule not found")
     try:
-        xlsx_bytes = generate_vapt_verification_report_xlsx(schedule, record)
+        xlsx_bytes = generate_vapt_verification_report_xlsx(schedule, record, prepared_for=_region_display_name(db, record))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to generate the verification Excel report: {exc}")
     return StreamingResponse(
@@ -2665,11 +2881,7 @@ def check_vapt_due_dates(
         org_domain = None
         if org and org.domain:
             org_domain = ", ".join(str(d) for d in (org.domain if isinstance(org.domain, list) else [org.domain]) if d)
-        client_emails = [
-            u.email
-            for u in db.query(User).filter(User.org_id == record.org_id).all()
-            if u.email
-        ]
+        client_emails = _client_emails(db, record.org_id)
         file_name = record.display_name or record.file_name
 
         if due <= now:

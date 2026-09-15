@@ -1,8 +1,9 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { postVaptRescanSchedule, postVaptRescanScheduleAdmin } from "../services/api";
 
 export default function RescanModal({ open, onClose, importId, onScheduled, adminMode = false }) {
   const [scheduledAt, setScheduledAt] = useState("");
+  const [scheduledTimezone, setScheduledTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -18,8 +19,12 @@ export default function RescanModal({ open, onClose, importId, onScheduled, admi
     setError("");
     setLoading(true);
     try {
-      const scheduledIso = new Date(scheduledAt).toISOString();
-      const body = { scheduled_at: scheduledIso, hosts: [], note };
+      const body = {
+        scheduled_at: adminMode ? new Date(scheduledAt).toISOString() : scheduledAt,
+        scheduled_timezone: adminMode ? "Asia/Kolkata" : scheduledTimezone,
+        hosts: [],
+        note,
+      };
       const res = adminMode
         ? await postVaptRescanScheduleAdmin(importId, body, token)
         : await postVaptRescanSchedule(importId, body, token);
@@ -44,6 +49,14 @@ export default function RescanModal({ open, onClose, importId, onScheduled, admi
           <label className="mb-2 block text-sm font-semibold">Date & time</label>
           <input type="datetime-local" value={scheduledAt} onChange={(e) => { setScheduledAt(e.target.value); setError(""); }} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900/40" />
         </div>
+        {!adminMode && (
+          <div className="mb-4">
+            <label className="mb-2 block text-sm font-semibold">Timezone</label>
+            <select value={scheduledTimezone} onChange={(e) => setScheduledTimezone(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+              {[scheduledTimezone, "UTC", "Asia/Kolkata", "Africa/Johannesburg", "Asia/Manila", "Asia/Singapore", "Europe/London", "America/New_York", "America/Los_Angeles", "Australia/Sydney"].filter((zone, index, zones) => zones.indexOf(zone) === index).map((zone) => <option key={zone} value={zone}>{zone}</option>)}
+            </select>
+          </div>
+        )}
 
         <div className="mb-4">
           <label className="mb-2 block text-sm font-semibold">Note (optional)</label>
