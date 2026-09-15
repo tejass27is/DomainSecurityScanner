@@ -212,26 +212,6 @@ export function addDomain(domain, token) {
     token,
   });
 }
-
-export function removeDomain(domain, token) {
-  return request("/auth/remove-domain", {
-    method: "POST",
-    body: { domain },
-    token,
-  });
-}
-
-export function getNotificationPreferences(token) {
-  return request("/auth/notification-preferences", { token, skipCache: true });
-}
-
-export function updateNotificationPreferences(body, token) {
-  return request("/auth/notification-preferences", {
-    method: "PUT",
-    body,
-    token,
-  });
-}
 // ─── Scanner ──────────────────────────────────────────────────────────────────
 
 export function registerScanTask(domain, token) {
@@ -273,10 +253,10 @@ export function getPublicDomainOverview(domain) {
   return request(`/public/domain-overview?domain=${encodeURIComponent(domain)}`);
 }
 
-export function sendPublicScanReport(domain, email) {
+export function sendPublicScanReport(domain, firstName, lastName, email) {
   return request("/public/send-report", {
     method: "POST",
-    body: { domain, email },
+    body: { domain, first_name: firstName, last_name: lastName, email },
   });
 }
 
@@ -299,27 +279,19 @@ export async function downloadPublicScanReport(domain) {
   URL.revokeObjectURL(url);
 }
 
-export function getScanHistory(token) {
-  return request("/score/history", { token });
+export function setScoringCriticality(domain, criticality, token) {
+  return request(`/score/set-criticality?domain=${encodeURIComponent(domain)}&criticality=${criticality}`, {
+    method: "PUT",
+    token,
+  });
 }
 
-export async function downloadScanReport(domain, token) {
-  const res = await fetch(`${API_BASE}/score/report?domain=${encodeURIComponent(domain)}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.detail || `Failed to download report (${res.status})`);
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${domain}-scan-report.pdf`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+export function getCriticalityLevels(token) {
+  return request("/score/criticality-levels", { token });
+}
+
+export function getScanHistory(token) {
+  return request("/score/history", { token });
 }
 
 export function getIpReputation(ip, token) {
@@ -510,38 +482,8 @@ export function getAuditLogs(token) {
   return request("/admin/audit/logs", { token });
 }
 
-export function getSecurityAlerts(token, status = "all", severity = "all") {
-  const params = new URLSearchParams();
-  if (status && status !== "all") params.set("status", status);
-  if (severity && severity !== "all") params.set("severity", severity);
-  const qs = params.toString();
-  return request(`/admin/security/alerts${qs ? `?${qs}` : ""}`, { token, skipCache: true });
-}
-
-export function updateSecurityAlertStatus(alertId, status, token) {
-  return request(`/admin/security/alerts/${alertId}`, {
-    method: "PATCH",
-    body: { status },
-    token,
-  });
-}
-
-// ─── SOC console ────────────────────────────────────────────────────────────
-
-export function getSocDashboard(token) {
-  return request("/admin/soc/dashboard", { token, skipCache: true });
-}
-
-export function getVulnerabilityAging(token) {
-  return request("/admin/soc/vulnerability-aging", { token, skipCache: true });
-}
-
-export function getCveEnrichment(importId, token) {
-  return request(`/admin/soc/cves?import_id=${encodeURIComponent(importId)}`, { token, skipCache: true });
-}
-
-export function runEscalationCheck(token) {
-  return request("/admin/soc/check-escalations", { method: "POST", token });
+export function getSecurityAlerts(token) {
+  return request("/admin/security/alerts", { token });
 }
 
 // ─── Malware ──────────────────────────────────────────────────────────────────
@@ -712,7 +654,7 @@ export function reportIssue({ domain, subdomain, rule, severity, issueType, mess
 
 // ─── VAPT Report Import ───────────────────────────────────────────────────────
 
-export async function uploadVaptReport(file, token, orgId = null, region = null, displayName = null) {
+export async function uploadVaptReport(file, token, orgId = null, region = null) {
   const formData = new FormData();
   formData.append("file", file);
   if (orgId) {
@@ -720,9 +662,6 @@ export async function uploadVaptReport(file, token, orgId = null, region = null,
   }
   if (region) {
     formData.append("region", region);
-  }
-  if (displayName) {
-    formData.append("display_name", displayName);
   }
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const url = buildUrl("/vapt/upload");
@@ -915,19 +854,19 @@ export function getVaptOrganizations(token) {
 
 // Admin: rescan requests
 export function getAdminVaptRescanRequests(token) {
-  return request(`/vapt/admin/rescan-requests`, { token });
+  return request(`/vapt/admin/vapt/rescan-requests`, { token });
 }
 
 export function postAdminApproveReschedule(scheduleId, token) {
-  return request(`/vapt/admin/rescan-requests/${encodeURIComponent(scheduleId)}/approve`, { method: "POST", token });
+  return request(`/vapt/admin/vapt/rescan-requests/${encodeURIComponent(scheduleId)}/approve`, { method: "POST", token });
 }
 
 export function postAdminRequestNewDate(scheduleId, body, token) {
-  return request(`/vapt/admin/rescan-requests/${encodeURIComponent(scheduleId)}/request-date`, { method: "POST", body, token });
+  return request(`/vapt/admin/vapt/rescan-requests/${encodeURIComponent(scheduleId)}/request-date`, { method: "POST", body, token });
 }
 
 export function postAdminVerificationDecision(scheduleId, outcome, note, token, nextDueAt) {
-  return request(`/vapt/admin/rescan-requests/${encodeURIComponent(scheduleId)}/decision`, {
+  return request(`/vapt/admin/vapt/rescan-requests/${encodeURIComponent(scheduleId)}/decision`, {
     method: "POST",
     body: { outcome, note: note || undefined, next_vapt_due_at: nextDueAt || undefined },
     token,
@@ -954,13 +893,6 @@ export function postClientNextVaptDueDate(importId, nextDueAt, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/next-due-date`, {
     method: "POST",
     body: { next_vapt_due_at: nextDueAt },
-    token,
-  });
-}
-
-export function approveClientNextVaptDueDate(importId, token) {
-  return request(`/vapt/admin/imports/${encodeURIComponent(importId)}/next-due-date/approve`, {
-    method: "POST",
     token,
   });
 }
@@ -1019,6 +951,10 @@ export function updateVaptOnboarding(fields, token) {
   return request("/vapt/onboarding", { method: "PATCH", body: fields, token });
 }
 
+export function getHasCompletedScans(token) {
+  return request("/vapt/has-completed-scans", { token, skipCache: true });
+}
+
 // ─── Excel exports ──────────────────────────────────────────────────────────
 
 export function downloadVaptReportExcel(importId, token) {
@@ -1061,6 +997,10 @@ export function decideInitialVaptAccess(orgId, body, token) {
   });
 }
 
+export function getVaptTimeline(importId, token) {
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/timeline`, { token, skipCache: true });
+}
+
 export async function downloadVaptClosureBundle(importId, token) {
   const url = buildUrl(`/vapt/imports/${encodeURIComponent(importId)}/closure-bundle`);
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -1084,15 +1024,5 @@ export function proposeInitialVaptDate(orgId, body, token) {
     method: "POST",
     body,
     token,
-  });
-}
-
-export async function setSocAnalystActive(email, isActive, token) {
-  const publicIp = await getPublicIp();
-  return request(`/admin/soc-analyst/${encodeURIComponent(email)}/active`, {
-    method: "PATCH",
-    body: { is_active: isActive },
-    token,
-    publicIp,
   });
 }
