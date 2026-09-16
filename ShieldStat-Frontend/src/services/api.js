@@ -212,6 +212,27 @@ export function addDomain(domain, token) {
     token,
   });
 }
+
+export function removeDomain(domain, token) {
+  return request("/auth/remove-domain", {
+    method: "POST",
+    body: { domain },
+    token,
+  });
+}
+
+export function getNotificationPreferences(token) {
+  return request("/auth/notification-preferences", { token });
+}
+
+export function updateNotificationPreferences(preferences, token) {
+  return request("/auth/notification-preferences", {
+    method: "PUT",
+    body: preferences,
+    token,
+  });
+}
+
 // ─── Scanner ──────────────────────────────────────────────────────────────────
 
 export function registerScanTask(domain, token) {
@@ -232,6 +253,35 @@ export function getScore(domain, token) {
   return request(`/score/get_score?domain=${encodeURIComponent(domain)}`, {
     token,
   });
+}
+
+export async function downloadScanReport(domain, token) {
+  const res = await fetch(
+    `${API_BASE}/score/report?domain=${encodeURIComponent(domain)}`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    },
+  );
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(
+      data?.detail ||
+        (res.status === 401
+          ? "Your session has expired. Please sign in again."
+          : `Failed to download report (${res.status})`),
+    );
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${domain}-scan-report.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 export function scanPublicDomain(domain) {
@@ -419,6 +469,14 @@ export async function deleteSocAnalyst(email, token) {
   });
 }
 
+export function setSocAnalystActive(email, isActive, token) {
+  return request(`/admin/soc-analyst/${encodeURIComponent(email)}/active`, {
+    method: "PATCH",
+    body: { is_active: isActive },
+    token,
+  });
+}
+
 export async function blockUserByEmail(email, token) {
   const publicIp = await getPublicIp();
   return request("/admin/blacklist/block", {
@@ -482,8 +540,33 @@ export function getAuditLogs(token) {
   return request("/admin/audit/logs", { token });
 }
 
-export function getSecurityAlerts(token) {
-  return request("/admin/security/alerts", { token });
+export function getSecurityAlerts(token, status) {
+  const query = status && status !== "all" ? `?status=${encodeURIComponent(status)}` : "";
+  return request(`/admin/security/alerts${query}`, { token });
+}
+
+export function updateSecurityAlertStatus(alertId, status, token) {
+  return request(`/admin/security/alerts/${encodeURIComponent(alertId)}`, {
+    method: "PATCH",
+    body: { status },
+    token,
+  });
+}
+
+export function getSocDashboard(token) {
+  return request("/admin/soc/dashboard", { token });
+}
+
+export function getVulnerabilityAging(token) {
+  return request("/admin/soc/vulnerability-aging", { token });
+}
+
+export function getCveEnrichment(importId, token) {
+  return request(`/admin/soc/cves?import_id=${encodeURIComponent(importId)}`, { token });
+}
+
+export function runEscalationCheck(token) {
+  return request("/admin/soc/check-escalations", { method: "POST", token });
 }
 
 // ─── Malware ──────────────────────────────────────────────────────────────────
