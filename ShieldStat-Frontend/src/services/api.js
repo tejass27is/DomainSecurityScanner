@@ -359,26 +359,6 @@ export async function downloadPublicScanReport(domain) {
   URL.revokeObjectURL(url);
 }
 
-export async function downloadScanReport(domain, token) {
-  const res = await fetch(
-    `${API_BASE}/public/download-report?domain=${encodeURIComponent(domain)}`,
-    { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
-  );
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.detail || `Failed to download report (${res.status})`);
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${domain}-scan-report.pdf`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
 export function setScoringCriticality(domain, criticality, token) {
   return request(`/score/set-criticality?domain=${encodeURIComponent(domain)}&criticality=${criticality}`, {
     method: "PUT",
@@ -551,14 +531,6 @@ export async function deleteSocAnalyst(email, token) {
   });
 }
 
-export function setSocAnalystActive(email, isActive, token) {
-  return request(`/admin/soc-analyst/${encodeURIComponent(email)}/active`, {
-    method: "PATCH",
-    body: { is_active: isActive },
-    token,
-  });
-}
-
 export async function blockUserByEmail(email, token) {
   const publicIp = await getPublicIp();
   return request("/admin/blacklist/block", {
@@ -625,30 +597,6 @@ export function getAuditLogs(token) {
 export function getSecurityAlerts(token, status) {
   const query = status && status !== "all" ? `?status=${encodeURIComponent(status)}` : "";
   return request(`/admin/security/alerts${query}`, { token });
-}
-
-export function updateSecurityAlertStatus(alertId, status, token) {
-  return request(`/admin/security/alerts/${encodeURIComponent(alertId)}`, {
-    method: "PATCH",
-    body: { status },
-    token,
-  });
-}
-
-export function getSocDashboard(token) {
-  return request("/admin/soc/dashboard", { token });
-}
-
-export function getVulnerabilityAging(token) {
-  return request("/admin/soc/vulnerability-aging", { token });
-}
-
-export function getCveEnrichment(importId, token) {
-  return request(`/admin/soc/cves?import_id=${encodeURIComponent(importId)}`, { token });
-}
-
-export function runEscalationCheck(token) {
-  return request("/admin/soc/check-escalations", { method: "POST", token });
 }
 
 // ─── Malware ──────────────────────────────────────────────────────────────────
