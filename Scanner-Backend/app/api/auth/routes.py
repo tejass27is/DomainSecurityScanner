@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Response
+from fastapi import APIRouter, HTTPException, Depends, Response, Request
 from app.api.auth.schemas import (
     RegisterRequest, LoginRequest, InviteRequest,
     RedeemPromoRequest, ForgotPasswordOtpRequest,
@@ -28,6 +28,7 @@ from app.core.middleware import (
 from app.db.models import User, Organization
 from app.utils.captcha import verify_captcha
 from app.api.scanner.service import cancel_active_scans_for_org
+from app.core.rate_limit import enforce_http_rate_limit
 
 router = APIRouter(prefix='/auth', tags=['auth'])
 
@@ -71,7 +72,8 @@ def verify_email_route(req: VerifyEmailRequest, db: Session = Depends(get_db)):
 
 
 @router.post('/login')
-async def login(req: LoginRequest, db: Session = Depends(get_db)):
+async def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    await enforce_http_rate_limit(request, "login", limit=10, window_seconds=300)
     await verify_captcha(req.captcha_token)
 
     email = req.email

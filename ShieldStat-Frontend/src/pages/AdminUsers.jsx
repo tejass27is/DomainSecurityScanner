@@ -88,6 +88,8 @@ function AdminUsers() {
   useEffect(() => {
     fetchUsers();
     fetchBlacklist();
+    // These loaders intentionally run once when the admin page mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchUsers = async () => {
@@ -260,7 +262,6 @@ function AdminUsers() {
 
   const handleToggleSocActive = async (user) => {
     const nextActive = !user.is_active;
-    const action = nextActive ? "reactivate" : "deactivate";
     if (!window.confirm(`${nextActive ? "Reactivate" : "Deactivate"} SOC analyst ${user.email}?`)) return;
     setUpdatingSocAnalystEmail(user.email);
     try {
@@ -515,14 +516,6 @@ function AdminUsers() {
                             </div>
                             <button
                               type="button"
-                              onClick={() => handleToggleSocActive(u)}
-                              disabled={updatingSocAnalystEmail === u.email}
-                              className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all disabled:opacity-60 disabled:cursor-not-allowed ${u.is_active ? "bg-amber-500 text-white hover:bg-amber-600" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}
-                            >
-                              {updatingSocAnalystEmail === u.email ? "Saving..." : u.is_active ? "Deactivate" : "Reactivate"}
-                            </button>
-                            <button
-                              type="button"
                               onClick={() => handleDeleteAdmin(u.email)}
                               disabled={deletingAdminEmail === u.email}
                               className="shrink-0 rounded-lg bg-red-600 text-white px-3 py-1.5 text-xs font-semibold hover:bg-red-700 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
@@ -594,7 +587,11 @@ function AdminUsers() {
                           >
                             <div className="flex items-center gap-3 flex-1 min-w-0">
                               <span className="text-sm font-semibold text-on-surface truncate">{u.email}</span>
-                              {u.is_blacklisted ? (
+                              {!u.is_active ? (
+                                <span className="shrink-0 px-2 py-0.5 bg-amber-100 text-amber-700 text-[10px] font-bold rounded-full uppercase">
+                                  Deactivated
+                                </span>
+                              ) : u.is_blacklisted ? (
                                 <span className="shrink-0 px-2 py-0.5 bg-red-100 text-red-700 text-[10px] font-bold rounded-full uppercase">
                                   Blocked
                                 </span>
@@ -604,6 +601,14 @@ function AdminUsers() {
                                 </span>
                               )}
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleSocActive(u)}
+                              disabled={updatingSocAnalystEmail === u.email}
+                              className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all disabled:opacity-60 disabled:cursor-not-allowed ${u.is_active ? "bg-amber-500 text-white hover:bg-amber-600" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}
+                            >
+                              {updatingSocAnalystEmail === u.email ? "Saving..." : u.is_active ? "Deactivate" : "Reactivate"}
+                            </button>
                             <button
                               type="button"
                               onClick={() => handleDeleteSocAnalyst(u.email)}

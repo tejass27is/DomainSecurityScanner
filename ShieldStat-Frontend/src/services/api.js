@@ -225,14 +225,13 @@ export function getNotificationPreferences(token) {
   return request("/auth/notification-preferences", { token });
 }
 
-export function updateNotificationPreferences(preferences, token) {
+export function updateNotificationPreferences(body, token) {
   return request("/auth/notification-preferences", {
     method: "PUT",
-    body: preferences,
+    body,
     token,
   });
 }
-
 // ─── Scanner ──────────────────────────────────────────────────────────────────
 
 export function registerScanTask(domain, token) {
@@ -245,6 +244,37 @@ export function registerScanTask(domain, token) {
 
 export function getActiveScan(domain, orgId, token) {
   return request(`/scanner/active?domain=${encodeURIComponent(domain)}&org_id=${orgId}`, { token });
+}
+
+// ─── Web Scan (Acunetix) ──────────────────────────────────────────────────────
+
+export function createWebScan(url, token) {
+  return request("/webscan/scans", {
+    method: "POST",
+    body: { url },
+    token,
+  });
+}
+
+export function listWebScans(token) {
+  return request("/webscan/scans", { token, skipCache: true });
+}
+
+export function getWebScan(scanId, token) {
+  // Polled while a scan runs — never serve it from the GET cache.
+  return request(`/webscan/scans/${encodeURIComponent(scanId)}`, { token, skipCache: true });
+}
+
+export function cancelWebScan(scanId, token) {
+  return request(`/webscan/scans/${encodeURIComponent(scanId)}/cancel`, {
+    method: "POST",
+    token,
+  });
+}
+
+// Verifies the configured Acunetix URL/key without starting a scan.
+export function getWebScanDiagnostics(token) {
+  return request("/webscan/diagnostics", { token, skipCache: true });
 }
 
 // ─── Score / Analyzer ─────────────────────────────────────────────────────────
@@ -329,6 +359,26 @@ export async function downloadPublicScanReport(domain) {
   URL.revokeObjectURL(url);
 }
 
+export async function downloadScanReport(domain, token) {
+  const res = await fetch(
+    `${API_BASE}/public/download-report?domain=${encodeURIComponent(domain)}`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || `Failed to download report (${res.status})`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${domain}-scan-report.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function setScoringCriticality(domain, criticality, token) {
   return request(`/score/set-criticality?domain=${encodeURIComponent(domain)}&criticality=${criticality}`, {
     method: "PUT",
@@ -395,6 +445,38 @@ export async function assignPromoCodeToUser(promoCode, email, token) {
 
 export function getSubscriptionPlans(token) {
   return request("/admin/subscription/plans", { token });
+}
+
+export function setSocAnalystActive(email, active, token) {
+  return request(`/admin/soc-analyst/${encodeURIComponent(email)}/active`, {
+    method: "PATCH",
+    body: { is_active: active },
+    token,
+  });
+}
+
+export function getSocDashboard(token) {
+  return request("/admin/soc/dashboard", { token });
+}
+
+export function getVulnerabilityAging(token) {
+  return request("/admin/soc/vulnerability-aging", { token });
+}
+
+export function getCveEnrichment(importId, token) {
+  return request(`/admin/soc/cves?import_id=${encodeURIComponent(importId)}`, { token });
+}
+
+export function runEscalationCheck(token) {
+  return request("/admin/soc/check-escalations", { method: "POST", token });
+}
+
+export function updateSecurityAlertStatus(alertId, status, token) {
+  return request(`/admin/security/alerts/${encodeURIComponent(alertId)}`, {
+    method: "PATCH",
+    body: { status },
+    token,
+  });
 }
 
 export function createSubscriptionPlan(body, token) {
@@ -780,10 +862,12 @@ export async function uploadVaptReport(file, token, orgId = null, region = null)
   return res.json();
 }
 
-export async function uploadVaptVerificationReport(file, scheduleId, token) {
+export async function uploadVaptVerificationReport(file, scheduleId, token, displayName = "") {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("schedule_id", scheduleId);
+  const reportName = (displayName || "").trim();
+  if (reportName) formData.append("display_name", reportName);
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const res = await fetch(buildUrl(`/vapt/admin/rescan-requests/${encodeURIComponent(scheduleId)}/upload`), {
     method: "POST",
@@ -832,6 +916,14 @@ export function approveVaptAccessRequest(orgId, region, approved, token, note = 
   return request("/vapt/admin/approve-access", {
     method: "POST",
     body: { org_id: orgId, region, approved, note: note || undefined },
+    token,
+  });
+}
+
+export function decideRegionChecklist(orgId, regionCode, status, note, token, flags = []) {
+  return request("/vapt/admin/region-checklist/decision", {
+    method: "POST",
+    body: { org_id: orgId, region_code: regionCode, status, note, flags },
     token,
   });
 }
@@ -980,6 +1072,13 @@ export function postClientNextVaptDueDate(importId, nextDueAt, token) {
   });
 }
 
+export function approveClientNextVaptDueDate(importId, token) {
+  return request(`/vapt/admin/imports/${encodeURIComponent(importId)}/approve-next-due-date`, {
+    method: "POST",
+    token,
+  });
+}
+
 // VAPT rescan scheduling APIs
 export function postVaptRescanSchedule(importId, body, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule`, { method: "POST", body, token });
@@ -1034,6 +1133,62 @@ export function updateVaptOnboarding(fields, token) {
   return request("/vapt/onboarding", { method: "PATCH", body: fields, token });
 }
 
+export function submitVaptChecklist(fields, token) {
+  return request("/vapt/onboarding/submit", { method: "POST", body: fields, token });
+}
+
+/** Upload a file against an upload-capable checklist question. */
+export async function uploadVaptChecklistAttachment(file, { sectionId, questionId, regionCode = "" }, token) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("section_id", sectionId || "");
+  formData.append("question_id", questionId);
+  if (regionCode) formData.append("region_code", regionCode);
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(buildUrl("/vapt/onboarding/attachment"), {
+    method: "POST",
+    headers,
+    body: formData,
+    signal: DEV_TIMEOUT_MS ? AbortSignal.timeout(DEV_TIMEOUT_MS) : undefined,
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || `Upload failed (HTTP ${res.status}).`);
+  }
+  return res.json();
+}
+
+export function deleteVaptChecklistAttachment(attachmentId, token) {
+  return request(`/vapt/onboarding/attachment/${encodeURIComponent(attachmentId)}`, { method: "DELETE", token });
+}
+
+/**
+ * Download a stored checklist attachment.
+ *
+ * Downloads are authenticated, so a plain link cannot be used: the blob is
+ * fetched with the bearer token and then handed to the browser as a file.
+ */
+export async function downloadVaptChecklistAttachment(attachment, token) {
+  const attachmentId = typeof attachment === "string" ? attachment : attachment?.id;
+  if (!attachmentId) throw new Error("This attachment is no longer available.");
+  const res = await fetch(buildUrl(`/vapt/onboarding/attachment/${encodeURIComponent(attachmentId)}`), {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || `Download failed (HTTP ${res.status}).`);
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = (typeof attachment === "object" && attachment?.filename) || "attachment";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 export function getHasCompletedScans(token) {
   return request("/vapt/has-completed-scans", { token, skipCache: true });
 }
@@ -1064,10 +1219,10 @@ export function getAdminVaptOnboardingReviews(token) {
   return request("/vapt/admin/onboarding", { token, skipCache: true });
 }
 
-export function reviewAdminVaptOnboarding(orgId, status, note, token) {
+export function reviewAdminVaptOnboarding(orgId, status, note, token, flags = []) {
   return request(`/vapt/admin/onboarding/${encodeURIComponent(orgId)}/review`, {
     method: "POST",
-    body: { status, note },
+    body: { status, note, flags },
     token,
   });
 }

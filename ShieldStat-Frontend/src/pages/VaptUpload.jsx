@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Upload, FileUp, FileSpreadsheet, FileText, ShieldAlert, AlertTriangle,
   CheckCircle2, XCircle, Info, Globe, Download, Eye, Database, Zap,
-  Layers, Server, Activity, ArrowLeft, FileDigit, Lock, WifiOff,
+  Layers, Server, Activity, ArrowLeft, FileDigit, Lock, WifiOff, Loader2,
 } from "lucide-react";
 import {
   uploadVaptReport,
@@ -17,6 +17,9 @@ import {
   getVaptAccessStatus,
   getVaptOnboarding,
   updateVaptOnboarding,
+  submitVaptChecklist,
+  uploadVaptChecklistAttachment,
+  deleteVaptChecklistAttachment,
   getHasCompletedScans,
   decideInitialVaptDate,
   getWebSocketUrl,
@@ -171,15 +174,16 @@ function CapabilityCard({ icon, title, description, color = "text-purple-600 bg-
   );
 }
 
-function ChoiceChipGroup({ options, value, onChange }) {
+function ChoiceChipGroup({ options, value, onChange, disabled = false }) {
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className={`flex flex-wrap gap-2 ${disabled ? "opacity-70" : ""}`}>
       {options.map((option) => (
         <button
           key={option}
           type="button"
+          disabled={disabled}
           onClick={() => onChange(option)}
-          className={`rounded-full border px-3 py-2 text-xs font-semibold transition ${value === option ? "border-violet-600 bg-violet-600 text-white shadow-sm" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-violet-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"}`}
+          className={`rounded-full border px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed ${value === option ? "border-violet-600 bg-violet-600 text-white shadow-sm" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-violet-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"}`}
         >
           {option}
         </button>
@@ -204,6 +208,7 @@ export default function VaptUpload() {
   const [selectedRegion, setSelectedRegion] = useState("");
   const [verificationSchedules, setVerificationSchedules] = useState([]);
   const [selectedVerificationSchedule, setSelectedVerificationSchedule] = useState(verificationScheduleParam);
+  const [verificationDisplayName, setVerificationDisplayName] = useState("");
   const [orgsError, setOrgsError] = useState("");
   const [vaptAccessStatus, setVaptAccessStatus] = useState({
     vapt_access_enabled: false,
@@ -211,6 +216,10 @@ export default function VaptUpload() {
     approved_regions: [],
     available_regions: [],
   });
+  // Per-question upload state for checklist attachments, keyed by
+  // `${sectionId}::${questionId}`. Declared with the other hooks because the
+  // component returns early for blocked / ungated users.
+  const [attachmentState, setAttachmentState] = useState({});
   const QUESTION_SECTIONS = [
     {
       id: "general_information",
@@ -226,6 +235,7 @@ export default function VaptUpload() {
         { id: "third_party_hosted_managed_systems_in_scope", label: "Are any third-party hosted/managed systems in scope?", type: "textarea", helper: "Include third-party hosted or managed systems relevant to the assessment.", example: "Example: SaaS CRM, managed firewall, vendor-hosted app." },
         { id: "previous_vapt_history", label: "Has a VAPT/penetration test previously been performed for the in-scope assets?", type: "textarea", helper: "Provide prior test history if any.", example: "Example: Last test in 2024; issues remediated." },
         { id: "network_diagram_available", label: "Is a network diagram available, if yes then please provide us with one.", type: "textarea", helper: "Provide any network diagram or architecture context.", example: "Example: Internet > WAF > App servers > DB cluster" },
+        { id: "network_diagram_upload", label: "Upload your network / infrastructure diagram", type: "upload", required: false, accept: ".pdf,.png,.jpg,.jpeg", helper: "PDF, PNG or JPG up to 25 MB. Optional: upload the diagram here, or email it to your SOC contact quoting your region code.", example: "Topology diagram showing firewalls, servers and network segments" },
       ],
     },
     {
@@ -246,6 +256,7 @@ export default function VaptUpload() {
         { id: "physical_machine_count_by_type", label: "Please provide the physical machine count by type, if available.", type: "text", short: true, helper: "Machine count by type if available.", example: "Example: Servers: 42, desktops: 650, laptops: 300" },
         { id: "machines_included_in_vapt", label: "How many organization machines are intended to be included in this VAPT?", type: "text", short: true, helper: "Expected scope size for the VAPT.", example: "Example: 180" },
         { id: "asset_inventory_available", label: "Is an asset inventory/list available?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "Asset inventory availability.", example: "Example: Yes" },
+        { id: "asset_list_upload", label: "Upload your asset list (inventory of in-scope assets)", type: "upload", required: true, accept: ".xlsx,.xls,.csv,.pdf", helper: "Excel, CSV or PDF up to 25 MB. An asset list is required — if you cannot share it here, email it to your SOC contact and mark this N/A, then explain why.", example: "Hostname, IP, OS, owner and environment for every in-scope asset" },
         { id: "approx_in_scope_servers", label: "Approximate number of in-scope servers", type: "text", short: true, helper: "Approximate count of in-scope servers.", example: "Example: 35" },
         { id: "approx_in_scope_endpoints", label: "Approximate number of in-scope desktops/laptops/endpoints with the type of OS", type: "text", short: true, helper: "Approximate in-scope endpoints and OS types.", example: "Example: 150 Windows, 20 macOS" },
         { id: "wfh_vpn", label: "Are WFH/remote users connected to the organization's office/network through a VPN?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "Remote access via VPN.", example: "Example: Yes" },
@@ -356,10 +367,14 @@ export default function VaptUpload() {
       const sectionData = source?.[section.id] || {};
       section.questions.forEach((question) => {
         const item = sectionData?.[question.id] || {};
+        const attachment = item?.attachment;
         normalized[section.id][question.id] = {
           question: question.label,
           answer: typeof item.answer === "string" ? item.answer : "",
           na: Boolean(item.na),
+          // Attachment metadata lives in the answer itself, so it must survive
+          // normalization — otherwise every re-render would drop the upload.
+          ...(attachment && attachment.id ? { attachment } : {}),
         };
       });
     });
@@ -414,9 +429,11 @@ export default function VaptUpload() {
     return idx >= 0 ? idx + 1 : section.questions.length;
   };
 
-  const emptyOnboarding = {
+  const [emptyOnboarding] = useState(() => ({
     completed: false,
     review_status: "pending",
+    review_note: "",
+    review_flags: [],
     scope_ip_ranges: "",
     authorization_confirmed: false,
     tech_contact_name: "",
@@ -427,8 +444,8 @@ export default function VaptUpload() {
     testing_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     out_of_scope_systems: "",
     checklist_answers: buildEmptyChecklistAnswers(),
-  };
-  const [onboarding, setOnboarding] = useState(emptyOnboarding);
+  }));
+  const [onboarding, setOnboarding] = useState(() => emptyOnboarding);
   const timezoneOptions = Array.from(new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, "UTC", "Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Australia/Sydney"].filter(Boolean)));
   const [hasScans, setHasScans] = useState(true);
   const [accessCode, setAccessCode] = useState("");
@@ -440,6 +457,9 @@ export default function VaptUpload() {
   const [checklistSubmitting, setChecklistSubmitting] = useState(false);
   const [checklistMessage, setChecklistMessage] = useState("");
   const [socReviewNote, setSocReviewNote] = useState("");
+  // True while SOC has sent the checklist back for changes: only the flagged
+  // items stay editable, everything else is locked (already reviewed).
+  const [restrictToFlagged, setRestrictToFlagged] = useState(false);
   const [activeSection, setActiveSection] = useState("general_information");
   const [saveState, setSaveState] = useState("saved");
   const sectionNumberMap = Object.fromEntries(QUESTION_SECTIONS.map((section, index) => [section.id, index + 1]));
@@ -456,6 +476,18 @@ export default function VaptUpload() {
   const canUpload = Boolean(currentUser && currentUser.role === "soc_analyst");
   const libraryPath = "/admin/vapt-reports";
   const selectedOrg = orgs.find((o) => o.org_id === selectedOrgId) || null;
+  // SOC flags for a "changes requested" review, keyed by `${section}::${question}`.
+  // The client only needs to amend these items; everything else is preserved.
+  const reviewFlagMap = Object.fromEntries(
+    (onboarding?.review_flags || [])
+      .filter((flag) => flag?.question_id)
+      .map((flag) => [`${flag.section}::${flag.question_id}`, flag]),
+  );
+  const flagFor = (sectionId, questionId) => reviewFlagMap[`${sectionId}::${questionId}`];
+  // Locking only kicks in when SOC actually flagged something: a "more info"
+  // request carrying only free-text remarks keeps the whole form editable.
+  const lockUnflagged = restrictToFlagged && Object.keys(reviewFlagMap).length > 0;
+  const isQuestionLocked = (sectionId, questionId) => lockUnflagged && !flagFor(sectionId, questionId);
   const clientAccessState = getClientVaptAccessState({
     vaptAccessEnabled: !!vaptAccessStatus.vapt_access_enabled,
     hasScans,
@@ -525,8 +557,7 @@ export default function VaptUpload() {
     if (!token) {
       navigate("/auth", { replace: true });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [navigate]);
 
   // Detect user changes by watching the token - reset form when user logs out/in
   useEffect(() => {
@@ -543,7 +574,7 @@ export default function VaptUpload() {
     // Listen for logout events
     window.addEventListener("logout", handleStorageChange);
     return () => window.removeEventListener("logout", handleStorageChange);
-  }, []);
+  }, [emptyOnboarding]);
 
   // Only fully approved clients can leave the onboarding flow for the report
   // library. If the checklist is incomplete or SOC has not approved it yet,
@@ -586,24 +617,59 @@ export default function VaptUpload() {
           setChecklistMessage("");
         }
 
+        // Changes requested: answers are preserved, so land the client on the
+        // first section SOC flagged instead of making them hunt for it.
+        const orgChangesRequested = (onbData?.review_status || "").toLowerCase() === "changes_requested";
+        if (orgChangesRequested) {
+          const firstFlag = (onbData?.review_flags || []).find((flag) => flag?.section);
+          if (firstFlag?.section) setActiveSection(firstFlag.section);
+          setChecklistMessage("");
+        }
+        setRestrictToFlagged(orgChangesRequested);
+
         setOnboarding(nextOnboarding);
         setSocReviewNote((onbData || {})?.review_note || "");
         setHasScans(!!scanData?.has_completed_scans);
 
-        // For region requests, start with a fresh empty checklist
-        // and only preserve the region-agnostic metadata.
+        // For region requests: if SOC sent this region's checklist back asking
+        // for more information, prefill it and highlight the flagged items so
+        // the client only fixes what is actually missing.
         if (regionRequestMode) {
-          setOnboarding((prev) => ({
-            ...prev,
-            checklist_answers: buildEmptyChecklistAnswers(),
-            testing_start_at: "",
-            testing_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-            completed: false,
-            review_status: "pending",
-          }));
-          setRequestRegionCode("");
-          setRequestRegionName("");
-          setActiveSection("general_information");
+          const status = await getVaptAccessStatus(token).catch(() => null);
+          const pending = (status?.pending_regions || []).find(
+            (region) => region.checklist_review_status === "changes_requested",
+          );
+          setRestrictToFlagged(Boolean(pending));
+          if (pending) {
+            const submission = pending.checklist_submission || {};
+            setRequestRegionCode(pending.code || "");
+            setRequestRegionName(pending.name || "");
+            setSocReviewNote(pending.checklist_review_note || "");
+            setOnboarding((prev) => ({
+              ...prev,
+              ...submission,
+              checklist_answers: normalizeChecklistAnswers(submission.checklist_answers || {}),
+              testing_start_at: toDatetimeLocal(pending.testing_start_at) || prev.testing_start_at,
+              testing_timezone: pending.testing_timezone || prev.testing_timezone,
+              review_flags: pending.checklist_flags || [],
+              completed: false,
+              review_status: "pending",
+            }));
+            setActiveSection(pending.checklist_flags?.[0]?.section || "general_information");
+          } else {
+            setOnboarding((prev) => ({
+              ...prev,
+              checklist_answers: buildEmptyChecklistAnswers(),
+              testing_start_at: "",
+              testing_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+              completed: false,
+              review_status: "pending",
+              review_flags: [],
+            }));
+            setRequestRegionCode("");
+            setRequestRegionName("");
+            setActiveSection("general_information");
+          }
           setChecklistMessage("");
         }
       } catch {
@@ -611,6 +677,8 @@ export default function VaptUpload() {
         setHasScans(true);
       }
     })();
+  // These helpers are local form normalizers and intentionally use the initial render scope.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canUpload, regionRequestMode]);
 
   useEffect(() => {
@@ -682,7 +750,7 @@ export default function VaptUpload() {
     setProgressMsg("Parsing, scoring and normalizing findings…");
     try {
       const result = selectedVerificationSchedule
-        ? await uploadVaptVerificationReport(selectedFile, selectedVerificationSchedule, token)
+        ? await uploadVaptVerificationReport(selectedFile, selectedVerificationSchedule, token, verificationDisplayName)
         : await uploadVaptReport(selectedFile, token, selectedOrgId, selectedRegion);
       setPreview(result);
       setProgressMsg("");
@@ -692,7 +760,7 @@ export default function VaptUpload() {
     } finally {
       setIsUploading(false);
     }
-  }, [selectedFile, isUploading, selectedOrgId, selectedRegion, selectedVerificationSchedule]);
+  }, [selectedFile, isUploading, selectedOrgId, selectedRegion, selectedVerificationSchedule, verificationDisplayName]);
 
   const handleDownloadPdf = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -710,6 +778,20 @@ export default function VaptUpload() {
     }
   }, [preview, canUpload]);
 
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (regionRequestMode || !token || !onboarding || !onboarding.checklist_answers) return;
+    const timer = setTimeout(async () => {
+      try {
+        await updateVaptOnboarding(onboarding, token);
+        setSaveState("saved");
+      } catch {
+        setSaveState("error");
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [onboarding, regionRequestMode]);
+
   if (!canUpload && vaptAccessStatus.vapt_blocked) {
     return (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-red-200 bg-white p-8 shadow-sm dark:border-red-900 dark:bg-slate-900">
@@ -726,7 +808,7 @@ export default function VaptUpload() {
     );
   }
 
-  if (!canUpload && clientAccessState === "access_not_approved") {
+  if (!canUpload && clientAccessState === "region_required") {
     return (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <div className="mb-6 flex items-center gap-3">
@@ -735,7 +817,7 @@ export default function VaptUpload() {
         </div>
         <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100">Request VAPT access</h2>
         <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
-          Your account has not been approved for VAPT yet. Choose the region you need and send the request to the admin for approval.
+          Your account does not have an approved region yet. Request the region you need, then wait for your admin or SOC team to approve it — the onboarding checklist unlocks once your region is approved.
         </p>
 
         <div className="mt-6 space-y-4">
@@ -807,13 +889,19 @@ export default function VaptUpload() {
   const riskMeta = riskTone(preview?.risk_score ?? 0);
 
   const previewRows = (preview?.findings || []).slice(0, 12);
-  const totalChecklistItems = QUESTION_SECTIONS.reduce((sum, section) => sum + section.questions.length, 0);
+  // A question marked `required: false` is recorded when answered but never
+  // blocks the submission. An upload question counts as answered once a file is
+  // attached (or the client marks it N/A).
+  const isQuestionProvided = (question, entry) => {
+    if (entry?.na) return true;
+    if (String(entry?.answer ?? "").trim()) return true;
+    return question?.type === "upload" && Boolean(entry?.attachment?.id);
+  };
+  const requiredQuestionsOf = (section) => section.questions.filter((question) => question.required !== false);
+  const totalChecklistItems = QUESTION_SECTIONS.reduce((sum, section) => sum + requiredQuestionsOf(section).length, 0);
   const answeredChecklistCount = QUESTION_SECTIONS.reduce((sum, section) => {
     const sectionAnswers = normalizeChecklistAnswers(onboarding.checklist_answers || {})[section.id] || {};
-    return sum + Object.values(sectionAnswers).filter((entry) => {
-      const value = entry?.answer ?? "";
-      return Boolean(String(value).trim()) || Boolean(entry?.na);
-    }).length;
+    return sum + requiredQuestionsOf(section).filter((question) => isQuestionProvided(question, sectionAnswers[question.id])).length;
   }, 0);
   const allChecklistComplete = answeredChecklistCount >= totalChecklistItems;
 
@@ -824,7 +912,64 @@ export default function VaptUpload() {
   const canSubmitChecklist = allChecklistComplete && requiredFieldsComplete;
 
   // ── Onboarding checklist for first-time org users ──
-  const updateQuestionAnswer = useCallback((sectionId, questionId, value, na = false) => {
+  const attachmentKey = (sectionId, questionId) => `${sectionId}::${questionId}`;
+
+  const handleAttachmentSelected = async (sectionId, question, file) => {
+    if (!file || isQuestionLocked(sectionId, question.id)) return;
+    const key = attachmentKey(sectionId, question.id);
+    setAttachmentState((prev) => ({ ...prev, [key]: { uploading: true, error: "" } }));
+    try {
+      const meta = await uploadVaptChecklistAttachment(
+        file,
+        {
+          sectionId,
+          questionId: question.id,
+          regionCode: regionRequestMode ? (requestRegionCode || "").trim().toUpperCase() : "",
+        },
+        localStorage.getItem("token"),
+      );
+      setOnboarding((prev) => {
+        const nextAnswers = normalizeChecklistAnswers(prev.checklist_answers || {});
+        nextAnswers[sectionId] = { ...(nextAnswers[sectionId] || {}) };
+        nextAnswers[sectionId][question.id] = {
+          ...(nextAnswers[sectionId][question.id] || {}),
+          answer: meta?.filename || file.name,
+          na: false,
+          attachment: meta,
+        };
+        return syncDerivedOnboardingFields({ ...prev, checklist_answers: nextAnswers });
+      });
+      setAttachmentState((prev) => ({ ...prev, [key]: { uploading: false, error: "" } }));
+      setSaveState("saving");
+    } catch (err) {
+      setAttachmentState((prev) => ({
+        ...prev,
+        [key]: { uploading: false, error: err?.message || "Upload failed. Please try again." },
+      }));
+    }
+  };
+
+  const handleAttachmentRemove = async (sectionId, question) => {
+    if (isQuestionLocked(sectionId, question.id)) return;
+    const attachmentId = normalizeChecklistAnswers(onboarding.checklist_answers || {})[sectionId]?.[question.id]?.attachment?.id;
+    setOnboarding((prev) => {
+      const nextAnswers = normalizeChecklistAnswers(prev.checklist_answers || {});
+      nextAnswers[sectionId] = { ...(nextAnswers[sectionId] || {}) };
+      const { attachment: _removed, ...rest } = nextAnswers[sectionId][question.id] || {};
+      nextAnswers[sectionId][question.id] = { ...rest, answer: "", na: false };
+      return syncDerivedOnboardingFields({ ...prev, checklist_answers: nextAnswers });
+    });
+    setSaveState("saving");
+    if (!attachmentId) return;
+    try {
+      await deleteVaptChecklistAttachment(attachmentId, localStorage.getItem("token"));
+    } catch {
+      // The reference is already gone locally; a stale server copy is harmless.
+    }
+  };
+
+  const updateQuestionAnswer = (sectionId, questionId, value, na = false) => {
+    if (isQuestionLocked(sectionId, questionId)) return;
     setOnboarding((prev) => {
       const nextAnswers = normalizeChecklistAnswers(prev.checklist_answers || {});
       nextAnswers[sectionId] = { ...(nextAnswers[sectionId] || {}) };
@@ -836,53 +981,36 @@ export default function VaptUpload() {
       return syncDerivedOnboardingFields({ ...prev, checklist_answers: nextAnswers });
     });
     setSaveState("saving");
-  }, [syncDerivedOnboardingFields]);
+  };
 
-  const toggleNa = useCallback((sectionId, questionId) => {
+  const toggleNa = (sectionId, questionId) => {
+    if (isQuestionLocked(sectionId, questionId)) return;
     const current = onboarding.checklist_answers?.[sectionId]?.[questionId];
     const isNa = !current?.na;
     updateQuestionAnswer(sectionId, questionId, isNa ? "N/A" : "", isNa);
-  }, [onboarding.checklist_answers, updateQuestionAnswer]);
+  };
 
-  const getSectionProgress = useCallback((section) => {
-    const questions = Object.entries(normalizeChecklistAnswers(onboarding.checklist_answers || {})[section.id] || {});
-    const total = section.questions.length;
+  const getSectionProgress = (section) => {
+    const sectionAnswers = normalizeChecklistAnswers(onboarding.checklist_answers || {})[section.id] || {};
+    const requiredQuestions = requiredQuestionsOf(section);
+    const total = requiredQuestions.length;
     if (total === 0) return { answered: 0, total: 0, percent: 0 };
-    let answered = 0;
-    questions.forEach(([, entry]) => {
-      const value = entry?.answer ?? "";
-      const isAnswered = Boolean((value || "").toString().trim()) || Boolean(entry?.na);
-      if (isAnswered) answered += 1;
-    });
+    const answered = requiredQuestions.filter((question) => isQuestionProvided(question, sectionAnswers[question.id])).length;
     return {
       answered,
       total,
       percent: Math.round((answered / total) * 100),
     };
-  }, [onboarding.checklist_answers]);
+  };
 
-  useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (regionRequestMode || !token || !onboarding || !onboarding.checklist_answers) return;
-    const timer = setTimeout(async () => {
-      try {
-        await updateVaptOnboarding(onboarding, token);
-        setSaveState("saved");
-      } catch {
-        setSaveState("error");
-      }
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [onboarding, regionRequestMode]);
-
-  const handleSubmitOnboarding = useCallback(async () => {
+  const handleSubmitOnboarding = async () => {
     const token = localStorage.getItem("token");
     if (!token) return;
 
     const regionCode = (requestRegionCode || "").trim().toUpperCase();
     const regionName = (requestRegionName || "").trim();
-    if (!regionCode || !regionName) {
-      setChecklistMessage("Please add the region code and region name before submitting the VAPT request.");
+    if (regionRequestMode && (!regionCode || !regionName)) {
+      setChecklistMessage("Please add the region code and region name before submitting the region request.");
       return;
     }
 
@@ -893,30 +1021,6 @@ export default function VaptUpload() {
       testing_start_at: onboarding.testing_start_at,
       testing_timezone: onboarding.testing_timezone,
     };
-
-    if (regionRequestMode) {
-      if (!requiredFields.testing_start_at || !requiredFields.testing_timezone) {
-        setChecklistMessage("Please provide the testing start date and timezone before submitting.");
-        return;
-      }
-      setChecklistSubmitting(true);
-      setChecklistMessage("");
-      try {
-        await requestVaptRegion({
-          region_code: regionCode,
-          region_name: regionName,
-          testing_start_at: new Date(onboarding.testing_start_at).toISOString(),
-          testing_timezone: onboarding.testing_timezone,
-        }, token);
-        setVaptAccessStatus(await getVaptAccessStatus(token));
-        setChecklistMessage("The new region request has been submitted. Your existing VAPT access and reports remain available while SOC reviews this region.");
-      } catch (err) {
-        setChecklistMessage(err?.message || "Unable to submit the region request. Please try again.");
-      } finally {
-        setChecklistSubmitting(false);
-      }
-      return;
-    }
 
     const missing = Object.entries(requiredFields).filter(([, value]) => value === "" || value === false || value == null);
     const normalizedAnswers = normalizeChecklistAnswers(onboarding.checklist_answers || {});
@@ -938,45 +1042,68 @@ export default function VaptUpload() {
       return;
     }
 
+    const payload = {
+      scope_ip_ranges: derivedScopeIpRanges,
+      authorization_confirmed: derivedAuthorizationConfirmed,
+      tech_contact_name: onboarding.tech_contact_name || derivedPrimaryContact.name || "",
+      tech_contact_email: onboarding.tech_contact_email || derivedPrimaryContact.email || "",
+      tech_contact_phone: onboarding.tech_contact_phone,
+      testing_window: onboarding.testing_window,
+      testing_start_at: new Date(onboarding.testing_start_at).toISOString(),
+      testing_timezone: onboarding.testing_timezone,
+      out_of_scope_systems: onboarding.out_of_scope_systems,
+      checklist_answers: normalizedAnswers,
+    };
+
+    // An additional region carries its own checklist so SOC reviews the region
+    // and the checklist together. The org's existing approved checklist (and
+    // therefore its access to other regions) is left untouched.
+    if (regionRequestMode) {
+      setChecklistSubmitting(true);
+      setChecklistMessage("");
+      try {
+        await requestVaptRegion({
+          region_code: regionCode,
+          region_name: regionName,
+          ...payload,
+        }, token);
+        setVaptAccessStatus(await getVaptAccessStatus(token));
+        // Flags are resolved by this submission, so unlock the form again.
+        setOnboarding((prev) => ({ ...prev, review_flags: [] }));
+        setRestrictToFlagged(false);
+        setChecklistMessage("The new region request and its checklist have been submitted. SOC will review them together.");
+      } catch (err) {
+        setChecklistMessage(err?.message || "Unable to submit the region request. Please try again.");
+      } finally {
+        setChecklistSubmitting(false);
+      }
+      return;
+    }
+
     setChecklistSubmitting(true);
     setChecklistMessage("");
     try {
-      const payload = {
-        scope_ip_ranges: derivedScopeIpRanges,
-        authorization_confirmed: derivedAuthorizationConfirmed,
-        tech_contact_name: onboarding.tech_contact_name || derivedPrimaryContact.name || "",
-        tech_contact_email: onboarding.tech_contact_email || derivedPrimaryContact.email || "",
-        tech_contact_phone: onboarding.tech_contact_phone,
-        testing_window: onboarding.testing_window,
-        testing_start_at: new Date(onboarding.testing_start_at).toISOString(),
-        testing_timezone: onboarding.testing_timezone,
-        out_of_scope_systems: onboarding.out_of_scope_systems,
-        checklist_answers: normalizedAnswers,
-      };
-      const response = regionRequestMode
-        ? await requestVaptRegion({
-            region_code: regionCode,
-            region_name: regionName,
-            testing_start_at: payload.testing_start_at,
-            testing_timezone: payload.testing_timezone,
-          }, token)
-        : await requestVaptAccess([{ code: regionCode, name: regionName }], token, payload);
-      const nextStatus = regionRequestMode
-        ? await getVaptAccessStatus(token)
-        : (response || { vapt_access_enabled: false, requested_regions: [], approved_regions: [], available_regions: [] });
-      setVaptAccessStatus(nextStatus);
-      if (regionRequestMode) {
-        setChecklistMessage("The new region request has been submitted. Your existing VAPT access and reports remain available while SOC reviews this region.");
-      } else {
-        setOnboarding((prev) => ({ ...prev, ...payload, completed: true, review_status: "pending" }));
-        setChecklistMessage("Your VAPT request has been submitted. The admin and SOC team will review the region, checklist, and preferred testing window together.");
+      // The region is already approved at this point, so submitting the
+      // checklist is a separate step that SOC reviews on its own.
+      const response = await submitVaptChecklist(payload, token);
+      setOnboarding((prev) => ({
+        ...prev,
+        ...(response?.onboarding
+          ? { ...response.onboarding, testing_start_at: toDatetimeLocal(response.onboarding.testing_start_at) }
+          : payload),
+        completed: true,
+        review_status: "pending",
+      }));
+      if (response) {
+        setVaptAccessStatus((prev) => ({ ...prev, ...response }));
       }
+      setChecklistMessage("Your VAPT checklist has been submitted. The SOC team will review it before your reports are unlocked.");
     } catch (err) {
       setChecklistMessage(err?.message || "Unable to submit the checklist. Please try again.");
     } finally {
       setChecklistSubmitting(false);
     }
-  }, [onboarding, requestRegionCode, requestRegionName]);
+  };
 
   if (!canUpload && regionRequestMode && clientAccessState === "allowed") {
     return (
@@ -1046,7 +1173,13 @@ export default function VaptUpload() {
         </div>
         <h2 className="break-words text-2xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100 sm:text-3xl">{regionRequestMode ? "Request New Region" : "VAPT Onboarding Checklist"}</h2>
         <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
-          {regionRequestMode ? "Complete the VAPT form again for this region. SOC will review the region, checklist, and testing start together." : "Complete this one-time checklist so your security team knows how to scope and schedule your first scan."}
+          {regionRequestMode
+            ? socReviewNote
+              ? "Only the items SOC flagged below can be edited — everything else is locked and already reviewed. Fix the flagged items and resubmit."
+              : "Complete the VAPT form again for this region. SOC will review the region, checklist, and testing start together."
+            : onboarding.review_status === "changes_requested"
+              ? "Only the items SOC flagged below can be edited — everything else is locked and already reviewed. Fix the flagged items and resubmit."
+              : "Complete this one-time checklist so your security team knows how to scope and schedule your first scan."}
         </p>
 
         <div className="mt-8 space-y-6">
@@ -1054,37 +1187,57 @@ export default function VaptUpload() {
             This intake is structured by section so it stays manageable. Progress saves automatically as you go, and you can return later without losing work.
           </div>
 
-          {onboarding.review_status === "rejected" && socReviewNote && (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-              <p className="font-bold">SOC review feedback</p>
+          {socReviewNote && (regionRequestMode || onboarding.review_status === "rejected" || onboarding.review_status === "changes_requested") && (
+            <div
+              className={`rounded-xl border px-4 py-3 text-sm ${
+                onboarding.review_status === "rejected" && !regionRequestMode
+                  ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+                  : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+              }`}
+            >
+              <p className="font-bold">
+                {onboarding.review_status === "rejected" && !regionRequestMode ? "SOC review feedback" : "SOC requested more information"}
+              </p>
               <p className="mt-1 whitespace-pre-wrap">{socReviewNote}</p>
             </div>
           )}
 
           <div className="mx-auto w-full max-w-6xl rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-5 grid gap-4 rounded-2xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-900 dark:bg-violet-950/30 md:grid-cols-2">
-              <div className="space-y-2">
-                <label htmlFor="request-region-code" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Region code</label>
-                <input
-                  id="request-region-code"
-                  type="text"
-                  value={requestRegionCode}
-                  onChange={(e) => setRequestRegionCode(e.target.value.toUpperCase())}
-                  placeholder="e.g. ACC-IND"
-                  className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-violet-500 dark:focus:ring-violet-900/40"
-                />
-              </div>
-              <div className="space-y-2">
-                <label htmlFor="request-region-name" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Region name</label>
-                <input
-                  id="request-region-name"
-                  type="text"
-                  value={requestRegionName}
-                  onChange={(e) => setRequestRegionName(e.target.value)}
-                  placeholder="e.g. Accenture India"
-                  className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-violet-500 dark:focus:ring-violet-900/40"
-                />
-              </div>
+              {regionRequestMode ? (
+                <>
+                  <div className="space-y-2">
+                    <label htmlFor="request-region-code" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Region code</label>
+                    <input
+                      id="request-region-code"
+                      type="text"
+                      value={requestRegionCode}
+                      onChange={(e) => setRequestRegionCode(e.target.value.toUpperCase())}
+                      placeholder="e.g. ACC-IND"
+                      className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-violet-500 dark:focus:ring-violet-900/40"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor="request-region-name" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Region name</label>
+                    <input
+                      id="request-region-name"
+                      type="text"
+                      value={requestRegionName}
+                      onChange={(e) => setRequestRegionName(e.target.value)}
+                      placeholder="e.g. Accenture India"
+                      className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-violet-500 dark:focus:ring-violet-900/40"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Approved region</label>
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
+                    <CheckCircle2 size={16} />
+                    {(vaptAccessStatus.approved_regions || []).map((region) => `${region.code} · ${region.name}`).join(", ") || "—"}
+                  </div>
+                </div>
+              )}
               <div className="space-y-2">
                 <label htmlFor="testing-start-at" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Testing start</label>
                 <input id="testing-start-at" type="datetime-local" value={onboarding.testing_start_at || ""} onChange={(e) => setOnboarding((prev) => ({ ...prev, testing_start_at: e.target.value }))} className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100" />
@@ -1179,7 +1332,7 @@ export default function VaptUpload() {
                                   const wrapClass = "rounded-xl border border-slate-200 bg-white p-3 shadow-[0_2px_8px_rgba(15,23,42,0.04)] transition hover:-translate-y-px hover:shadow-md focus-within:border-l-4 focus-within:border-l-violet-500 focus-within:pl-[11px] dark:border-slate-700 dark:bg-slate-900 dark:shadow-none dark:hover:shadow-lg dark:hover:shadow-black/20";
 
                                   return (
-                                    <div key={question.id} className={wrapClass}>
+                                    <div key={question.id} className={flagFor(section.id, question.id) ? `${wrapClass} border-amber-300 ring-2 ring-amber-200 dark:border-amber-800 dark:ring-amber-900/50` : isQuestionLocked(section.id, question.id) ? `${wrapClass} opacity-70` : wrapClass}>
                                       <div className="mb-2 flex items-center justify-between gap-3">
                                         <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300">
                                           <span className="inline-flex items-center gap-1.5">
@@ -1191,7 +1344,9 @@ export default function VaptUpload() {
                                         <button
                                           type="button"
                                           onClick={() => toggleNa(section.id, question.id)}
-                                          className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.15em] ${entry.na ? "border-slate-700 bg-slate-800 text-white dark:border-slate-200 dark:bg-slate-100 dark:text-slate-900" : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"}`}
+                                          disabled={isQuestionLocked(section.id, question.id)}
+                                          title={isQuestionLocked(section.id, question.id) ? "Already reviewed — only flagged items can be edited" : undefined}
+                                          className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.15em] disabled:cursor-not-allowed disabled:opacity-40 ${entry.na ? "border-slate-700 bg-slate-800 text-white dark:border-slate-200 dark:bg-slate-100 dark:text-slate-900" : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"}`}
                                         >
                                           N/A
                                         </button>
@@ -1201,17 +1356,25 @@ export default function VaptUpload() {
                                         <p className="mb-2 text-[11px] leading-5 text-slate-500 dark:text-slate-400">{question.helper}</p>
                                       )}
 
+                                      {flagFor(section.id, question.id) && (
+                                        <p className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                                          SOC requested more information
+                                          {flagFor(section.id, question.id)?.note ? `: ${flagFor(section.id, question.id).note}` : " for this item"}.
+                                        </p>
+                                      )}
+
                                       {question.type === "choice" ? (
                                         <ChoiceChipGroup
                                           options={question.options}
                                           value={entry.answer}
+                                          disabled={isQuestionLocked(section.id, question.id)}
                                           onChange={(option) => updateQuestionAnswer(section.id, question.id, option, false)}
                                         />
                                       ) : (
                                         <input
                                           type="text"
                                           value={entry.na ? "N/A" : entry.answer}
-                                          disabled={entry.na}
+                                          disabled={entry.na || isQuestionLocked(section.id, question.id)}
                                           onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
                                           className={baseClass}
                                           placeholder={question.example || "Type answer"}
@@ -1234,7 +1397,7 @@ export default function VaptUpload() {
                                   const wrapClass = "rounded-xl border border-slate-200 bg-white p-3 shadow-[0_2px_8px_rgba(15,23,42,0.04)] transition hover:-translate-y-px hover:shadow-md focus-within:border-l-4 focus-within:border-l-violet-500 focus-within:pl-[11px] dark:border-slate-700 dark:bg-slate-900 dark:shadow-none dark:hover:shadow-lg dark:hover:shadow-black/20";
 
                                   return (
-                                    <div key={question.id} className={wrapClass}>
+                                    <div key={question.id} className={flagFor(section.id, question.id) ? `${wrapClass} border-amber-300 ring-2 ring-amber-200 dark:border-amber-800 dark:ring-amber-900/50` : isQuestionLocked(section.id, question.id) ? `${wrapClass} opacity-70` : wrapClass}>
                                       <div className="mb-2 flex items-center justify-between gap-3">
                                         <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300">
                                           <span className="inline-flex items-center gap-1.5">
@@ -1246,7 +1409,9 @@ export default function VaptUpload() {
                                         <button
                                           type="button"
                                           onClick={() => toggleNa(section.id, question.id)}
-                                          className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.15em] ${entry.na ? "border-slate-700 bg-slate-800 text-white dark:border-slate-200 dark:bg-slate-100 dark:text-slate-900" : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"}`}
+                                          disabled={isQuestionLocked(section.id, question.id)}
+                                          title={isQuestionLocked(section.id, question.id) ? "Already reviewed — only flagged items can be edited" : undefined}
+                                          className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.15em] disabled:cursor-not-allowed disabled:opacity-40 ${entry.na ? "border-slate-700 bg-slate-800 text-white dark:border-slate-200 dark:bg-slate-100 dark:text-slate-900" : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"}`}
                                         >
                                           N/A
                                         </button>
@@ -1256,11 +1421,63 @@ export default function VaptUpload() {
                                         <p className="mb-2 text-[11px] leading-5 text-slate-500 dark:text-slate-400">{question.helper}</p>
                                       )}
 
-                                      {question.type === "textarea" ? (
+                                      {flagFor(section.id, question.id) && (
+                                        <p className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                                          SOC requested more information
+                                          {flagFor(section.id, question.id)?.note ? `: ${flagFor(section.id, question.id).note}` : " for this item"}.
+                                        </p>
+                                      )}
+
+                                      {question.type === "upload" ? (
+                                        <div className="space-y-2">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <label className={`inline-flex items-center justify-center gap-2 rounded-xl border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300 ${entry.na || isQuestionLocked(section.id, question.id) || attachmentState[attachmentKey(section.id, question.id)]?.uploading ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
+                                              {attachmentState[attachmentKey(section.id, question.id)]?.uploading ? <Loader2 size={16} className="animate-spin" /> : <FileUp size={16} />}
+                                              {attachmentState[attachmentKey(section.id, question.id)]?.uploading ? "Uploading…" : "Choose file"}
+                                              <input
+                                                type="file"
+                                                accept={question.accept}
+                                                className="hidden"
+                                                disabled={entry.na || isQuestionLocked(section.id, question.id) || attachmentState[attachmentKey(section.id, question.id)]?.uploading}
+                                                onChange={(event) => {
+                                                  handleAttachmentSelected(section.id, question, event.target.files?.[0]);
+                                                  event.target.value = "";
+                                                }}
+                                              />
+                                            </label>
+                                            {entry.attachment?.id && !isQuestionLocked(section.id, question.id) && (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleAttachmentRemove(section.id, question)}
+                                                className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
+                                              >
+                                                Remove file
+                                              </button>
+                                            )}
+                                          </div>
+
+                                          {entry.attachment?.id ? (
+                                            <p className="flex flex-wrap items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+                                              <CheckCircle2 size={14} /> {entry.attachment.filename}
+                                              {typeof entry.attachment.size_bytes === "number" ? ` (${Math.max(1, Math.round(entry.attachment.size_bytes / 1024))} KB)` : ""}
+                                            </p>
+                                          ) : (
+                                            <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-slate-500 dark:text-slate-400">
+                                              {question.required === false ? "Optional — upload here, or email your SOC contact" : "Required — upload a file, or mark N/A and explain by email"}
+                                            </p>
+                                          )}
+
+                                          {attachmentState[attachmentKey(section.id, question.id)]?.error && (
+                                            <p className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] font-semibold text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
+                                              {attachmentState[attachmentKey(section.id, question.id)].error}
+                                            </p>
+                                          )}
+                                        </div>
+                                      ) : question.type === "textarea" ? (
                                         <textarea
                                           rows={2}
                                           value={entry.na ? "N/A" : entry.answer}
-                                          disabled={entry.na}
+                                          disabled={entry.na || isQuestionLocked(section.id, question.id)}
                                           onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
                                           className={`${baseClass} min-h-[74px] resize-y`}
                                           placeholder={question.example || "Provide details"}
@@ -1270,7 +1487,7 @@ export default function VaptUpload() {
                                           <textarea
                                             rows={3}
                                             value={entry.na ? "N/A" : entry.answer}
-                                            disabled={entry.na}
+                                            disabled={entry.na || isQuestionLocked(section.id, question.id)}
                                             onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
                                             className={`${baseClass} min-h-[90px] resize-y`}
                                             placeholder={question.example || "Add rows as needed for each asset / platform entry."}
@@ -1280,7 +1497,7 @@ export default function VaptUpload() {
                                         <input
                                           type="text"
                                           value={entry.na ? "N/A" : entry.answer}
-                                          disabled={entry.na}
+                                          disabled={entry.na || isQuestionLocked(section.id, question.id)}
                                           onChange={(e) => updateQuestionAnswer(section.id, question.id, e.target.value, false)}
                                           className={baseClass}
                                           placeholder={question.example || "Type answer"}
@@ -1357,7 +1574,7 @@ export default function VaptUpload() {
     return (
       <div className="flex min-h-screen items-center justify-center p-6 text-slate-900 dark:text-slate-100">
         <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <p className="text-sm leading-6 text-slate-700 dark:text-slate-200">Your VAPT request has been submitted. The admin and SOC team will review the region, checklist, and preferred testing window together.</p>
+          <p className="text-sm leading-6 text-slate-700 dark:text-slate-200">Your VAPT checklist has been submitted. The SOC team will review it before your reports are unlocked.</p>
           {onboarding.proposed_start_at && onboarding.proposed_end_at && (
             <div className="mt-5 rounded-xl border border-sky-200 bg-sky-50 p-4 text-left text-sm text-sky-900 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200">
               <p className="font-bold">SOC proposed a different testing window</p>
@@ -1368,30 +1585,6 @@ export default function VaptUpload() {
               </div>
             </div>
           )}
-        </div>
-      </div>
-    );
-  }
-
-  if (!canUpload && clientAccessState === "access_not_approved") {
-    return (
-      <div className="flex min-h-screen items-center justify-center p-6 text-slate-900 dark:text-slate-100">
-        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400">
-            <FileUp size={26} />
-          </div>
-          <h2 className="text-lg font-bold">Upload access is restricted</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
-            VAPT reports are uploaded and published by your security team (SOC analysts). Your
-            account can view and download the reports published to your organization, and mark
-            findings as solved.
-          </p>
-          <Link
-            to="/vapt/reports"
-            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-purple-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95"
-          >
-            <Eye size={16} /> View published reports
-          </Link>
         </div>
       </div>
     );
@@ -1441,19 +1634,57 @@ export default function VaptUpload() {
                   <select
                     id="vapt-verification-schedule"
                     value={selectedVerificationSchedule}
-                    onChange={(e) => setSelectedVerificationSchedule(e.target.value)}
+                    onChange={(e) => {
+                      const scheduleId = e.target.value;
+                      setSelectedVerificationSchedule(scheduleId);
+                      if (!scheduleId) {
+                        setVerificationDisplayName("");
+                        return;
+                      }
+                      // A verification belongs to the organization and region of the
+                      // report it retests, so surface both as soon as it is picked.
+                      const schedule = verificationSchedules.find((s) => s.id === scheduleId);
+                      if (!schedule) return;
+                      setVerificationDisplayName(schedule.display_name || "");
+                      const orgId = schedule.org_id || "";
+                      setSelectedOrgId(orgId);
+                      const org = orgs.find((o) => o.org_id === orgId);
+                      const firstRegion = (org?.approved_regions || [])[0];
+                      const fallbackRegion =
+                        typeof firstRegion === "string" ? firstRegion : firstRegion?.code || "";
+                      setSelectedRegion(schedule.region || fallbackRegion);
+                    }}
                     className="w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100"
                   >
                     <option value="">Upload an initial report</option>
                     {verificationSchedules.map((schedule) => (
                       <option key={schedule.id} value={schedule.id}>
-                        Verification · {schedule.file_name || schedule.import_id} · {new Date(schedule.scheduled_at).toLocaleString()}
+                        Verification · {schedule.display_name || schedule.file_name || schedule.import_id} · {new Date(schedule.scheduled_at).toLocaleString()}
                       </option>
                     ))}
                   </select>
                   <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">
                     Select the approved rescan to attach the SOC retest export. This upload completes that manual verification.
                   </p>
+                  {selectedVerificationSchedule && (
+                    <div className="mt-4">
+                      <label htmlFor="vapt-verification-name" className="mb-2 block text-xs font-black uppercase tracking-[0.2em] text-sky-700 dark:text-sky-300">
+                        Report name
+                      </label>
+                      <input
+                        id="vapt-verification-name"
+                        type="text"
+                        value={verificationDisplayName}
+                        onChange={(e) => setVerificationDisplayName(e.target.value)}
+                        maxLength={120}
+                        placeholder="e.g. Q3 re-validation — Mumbai"
+                        className="w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900/40"
+                      />
+                      <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">
+                        Appears as the report title and in the download filename. Leave blank for the default name.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
               <label htmlFor="vapt-target-org" className="mb-2 block text-xs font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">

@@ -36,4 +36,8 @@ COPY . .
 # recompiling with `go run` on every container start.
 RUN CGO_ENABLED=0 go build -o /app/scanner-worker ./cmd/worker
 
+RUN addgroup -S scanner && adduser -S scanner -G scanner \
+    && chown -R scanner:scanner /app
+USER scanner
+
 CMD ["/app/scanner-worker"]

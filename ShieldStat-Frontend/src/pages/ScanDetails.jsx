@@ -499,7 +499,7 @@ function FixGuideModal({ rule, host, orgId, domain, onClose, onScoreUpdate }) {
       .then((data) => setGuide(data))
       .catch((err) => setGuideError(err?.message || "Failed to load fix guide."))
       .finally(() => setGuideLoading(false));
-  }, [fixType]);
+  }, [fixType, host?.technologies, host?.tls_version, subdomain]);
 
   const handleVerify = async () => {
     setVerifying(true);
@@ -953,12 +953,13 @@ function ResolvedPanel({ domain, refresh }) {
 
   useEffect(() => {
     if (!domain) return;
-    setLoading(true);
+    const loadingTimer = window.setTimeout(() => setLoading(true), 0);
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     getResolvedFindings(domain, token)
       .then((data) => setResolved(data || []))
       .catch(() => setResolved([]))
       .finally(() => setLoading(false));
+    return () => window.clearTimeout(loadingTimer);
   }, [domain, refresh]);
 
   if (loading) {

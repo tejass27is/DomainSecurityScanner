@@ -1,6 +1,7 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import fs from 'node:fs'
+import process from 'node:process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -42,7 +43,13 @@ function clientRouteFallback() {
 }
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ command, mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  if (command === 'build' && !env.VITE_BACKEND_URL?.trim()) {
+    throw new Error('VITE_BACKEND_URL must be set when building the production frontend.')
+  }
+
+  return {
   plugins: [clientRouteFallback(), react()],
   server: {
     proxy: {
@@ -103,6 +110,11 @@ export default defineConfig({
         changeOrigin: true,
         bypass: spaHtmlFallback,
       },
+      '/webscan': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        bypass: spaHtmlFallback,
+      },
       '/health': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
@@ -120,4 +132,5 @@ export default defineConfig({
       },
     },
   },
+  }
 })

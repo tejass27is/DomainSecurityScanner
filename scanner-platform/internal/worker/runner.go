@@ -25,7 +25,7 @@ func getCancelSignal(job *models.ScanJob) bool {
 		log.Println("WARNING: REDIS_ADDR not set, cannot check cancel signal")
 		return false
 	}
-	client := redis.NewClient(&redis.Options{Addr: addr})
+	client := redis.NewClient(&redis.Options{Addr: addr, Password: os.Getenv("REDIS_PASSWORD")})
 	defer client.Close()
 
 	key := fmt.Sprintf("scan_cancel:%s:%s", job.ScanID, job.Target)
@@ -80,7 +80,7 @@ func syncPublicScanProgress(job *models.ScanJob, stage string, progress int, mes
 		return
 	}
 
-	client := redis.NewClient(&redis.Options{Addr: addr})
+	client := redis.NewClient(&redis.Options{Addr: addr, Password: os.Getenv("REDIS_PASSWORD")})
 	defer client.Close()
 
 	payload := map[string]any{

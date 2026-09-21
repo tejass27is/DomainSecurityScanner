@@ -1,3 +1,4 @@
+import html
 import os
 import smtplib
 import ssl
@@ -407,10 +408,12 @@ def send_vapt_access_event_email(
         raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
     labels = {
         "access_request_submitted": "VAPT Access Request Received",
+        "checklist_submitted": "VAPT Checklist Submitted",
         "region_access_requested": "New Region Requested",
         "initial_access_approved": "VAPT Access Approved",
         "initial_access_rejected": "VAPT Access — Changes Requested",
         "checklist_approved": "VAPT Checklist Approved",
+        "checklist_changes_requested": "VAPT Checklist — More Information Needed",
         "checklist_rejected": "VAPT Checklist — Changes Requested",
         "region_access_approved": "Region Access Approved",
         "region_access_rejected": "Region Access — Changes Requested",
@@ -441,7 +444,8 @@ def send_vapt_access_event_email(
     details_table = f'<table style="width:100%;border-collapse:collapse;margin:16px 0 4px">{detail_rows}</table>' if detail_rows else ""
     note_block = ""
     if note and note.strip():
-        note_block = f'<div style="margin:16px 0;padding:14px 16px;border-left:3px solid #6366f1;background:#f8fafc;border-radius:0 8px 8px 0;font-size:13px;color:#475569">{note.strip()}</div>'
+        safe_note = html.escape(note.strip()).replace("\n", "<br/>")
+        note_block = f'<div style="margin:16px 0;padding:14px 16px;border-left:3px solid #6366f1;background:#f8fafc;border-radius:0 8px 8px 0;font-size:13px;color:#475569">{safe_note}</div>'
     body_html = f"""
         <p style="font-size:14px;color:#334155;margin:0 0 16px">Hello,</p>
         <p style="font-size:14px;color:#334155;margin:0 0 20px">{title}.</p>

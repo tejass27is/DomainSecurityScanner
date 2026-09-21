@@ -47,6 +47,7 @@ func main() {
 
 	fq := queue.NewFixQueue(addr)
 	mq := queue.NewMainQueue(addr)
+	wq := queue.NewWebScanQueue(addr)
 
 	log.Println("Scanner worker started")
 	backoff := initialBackoff
@@ -64,6 +65,14 @@ func main() {
 			job, err = fq.PopFixQueue(ctx)
 			if err == nil {
 				result, err = worker.RunFix(ctx, job)
+			}
+		} else if scan_type == "webscan" {
+			fmt.Println("Running web-scan worker")
+
+			var job *models.WebScanJob
+			job, err = wq.PopWebScanQueue(ctx)
+			if err == nil {
+				result, err = worker.RunWebScan(ctx, job)
 			}
 		} else {
 			fmt.Println("Running main worker")

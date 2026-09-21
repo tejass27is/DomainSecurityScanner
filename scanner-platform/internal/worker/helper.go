@@ -67,7 +67,9 @@ func buildTemporaryScanContainerArgs(scanID string, domain string, imageName str
 		"--name", containerName,
 		"--network=" + networkName,
 		"-e", "REDIS_ADDR=" + redisAddr,
+		"-e", "REDIS_PASSWORD=" + os.Getenv("REDIS_PASSWORD"),
 		"-e", "BACKEND_URL=" + backendURL,
+		"-e", "WEBHOOK_SECRET=" + os.Getenv("WEBHOOK_SECRET"),
 		"-e", "SCAN_ID=" + scanID,
 		"-e", "SCAN_TARGET=" + domain,
 		imageName,
@@ -220,6 +222,47 @@ func send_fix_result_webhook(result models.FixScanResult) (string, error) {
 
 	url := fmt.Sprintf(
 		"%s/fix/result",
+		baseURL,
+	)
+
+	_, err = postJSON(url, payload)
+	if err != nil {
+		return "", err
+	}
+
+	return "ok", nil
+}
+
+// send_webscan_notification reports Acunetix scan progress to the backend.
+func send_webscan_notification(payload models.WebScanNotification) (string, error) {
+	baseURL, err := getBackendBaseURL()
+	if err != nil {
+		return "", err
+	}
+
+	url := fmt.Sprintf(
+		"%s/webhooks/webscan/notification",
+		baseURL,
+	)
+
+	_, err = postJSON(url, payload)
+	if err != nil {
+		return "", err
+	}
+
+	return "ok", nil
+}
+
+// send_webscan_result_webhook posts a finished (or failed) Acunetix scan's
+// findings to the backend for normalization + storage.
+func send_webscan_result_webhook(payload models.WebScanResult) (string, error) {
+	baseURL, err := getBackendBaseURL()
+	if err != nil {
+		return "", err
+	}
+
+	url := fmt.Sprintf(
+		"%s/webhooks/webscan/result",
 		baseURL,
 	)
 

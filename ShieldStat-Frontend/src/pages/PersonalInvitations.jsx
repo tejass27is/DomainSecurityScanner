@@ -29,6 +29,8 @@ export default function PersonalInvitations() {
 
   useEffect(() => {
     fetchPersonalInvites();
+    // This loader intentionally runs once when the admin page mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleApprovePersonalEmail = async (e) => {

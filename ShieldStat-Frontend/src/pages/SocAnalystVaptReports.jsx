@@ -5,7 +5,7 @@ import {
   AlertCircle, Server, Activity, FileSpreadsheet, FileDigit, ShieldCheck,
   Building2,
 } from "lucide-react";
-import { getAllVaptImports, downloadVaptReportAdmin, getAdminVaptRescanRequests, getWebSocketUrl } from "../services/api";
+import { getAllVaptImports, downloadVaptReportAdmin, getAdminVaptRescanRequests, getWebSocketUrl, approveClientNextVaptDueDate } from "../services/api";
 import {
   severityMeta,
   riskTone,
@@ -34,6 +34,7 @@ const LIFECYCLE_LABEL = {
   revalidation_scheduled: "Re-validation scheduled",
   revalidation_verification_pending: "SOC decision pending",
   closure_pending_client_due_date: "SOC approved closure — due date required",
+  closure_pending_soc_due_date: "Client due date pending SOC approval",
   closed: "Cycle closed",
   remediation_required: "Remediation required",
 };
@@ -84,6 +85,7 @@ export default function SocAnalystVaptReports() {
   const [clientFilter, setClientFilter] = useState("");
   const [yearFilter, setYearFilter] = useState(null);
   const [monthFilter, setMonthFilter] = useState(null);
+  const [dueDateApprovalLoading, setDueDateApprovalLoading] = useState({});
 
   const wsRef = useRef(null);
 
@@ -160,6 +162,20 @@ export default function SocAnalystVaptReports() {
       setError(err?.message || "Failed to download the report.");
     }
   }, []);
+
+  const handleApproveDueDate = useCallback(async (importId) => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    setDueDateApprovalLoading((prev) => ({ ...prev, [importId]: true }));
+    try {
+      await approveClientNextVaptDueDate(importId, token);
+      await loadImports();
+    } catch (err) {
+      setError(err?.message || "Failed to approve the client due date.");
+    } finally {
+      setDueDateApprovalLoading((prev) => ({ ...prev, [importId]: false }));
+    }
+  }, [loadImports]);
 
   // Distinct clients (organizations) with report counts; newest activity tracked.
   const clientOptions = useMemo(() => {
@@ -509,6 +525,16 @@ export default function SocAnalystVaptReports() {
                             >
                               <Download size={15} />
                             </button>
+                            {item.lifecycle_status === "closure_pending_soc_due_date" && (
+                              <button
+                                type="button"
+                                onClick={() => handleApproveDueDate(item.import_id)}
+                                disabled={dueDateApprovalLoading[item.import_id]}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-emerald-700 hover:shadow-md active:translate-y-0 active:scale-[0.97] disabled:cursor-wait disabled:opacity-60"
+                              >
+                                {dueDateApprovalLoading[item.import_id] ? "Approving…" : "Approve due date"}
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

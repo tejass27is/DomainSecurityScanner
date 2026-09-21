@@ -25,15 +25,24 @@ jobs:
       # 3️⃣ Install dependencies
       - name: Install dependencies
         working-directory: ShieldStat-Frontend
-        run: npm install
+        run: npm ci
 
-      # 4️⃣ Build Next.js (static export)
+      - name: Lint frontend
+        working-directory: ShieldStat-Frontend
+        run: npm run lint
+
+      - name: Test frontend
+        working-directory: ShieldStat-Frontend
+        run: npm test
+
+      # 4. Build Vite frontend
       - name: Build frontend
         working-directory: ShieldStat-Frontend
         run: |
-          NEXT_PUBLIC_API_URL=/api npm run build
+          test -n "${{ secrets.VITE_BACKEND_URL }}"
+          VITE_BACKEND_URL="${{ secrets.VITE_BACKEND_URL }}" npm run build
 
-      # 5️⃣ CLEAN OLD FILES (IMPORTANT)
+      # Upload to a staging directory first so a failed upload cannot erase live files.
       - name: Clean old files on server
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -41,18 +50,18 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            echo "Cleaning old build..."
-            rm -rf /var/www/scanner-frontend/*
+            rm -rf /var/www/scanner-frontend-staging
+            mkdir -p /var/www/scanner-frontend-staging
 
-      # 6️⃣ Upload new build
+          # 6. Upload Vite output
       - name: Upload build to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
-          source: "ShieldStat-Frontend/out/"
-          target: "/var/www/scanner-frontend/"
+          source: "ShieldStat-Frontend/dist/*"
+          target: "/var/www/scanner-frontend-staging/"
 
       # 7️⃣ Fix permissions + reload nginx
       - name: Finalize deployment
@@ -62,7 +71,11 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            echo "Fixing permissions..."
+            test -f /var/www/scanner-frontend-staging/index.html
+            rm -rf /var/www/scanner-frontend-old
+            if [ -d /var/www/scanner-frontend ]; then mv /var/www/scanner-frontend /var/www/scanner-frontend-old; fi
+            mv /var/www/scanner-frontend-staging /var/www/scanner-frontend
+            rm -rf /var/www/scanner-frontend-old
             chown -R www-data:www-data /var/www/scanner-frontend
 
             echo "Reloading Nginx..."

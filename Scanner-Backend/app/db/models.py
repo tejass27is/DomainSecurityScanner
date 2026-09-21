@@ -53,6 +53,18 @@ class OrganizationRegion(Base):
     proposed_end_at = Column(TIMESTAMP(timezone=True), nullable=True)
     proposed_timezone = Column(String(64), nullable=True)
     schedule_status = Column(String(32), nullable=False, default="pending", server_default="'pending'")
+    # Checklist submitted alongside an additional-region request. Kept on the
+    # region row (not the org-level checklist) so re-onboarding for a new region
+    # never invalidates the org's existing approved checklist/access.
+    checklist_submission = Column(JSON, nullable=True)
+    # Independent review state for that attached checklist, mirroring the
+    # org-level flow: pending → approved | changes_requested | rejected. A
+    # "changes_requested" review keeps the region `status` at "pending" so only
+    # the flagged items need fixing instead of the whole request being rejected.
+    checklist_review_status = Column(String(24), nullable=False, default="pending", server_default="'pending'")
+    checklist_review_note = Column(Text, nullable=True)
+    # [{section, question_id, label, note}, ...] — same shape as the org checklist.
+    checklist_flags = Column(JSON, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("org_id", "region_id", name="uq_org_region"),
@@ -461,6 +473,11 @@ class VaptOnboardingChecklist(Base):
     reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
     review_note = Column(Text, nullable=True)
+    # Per-question review flags set by SOC when the checklist needs more
+    # information. Shape: [{section, question_id, label, note}, ...]. NULL /
+    # empty means nothing is outstanding. Kept alongside the submission so a
+    # "changes requested" review never discards the client's answers.
+    review_flags = Column(JSON, nullable=True)
 
     # Scope / IP ranges the org wants assessed
     scope_ip_ranges = Column(Text, nullable=True)
@@ -491,6 +508,40 @@ class VaptOnboardingChecklist(Base):
 
     __table_args__ = (
         Index("idx_vapt_onboarding_org", "org_id"),
+    )
+
+
+class VaptChecklistAttachment(Base):
+    """A file a client uploaded against an upload-capable checklist question.
+
+    The bytes live on the backend's mounted storage volume; this row is the
+    database handle binding the file to an org, question and (optionally) the
+    additional-region request it belongs to. No third-party storage service is
+    involved and downloads go through an org-scoped endpoint.
+    """
+
+    __tablename__ = "vapt_checklist_attachments"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
+    # Set when the file belongs to an additional-region checklist; NULL for the
+    # organisation-level onboarding checklist.
+    region_code = Column(String(64), nullable=True)
+    section_id = Column(String(64), nullable=False)
+    question_id = Column(String(64), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    content_type = Column(String(128), nullable=True)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    # Path relative to VAPT_ATTACHMENT_DIR so the storage root stays movable.
+    stored_name = Column(String(255), nullable=False)
+    # Plain String rather than a FK: an attachment outlives the user that sent it
+    # and must never be cascaded away.
+    uploaded_by = Column(String(36), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_vapt_attachment_org", "org_id"),
+        Index("idx_vapt_attachment_question", "org_id", "question_id"),
     )
 
 
@@ -585,4 +636,51 @@ class ReportedIssue(Base):
         Index("idx_reportedissue_domain", "domain"),
         Index("idx_reportedissue_status", "status"),
         Index("idx_reportedissue_ref", "ref_id"),
+    )
+
+
+class WebScan(Base):
+    """An Acunetix web-application scan against a single URL.
+
+    The backend creates the Acunetix target + scan, then a Go worker polls
+    Acunetix until the scan finishes and posts the normalized findings back to
+    ``/webhooks/webscan/result``. Findings are stored in the same normalized
+    shape the VAPT module produces, so the existing report/UI patterns can
+    consume them.
+    """
+
+    __tablename__ = "web_scans"
+
+    scan_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    target_url = Column(Text, nullable=False)
+    target_host = Column(String(255), nullable=False)
+    # Acunetix-side identifiers, stored so the worker can resume polling and the
+    # UI can deep-link back into Acunetix if needed.
+    acunetix_target_id = Column(String(64), nullable=True)
+    acunetix_scan_id = Column(String(64), nullable=True)
+    profile_id = Column(String(64), nullable=True)
+    # pending → running → completed | failed | cancelled
+    status = Column(String(32), nullable=False, default="pending", server_default="'pending'")
+    progress = Column(Integer, nullable=False, default=0, server_default="0")
+    current_stage = Column(String(64), nullable=True)
+    message = Column(Text, nullable=True)
+    total_findings = Column(Integer, nullable=False, default=0, server_default="0")
+    unique_urls = Column(Integer, nullable=False, default=0, server_default="0")
+    risk_score = Column(Integer, nullable=False, default=0, server_default="0")
+    severity = Column(String(20), nullable=False, default="none", server_default="'none'")
+    severity_distribution = Column(JSON, nullable=True)
+    findings = Column(JSON, nullable=True)
+    summary = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    finished_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_webscan_org_created", "org_id", "created_at"),
+        Index("idx_webscan_org_status", "org_id", "status"),
+        Index("idx_webscan_acunetix_scan", "acunetix_scan_id"),
     )

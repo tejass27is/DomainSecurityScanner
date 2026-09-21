@@ -2,9 +2,10 @@ import json
 import os
 import time
 import urllib.parse
+import logging
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -24,10 +25,12 @@ from app.api.scanner.service import _validate_domain_dns
 from app.api.auth.service import hashPassword
 from app.api.admin.service import create_public_report_request
 from app.core.redis_queue import RedisClient
+from app.core.rate_limit import enforce_http_rate_limit
 from app.utils.email import send_scan_report_email
 from app.utils.generate_scan_report_pdf import generate_domain_scan_report_pdf_bytes
 
 router = APIRouter(prefix="/public", tags=["public"])
+logger = logging.getLogger(__name__)
 redis_client = RedisClient()
 
 ABUSEIPDB_URL = "https://api.abuseipdb.com/api/v2/check"
@@ -147,7 +150,11 @@ def _build_report_data(row: ScanSummary):
 PUBLIC_USER_EMAIL = "public@shieldstat.local"
 PUBLIC_USER_ID = "00000000-0000-0000-0000-000000000001"
 PUBLIC_ORG_ID = "00000000-0000-0000-0000-000000000010"
-PUBLIC_USER_PASSWORD = "PublicScan123!"
+def _public_user_password() -> str:
+    password = os.getenv("PUBLIC_USER_PASSWORD")
+    if not password:
+        raise RuntimeError("PUBLIC_USER_PASSWORD environment variable is not set")
+    return password
 
 
 def _clear_existing_public_scan_results(db: Session, domain: str) -> None:
@@ -320,7 +327,7 @@ def ensure_public_org_exists(db: Session) -> None:
         public_user = User(
             user_id=PUBLIC_USER_ID,
             email=PUBLIC_USER_EMAIL,
-            password=hashPassword(PUBLIC_USER_PASSWORD),
+            password=hashPassword(_public_user_password()),
             role="owner",
             org_id=None,
             email_verified=True,
@@ -348,8 +355,10 @@ def ensure_public_org_exists(db: Session) -> None:
 @router.post("/scan")
 async def public_scan(
     request: PublicScanRequest,
+    http_request: Request,
     db: Session = Depends(get_db),
 ):
+    await enforce_http_rate_limit(http_request, "public-scan", limit=5, window_seconds=3600)
     domain = request.domain.strip().lower()
     if not domain:
         raise HTTPException(status_code=400, detail="Domain is required")
@@ -371,22 +380,20 @@ async def public_scan(
         "domain": domain,
         "target": domain,
     }
-    print(f"[PUBLIC SCAN] Queueing job: {scan_job}")
+    logger.info("Queueing public scan for domain=%s", domain)
     try:
         await redis_client.PushToQueue(data=scan_job)
     except Exception as e:
-        print(f"[PUBLIC SCAN] ✗ Failed to queue scan job: {e}")
-        print(f"[PUBLIC SCAN] Redis host: {redis_client.host}")
+        logger.exception("Failed to queue public scan for domain=%s", domain)
         raise HTTPException(status_code=503, detail="Unable to queue public scan. Redis is unavailable.")
 
     progress_key = f"scan_progress:{PUBLIC_ORG_ID}:{domain.strip().lower()}"
     try:
         payload = _build_progress_payload(10, status="queued", stage="queued", message="Scan queued")
         result = await redis_client.redis.set(progress_key, payload, ex=3600)
-        print(f"[PUBLIC SCAN] ✓ Set progress key {progress_key} = {payload} (result={result})")
+        logger.debug("Set public scan progress key=%s result=%s", progress_key, result)
     except Exception as e:
-        print(f"[PUBLIC SCAN] ✗ Failed to set progress: {e}")
-        print(f"[PUBLIC SCAN] Redis host: {redis_client.host}")
+        logger.warning("Failed to set public scan progress key=%s: %s", progress_key, e)
 
     try:
         active_scan = db.query(ActiveScan).filter(
@@ -405,9 +412,9 @@ async def public_scan(
             db.add(active_scan)
 
         db.commit()
-        print(f"[PUBLIC SCAN] ✓ Created/updated ActiveScan for {domain}")
+        logger.debug("Created or updated ActiveScan for domain=%s", domain)
     except Exception as e:
-        print(f"[PUBLIC SCAN] ✗ Failed to create ActiveScan: {e}")
+        logger.exception("Failed to create ActiveScan for domain=%s", domain)
         db.rollback()
 
     return {"message": "Public scan queued successfully", "domain": domain}
@@ -433,20 +440,19 @@ async def public_scan_status(
     progress_key = f"scan_progress:{PUBLIC_ORG_ID}:{normalized_domain}"
     try:
         cached = await redis_client.redis.get(progress_key)
-        print(f"[SCAN STATUS] key={progress_key}, raw_cached={repr(cached)}, type={type(cached).__name__}")
+        logger.debug("Read public scan progress key=%s type=%s", progress_key, type(cached).__name__)
         status_payload = _parse_progress_payload(cached)
         if status_payload:
-            print(f"[SCAN STATUS] ✓ Parsed progress payload: {status_payload}")
+            logger.debug("Parsed public scan progress key=%s", progress_key)
             return {
                 "status": status_payload.get("status", "pending"),
                 "progress": status_payload.get("progress", 0),
                 "stage": status_payload.get("stage", "queued"),
                 "message": status_payload.get("message", "Scan in progress"),
             }
-        print("[SCAN STATUS] cached is None or invalid; continuing to fallback")
+        logger.debug("No valid cached public scan progress for key=%s", progress_key)
     except Exception as e:
-        print(f"[SCAN STATUS] ✗ Redis get failed for {progress_key}: {e}")
-        print(f"[SCAN STATUS] Redis host: {redis_client.host}")
+        logger.warning("Redis progress lookup failed for key=%s: %s", progress_key, e)
 
     try:
         active_scan = db.query(ActiveScan).filter(
@@ -454,7 +460,7 @@ async def public_scan_status(
             ActiveScan.org_id == PUBLIC_ORG_ID,
         ).first()
     except Exception as e:
-        print(f"[SCAN STATUS] ✗ ActiveScan query failed: {e}")
+        logger.exception("ActiveScan query failed for domain=%s", normalized_domain)
         active_scan = None
 
     if active_scan:
@@ -475,10 +481,14 @@ async def public_scan_status(
 
 # Public query for a lightweight domain overview
 @router.post("/send-report")
-def send_report_email(
+async def send_report_email(
     request: PublicReportEmailRequest,
+    http_request: Request,
     db: Session = Depends(get_db),
 ):
+    # This endpoint performs PDF generation and sends email, so keep it tight.
+    # The fixed-window limiter is shared through Redis across backend replicas.
+    await enforce_http_rate_limit(http_request, "public-report", limit=5, window_seconds=3600)
     domain = request.domain.strip().lower()
     email = request.email.strip().lower()
     # Names are optional — the public flow only asks for an email address.
@@ -525,10 +535,12 @@ def send_report_email(
 
 
 @router.get("/download-report")
-def download_report(
+async def download_report(
+    http_request: Request,
     domain: str = Query(..., description="Domain to download the report for"),
     db: Session = Depends(get_db),
 ):
+    await enforce_http_rate_limit(http_request, "public-report-download", limit=20, window_seconds=3600)
     normalized_domain = domain.strip().lower()
     if not normalized_domain:
         raise HTTPException(status_code=400, detail="Domain is required")

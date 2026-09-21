@@ -6,8 +6,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    ports:
-      - "54322:5432" # 🌐 Public access on 54322
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,11 +19,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: scanner-redis
-    #    command: redis-server --requirepass ${REDIS_PASSWORD}   # 🔐 MUST for public
-    ports:
-      - "6379:6379" # 🌐 Public access
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a '${REDIS_PASSWORD}' ping"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -43,7 +39,9 @@ services:
       - REDIS_PORT=${REDIS_PORT}
       - QUTTERA_API_KEY=${QUTTERA_API_KEY}
       - JWT_SECRET=${JWT_SECRET}
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - PUBLIC_USER_PASSWORD=${PUBLIC_USER_PASSWORD:?PUBLIC_USER_PASSWORD is required}
       - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY}
       - QUTTERA_BASE_URL=${QUTTERA_BASE_URL}
       - FRONTEND_URL=${FRONTEND_URL}
@@ -59,6 +57,7 @@ services:
       - MARKETING_PASSWORD=${MARKETING_PASSWORD}
       - RECAPTCHA_SECRET_KEY=${RECAPTCHA_SECRET_KEY}
       - RECAPTCHA_ENABLED=${RECAPTCHA_ENABLED}
+      - ADMIN_TOTP_REQUIRED=${ADMIN_TOTP_REQUIRED:-false}
       - DOMAIN_EMAIL_VALIDATION_ENABLED=${DOMAIN_EMAIL_VALIDATION_ENABLED}
       - OTP_EXPIRY_MINUTES=${OTP_EXPIRY_MINUTES:-10}
       - LOGIN_OTP_EXPIRY_SECONDS=${LOGIN_OTP_EXPIRY_SECONDS:-120}
@@ -71,11 +70,24 @@ services:
       - LOCKOUT_DURATION_MINUTES=${LOCKOUT_DURATION_MINUTES:-30}
       - PUBLIC_EMAIL_DOMAINS=${PUBLIC_EMAIL_DOMAINS}
       - VAPT_MAX_FILE_SIZE_MB=${VAPT_MAX_FILE_SIZE_MB:-25}
+      # Either name works; the bare console address is fine (".../api/v1" is
+      # appended automatically). ACUNETIX_URL takes precedence.
+      - ACUNETIX_URL=${ACUNETIX_URL:-}
+      - ACUNETIX_BASE_URL=${ACUNETIX_BASE_URL:-}
+      - ACUNETIX_API_KEY=${ACUNETIX_API_KEY:-}
+      - ACUNETIX_PROFILE_ID=${ACUNETIX_PROFILE_ID:-}
+      - ACUNETIX_VERIFY_TLS=${ACUNETIX_VERIFY_TLS:-false}
+      - ACUNETIX_POLL_INTERVAL_SEC=${ACUNETIX_POLL_INTERVAL_SEC:-20}
+      - ACUNETIX_MAX_WAIT_SEC=${ACUNETIX_MAX_WAIT_SEC:-43200}
       - CORS_ORIGINS=${CORS_ORIGINS}
       - HOST=${HOST:-0.0.0.0}
       - PORT=${PORT:-8000}
+      - RELOAD=${RELOAD:-false}
+      # Checklist attachments live on a named volume, so they survive a rebuild
+      # and are never lost when the container is recreated.
+      - VAPT_ATTACHMENT_DIR=${VAPT_ATTACHMENT_DIR:-/app/storage/vapt-attachments}
     volumes:
-      - .:/app
+      - vapt_attachments:/app/storage/vapt-attachments
     healthcheck:
       test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen('http://localhost:%s/health' % os.getenv('PORT', '8000'), timeout=5)"]
       interval: 30s
@@ -94,3 +106,4 @@ networks:
 
 volumes:
   postgres_data:
+  vapt_attachments:

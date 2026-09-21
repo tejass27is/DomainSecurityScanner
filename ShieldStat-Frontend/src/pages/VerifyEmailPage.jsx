@@ -9,15 +9,11 @@ function VerifyEmailPage() {
   const [searchParams] = useSearchParams();
   const token = searchParams.get("token");
 
-  const [status, setStatus] = useState("loading");
-  const [message, setMessage] = useState("");
+  const [status, setStatus] = useState(() => (token ? "loading" : "error"));
+  const [message, setMessage] = useState(() => token ? "" : "This verification link is invalid or incomplete.");
 
   useEffect(() => {
-    if (!token) {
-      setStatus("error");
-      setMessage("This verification link is invalid or incomplete.");
-      return;
-    }
+    if (!token) return undefined;
 
     let cancelled = false;
     (async () => {

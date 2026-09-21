@@ -94,6 +94,7 @@ from app.api.vapt.routes import (
     review_vapt_onboarding,
     schedule_vapt_rescan,
     set_client_next_vapt_due_date,
+    submit_onboarding_checklist,
     submit_vapt_import,
     submit_verification_review,
     update_onboarding_checklist,
@@ -761,6 +762,7 @@ def _run_flow(db: Session) -> None:
         db=db,
         current_user=client,
     )
+    run(submit_onboarding_checklist(payload={}, db=db, current_user=client))
     run(review_vapt_onboarding(ORG, {"status": "approved"}, db=db, current_user=soc))
     db.expire_all()
     checklist = db.query(VaptOnboardingChecklist).filter_by(org_id=ORG).one()

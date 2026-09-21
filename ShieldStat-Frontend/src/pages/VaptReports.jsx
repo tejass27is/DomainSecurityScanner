@@ -49,6 +49,7 @@ const LIFECYCLE_LABEL = {
   revalidation_scheduled: "Re-validation scheduled",
   revalidation_verification_pending: "SOC decision pending",
   closure_pending_client_due_date: "SOC approved closure — due date required",
+  closure_pending_soc_due_date: "Client due date pending SOC approval",
   closed: "Cycle closed",
   remediation_required: "Remediation required",
 };

@@ -63,6 +63,8 @@ function AdminSubscription() {
     fetchPromoCodes();
     fetchPlans();
     fetchUsers();
+    // These loaders intentionally run once when the admin page mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchUsers = async () => {

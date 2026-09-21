@@ -48,7 +48,7 @@ from app.api.admin.service import (
     update_subscription_plan,
 )
 from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
-from app.api.vapt.routes import _region_display_name, _to_detail, _to_list_item, _uploader_email_map
+from app.api.vapt.routes import _region_display_name, _to_detail, _to_list_item, _uploader_email_map, _verification_download_filename
 from app.api.vapt import schedule_service
 from app.core.middleware import (
     require_admin,
@@ -61,6 +61,7 @@ from app.db.models import Organization, User, VaptImport, VaptRescanSchedule
 from app.utils.email import send_vapt_rescan_schedule_email
 from pydantic import BaseModel
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -291,6 +292,7 @@ def _org_domain_map(db: Session, records: list[VaptImport]) -> dict[str, str | N
 
 class AdminRescanScheduleRequest(BaseModel):
     scheduled_at: str
+    scheduled_timezone: str = "Asia/Kolkata"
     hosts: list[str] | None = None
     recurrence: dict | None = None
     note: str | None = None
@@ -320,13 +322,13 @@ async def schedule_vapt_rescan_admin(
 
     try:
         scheduled_at = datetime.fromisoformat(body.scheduled_at)
-        # Always normalize to UTC: naive = assume UTC, aware = convert
         if scheduled_at.tzinfo is None:
-            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+            scheduled_at = scheduled_at.replace(tzinfo=ZoneInfo(body.scheduled_timezone))
         else:
-            scheduled_at = scheduled_at.astimezone(timezone.utc)
-    except Exception:
-        raise HTTPException(status_code=400, detail="scheduled_at must be an ISO8601 datetime")
+            scheduled_at = scheduled_at.astimezone(ZoneInfo(body.scheduled_timezone))
+        scheduled_at = scheduled_at.astimezone(timezone.utc)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        raise HTTPException(status_code=400, detail="scheduled_at must be an ISO8601 datetime and scheduled_timezone must be a valid IANA timezone")
 
     if scheduled_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="scheduled_at must be in the future")
@@ -339,7 +341,7 @@ async def schedule_vapt_rescan_admin(
         hosts=body.hosts,
         recurrence=body.recurrence,
         note=body.note,
-        scheduled_timezone="Asia/Kolkata",
+        scheduled_timezone=body.scheduled_timezone,
     )
 
     try:
@@ -472,7 +474,7 @@ def download_vapt_verification_report_admin(
     return StreamingResponse(
         iter([pdf_bytes]),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="vapt-verification-{schedule_id[:8]}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{_verification_download_filename(schedule, schedule_id, "pdf")}"'},
     )
 
 
@@ -519,7 +521,7 @@ def download_vapt_verification_report_admin_excel(
     return StreamingResponse(
         iter([xlsx_bytes]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="vapt-verification-{schedule_id[:8]}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{_verification_download_filename(schedule, schedule_id, "xlsx")}"'},
     )
 
 

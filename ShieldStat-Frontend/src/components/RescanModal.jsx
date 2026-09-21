@@ -20,7 +20,7 @@ export default function RescanModal({ open, onClose, importId, onScheduled, admi
     setLoading(true);
     try {
       const body = {
-        scheduled_at: adminMode ? new Date(scheduledAt).toISOString() : scheduledAt,
+        scheduled_at: scheduledAt,
         scheduled_timezone: adminMode ? "Asia/Kolkata" : scheduledTimezone,
         hosts: [],
         note,
@@ -56,6 +56,11 @@ export default function RescanModal({ open, onClose, importId, onScheduled, admi
               {[scheduledTimezone, "UTC", "Asia/Kolkata", "Africa/Johannesburg", "Asia/Manila", "Asia/Singapore", "Europe/London", "America/New_York", "America/Los_Angeles", "Australia/Sydney"].filter((zone, index, zones) => zones.indexOf(zone) === index).map((zone) => <option key={zone} value={zone}>{zone}</option>)}
             </select>
           </div>
+        )}
+        {adminMode && (
+          <p className="mb-4 text-xs font-semibold text-slate-500 dark:text-slate-400">
+            SOC timezone: Asia/Kolkata (IST)
+          </p>
         )}
 
         <div className="mb-4">

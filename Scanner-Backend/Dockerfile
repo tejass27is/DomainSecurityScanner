@@ -13,6 +13,10 @@ ENV PIP_RETRIES=5
 RUN pip install --no-cache-dir --default-timeout=180 --retries 5 -r requirements.txt
 
 ENV PYTHONPATH=/app
+RUN addgroup --system app && adduser --system --ingroup app app \
+    && mkdir -p /app/storage/vapt-attachments \
+    && chown -R app:app /app
+USER app
 EXPOSE 8000
 
 CMD ["python", "app/main.py"]

@@ -420,6 +420,9 @@ def login_user(email: str, password: str, db: Session):
         db.commit()
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="This account has been deactivated by an admin")
+
     if not user.email_verified:
         raise HTTPException(
             status_code=401,

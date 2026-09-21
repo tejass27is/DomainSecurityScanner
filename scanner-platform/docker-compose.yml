@@ -4,18 +4,22 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: scanner-worker-main
+    user: "${SCANNER_CONTAINER_USER:?SCANNER_CONTAINER_USER is required}"
     networks:
       - scanner-network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - WORKER_TYPE=main
-      - REDIS_ADDR=redis:6379
-      - BACKEND_URL=http://backend:8000
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
-      - SCANNER_IMAGE=${COMPOSE_PROJECT_NAME:-scanner-platform}-worker-main
-      - DOCKER_NETWORK=scanner-network
-      - USE_TEMPORARY_SCAN_CONTAINERS=true
+      - WORKER_TYPE=${WORKER_TYPE_MAIN:?WORKER_TYPE_MAIN is required}
+      - REDIS_ADDR=${REDIS_ADDR:?REDIS_ADDR is required}
+      - BACKEND_URL=${BACKEND_URL:?BACKEND_URL is required}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - SCANNER_IMAGE=${SCANNER_IMAGE_MAIN:?SCANNER_IMAGE_MAIN is required}
+      - DOCKER_NETWORK=${DOCKER_NETWORK:?DOCKER_NETWORK is required}
+      - USE_TEMPORARY_SCAN_CONTAINERS=${USE_TEMPORARY_SCAN_CONTAINERS:?USE_TEMPORARY_SCAN_CONTAINERS is required}
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID is required}"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/health"]
       interval: 30s
@@ -30,13 +34,57 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: scanner-worker-fix
+    user: "${SCANNER_CONTAINER_USER:?SCANNER_CONTAINER_USER is required}"
     networks:
       - scanner-network
     environment:
-      - WORKER_TYPE=fix
-      - REDIS_ADDR=redis:6379
-      - BACKEND_URL=http://backend:8000
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - WORKER_TYPE=${WORKER_TYPE_FIX:?WORKER_TYPE_FIX is required}
+      - REDIS_ADDR=${REDIS_ADDR:?REDIS_ADDR is required}
+      - BACKEND_URL=${BACKEND_URL:?BACKEND_URL is required}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - SCANNER_IMAGE=${SCANNER_IMAGE_FIX:?SCANNER_IMAGE_FIX is required}
+      - DOCKER_NETWORK=${DOCKER_NETWORK:?DOCKER_NETWORK is required}
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID is required}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    deploy:
+      replicas: 1
+
+  # Polls Acunetix Premium until a web-application scan finishes, then pushes the
+  # findings back to the backend.
+  #
+  # The Acunetix settings live in exactly ONE place — Scanner-Backend/.env — which
+  # this service reads directly, so nothing has to be duplicated here.
+  #
+  # Do NOT repeat any ACUNETIX_* key under `environment` below: an interpolation
+  # such as ${ACUNETIX_URL:-} resolves to an empty string when the variable is not
+  # exported in the calling shell, and `environment` takes precedence over
+  # `env_file` — which would silently blank out the credentials.
+  worker-webscan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scanner-worker-webscan
+    user: "${SCANNER_CONTAINER_USER:?SCANNER_CONTAINER_USER is required}"
+    networks:
+      - scanner-network
+    # Shared single source of truth for every Acunetix key:
+    # ACUNETIX_URL, ACUNETIX_API_KEY, ACUNETIX_PROFILE_ID, ACUNETIX_VERIFY_TLS,
+    # ACUNETIX_POLL_INTERVAL_SEC, ACUNETIX_MAX_WAIT_SEC.
+    env_file:
+      - ../Scanner-Backend/.env
+    environment:
+      - WORKER_TYPE=${WORKER_TYPE_WEBSCAN:-webscan}
+      - REDIS_ADDR=${REDIS_ADDR:?REDIS_ADDR is required}
+      - BACKEND_URL=${BACKEND_URL:?BACKEND_URL is required}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:?WEBHOOK_SECRET is required}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/health"]
       interval: 30s

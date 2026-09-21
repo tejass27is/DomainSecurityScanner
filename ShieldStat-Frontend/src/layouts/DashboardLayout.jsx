@@ -1,20 +1,54 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import Navbar from "../components/Navbar";
+import { getVaptAccessStatus } from "../services/api";
 
 function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // SOC analysts land in the admin layout, but when they use the upload page
   // (/vapt) they get this layout — show a matching nav instead of client items.
-  let currentUser = null;
-  try {
-    currentUser = JSON.parse(localStorage.getItem("user") || "null");
-  } catch {
-    currentUser = null;
-  }
+  const [currentUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("user") || "null");
+    } catch {
+      return null;
+    }
+  });
   const isSocAnalyst = currentUser?.role === "soc_analyst";
+
+  // Clients only see the VAPT option once an admin/SOC has approved a region.
+  // Until then it is hidden entirely, so a brand-new user cannot reach the
+  // VAPT module before their region request is approved.
+  const [vaptVisible, setVaptVisible] = useState(false);
+
+  useEffect(() => {
+    if (isSocAnalyst || typeof window === "undefined") return;
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    let cancelled = false;
+    const load = () => {
+      getVaptAccessStatus(token)
+        .then((status) => {
+          if (!cancelled) setVaptVisible(Boolean(status?.vapt_access_enabled));
+        })
+        .catch(() => {
+          // Keep the last known visibility on transient errors.
+        });
+    };
+
+    load();
+    const intervalId = setInterval(load, 20000);
+    window.addEventListener("focus", load);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+      window.removeEventListener("focus", load);
+    };
+  }, [isSocAnalyst]);
+
   const navItems = isSocAnalyst
     ? [
         { to: "/admin/vapt-upload", label: "Upload Report", icon: "upload_file" },
@@ -25,7 +59,7 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
         { to: "/assessment", label: "Assessment", icon: "security" },
         { to: "/scan", label: "Audit Domain", icon: "radar" },
         { to: "/malware", label: "Malware Scan", icon: "bug_report" },
-        { to: "/vapt/reports", label: "VAPT", icon: "fact_check" },
+        ...(vaptVisible ? [{ to: "/vapt/reports", label: "VAPT", icon: "fact_check" }] : []),
       ];
 
   return (
@@ -65,4 +99,3 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
 }
 
 export default DashboardLayout;
-

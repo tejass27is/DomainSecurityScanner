@@ -8,6 +8,7 @@ requesting user's organization — users only ever see their own imports.
 import asyncio
 import io
 import json
+import os
 import uuid
 import zipfile
 
@@ -30,19 +31,23 @@ from app.api.vapt.schemas import (
 )
 from app.core.middleware import protect, require_admin_or_soc_analyst, require_soc_analyst, require_vapt_access
 from app.db.base import get_db
-from app.db.models import AuditLog, Organization, User, VaptImport, VaptRescanSchedule, VaptOnboardingChecklist, Region, OrganizationRegion
+from app.db.models import AuditLog, Organization, User, VaptImport, VaptRescanSchedule, VaptOnboardingChecklist, VaptChecklistAttachment, Region, OrganizationRegion
 from app.api.vapt import schedule_service
 
 # A client organization can request/be approved for up to this many VAPT regions.
 MAX_VAPT_REGIONS_PER_ORG = 5
 from app.core.websocket_manager import ws_manager
 from app.api.admin.service import _maybe_create_alert, _record_audit_log
+from app.api.vapt.maintenance import run_remediation_followup_reminders, run_vapt_due_date_reminders
 from app.utils.email import send_vapt_rescan_schedule_email, send_vapt_access_event_email, send_vapt_remediation_review_email
 from pydantic import BaseModel
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import List
+import logging
 
 router = APIRouter(prefix="/vapt", tags=["VAPT"])
+logger = logging.getLogger(__name__)
 VALID_VAPT_FINDING_STATUSES = {"pending", "solved", "ignore", "false_positive"}
 
 
@@ -51,6 +56,50 @@ VALID_VAPT_FINDING_STATUSES = {"pending", "solved", "ignore", "false_positive"}
 # Legacy fields were removed from the current onboarding form. Completion is
 # now driven by the live questionnaire answers plus the available schedule data.
 ONBOARDING_REQUIRED_FIELDS = ["testing_start_at", "testing_timezone"]
+
+# Checklist review outcomes. "changes_requested" is the partial path: the
+# submission is preserved and only the flagged items need amending, unlike a
+# full "rejected" which wipes the submission.
+CHECKLIST_REVIEW_STATUSES = {"approved", "changes_requested", "rejected"}
+
+
+def _normalize_review_flags(raw) -> list[dict]:
+    """Normalize the per-question review flags sent by SOC."""
+    if not isinstance(raw, list):
+        return []
+    flags: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        question_id = str(item.get("question_id") or "").strip()
+        label = str(item.get("label") or "").strip()
+        if not question_id and not label:
+            continue
+        flags.append(
+            {
+                "section": str(item.get("section") or "").strip(),
+                "question_id": question_id,
+                "label": label or question_id,
+                "note": str(item.get("note") or "").strip(),
+            }
+        )
+    return flags
+
+
+def _checklist_review_email_note(status: str, note: str | None, flags: list[dict]) -> str:
+    """Build the email body note, listing the flagged items for the client."""
+    if status != "changes_requested" or not flags:
+        return note or ""
+    lines = ["Please update the following checklist items and resubmit:"]
+    for index, item in enumerate(flags, start=1):
+        line = f"{index}. {item.get('label') or item.get('question_id')}"
+        if item.get("note"):
+            line += f" — {item['note']}"
+        lines.append(line)
+    if note:
+        lines.append("")
+        lines.append(note)
+    return "\n".join(lines)
 
 
 def _get_onboarding_or_create(db: Session, org_id: str) -> VaptOnboardingChecklist:
@@ -82,6 +131,7 @@ def _get_onboarding_or_create(db: Session, org_id: str) -> VaptOnboardingCheckli
         record.reviewed_by = None
         record.reviewed_at = None
         record.review_note = None
+        record.review_flags = None
         db.add(record)
         db.commit()
         db.refresh(record)
@@ -110,6 +160,221 @@ def _is_onboarding_complete(record: VaptOnboardingChecklist) -> bool:
     return True
 
 
+# ─── Checklist attachments (client-uploaded files) ───────────────────────────
+#
+# Files are written to a local directory (a mounted Docker volume) and referenced
+# from the checklist answers JSON. No third-party storage service is involved, and
+# every download goes through an authenticated, org-scoped endpoint.
+
+ATTACHMENT_DIR = os.getenv("VAPT_ATTACHMENT_DIR", "/app/storage/vapt-attachments")
+
+# Questions that accept a file upload, with the extensions each one permits.
+# ``required`` questions need a file (or an explicit N/A) before submitting.
+CHECKLIST_UPLOAD_QUESTIONS: dict[str, dict] = {
+    "asset_list_upload": {
+        "label": "Asset list",
+        "extensions": {".xlsx", ".xls", ".csv", ".pdf"},
+        "required": True,
+    },
+    "network_diagram_upload": {
+        "label": "Network diagram",
+        "extensions": {".pdf", ".png", ".jpg", ".jpeg"},
+        "required": False,
+    },
+}
+MAX_ATTACHMENT_SIZE = MAX_FILE_SIZE
+
+
+def _attachment_dir() -> str:
+    os.makedirs(ATTACHMENT_DIR, exist_ok=True)
+    return ATTACHMENT_DIR
+
+
+def _attachment_download_url(attachment_id: str) -> str:
+    return f"/vapt/onboarding/attachment/{attachment_id}"
+
+
+def _attachment_to_dict(row: VaptChecklistAttachment) -> dict:
+    return {
+        "id": row.id,
+        "filename": row.original_filename,
+        "content_type": row.content_type,
+        "size_bytes": row.size_bytes,
+        "section_id": row.section_id,
+        "question_id": row.question_id,
+        "region_code": row.region_code,
+        "download_url": _attachment_download_url(row.id),
+        "uploaded_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _find_answer_entry(answers, question_id):
+    """Return the (section_id, entry) holding a question, wherever it sits."""
+    if not isinstance(answers, dict):
+        return None, None
+    for section_id, section in answers.items():
+        if isinstance(section, dict) and isinstance(section.get(question_id), dict):
+            return section_id, section[question_id]
+    return None, None
+
+
+def _attachment_ids_in(answers) -> set:
+    """Attachment ids referenced by a checklist answers payload."""
+    ids: set = set()
+    if not isinstance(answers, dict):
+        return ids
+    for section in answers.values():
+        if not isinstance(section, dict):
+            continue
+        for entry in section.values():
+            if not isinstance(entry, dict):
+                continue
+            attachment = entry.get("attachment")
+            if isinstance(attachment, dict) and attachment.get("id"):
+                ids.add(str(attachment["id"]))
+    return ids
+
+
+def _missing_required_uploads(db: Session, org_id: str, answers) -> list:
+    """Labels of required upload questions that carry no usable attachment."""
+    missing: list = []
+    for question_id, rule in CHECKLIST_UPLOAD_QUESTIONS.items():
+        if not rule.get("required"):
+            continue
+        _, entry = _find_answer_entry(answers, question_id)
+        if entry is None or entry.get("na"):
+            continue
+        attachment = entry.get("attachment")
+        attachment_id = str(attachment.get("id")) if isinstance(attachment, dict) and attachment.get("id") else ""
+        if not attachment_id:
+            missing.append(rule["label"])
+            continue
+        # The metadata lives in client-supplied JSON, so confirm the row really
+        # exists and belongs to this org before trusting it.
+        owned = db.query(VaptChecklistAttachment).filter(
+            VaptChecklistAttachment.id == attachment_id,
+            VaptChecklistAttachment.org_id == org_id,
+        ).first()
+        if not owned:
+            missing.append(rule["label"])
+    return missing
+
+
+def _attachment_email_note(db: Session, org_id: str | None, attachment_ids: set | None = None) -> str:
+    """Plain-text list of files attached to an org's submission.
+
+    Deliberately plain text: the email body is HTML-escaped downstream, so a
+    link would render as literal markup instead of a clickable URL.
+    """
+    if not org_id:
+        return ""
+    query = db.query(VaptChecklistAttachment).filter(VaptChecklistAttachment.org_id == org_id)
+    if attachment_ids:
+        query = query.filter(VaptChecklistAttachment.id.in_(sorted(attachment_ids)))
+    rows = query.order_by(VaptChecklistAttachment.created_at.desc()).limit(20).all()
+    if not rows:
+        return ""
+    latest: dict = {}
+    for row in rows:
+        latest.setdefault(row.question_id, row)
+    lines = ["Attachments received (download them from the VAPT review queue):"]
+    for row in latest.values():
+        lines.append(f"- {row.original_filename} ({row.question_id}, {max(1, row.size_bytes // 1024)} KB)")
+    return "\n".join(lines)
+
+
+def normalize_checklist_answers(source) -> dict:
+    """Comparable, fully-populated view of a stored checklist answers payload."""
+    return _normalize_answers_for_compare(source)
+
+
+def _normalize_answers_for_compare(answers) -> dict:
+    """Comparable form of a checklist payload (answer text + N/A only)."""
+    result: dict = {}
+    if not isinstance(answers, dict):
+        return result
+    for section_id, section in answers.items():
+        if not isinstance(section, dict):
+            continue
+        result[section_id] = {}
+        for question_id, entry in section.items():
+            entry = entry if isinstance(entry, dict) else {}
+            result[section_id][question_id] = {
+                "answer": entry.get("answer") if isinstance(entry.get("answer"), str) else "",
+                "na": bool(entry.get("na")),
+            }
+    return result
+
+
+def _build_submission_answers(previous, payload: dict) -> dict:
+    """Merge a submission over the previous answers.
+
+    Guarantees the SOC review shows a complete answer set: any field the client
+    left untouched keeps its stored value, and any plain-text value missing from
+    the payload is filled from the equivalent top-level onboarding field.
+    """
+    previous = previous if isinstance(previous, dict) else {}
+    # Payload wins when it still carries the question, so a cleared field stays
+    # cleared; only questions absent from the payload fall back to history.
+    source = payload if any(
+        isinstance(section, dict) and section
+        for section in (payload or {}).values()
+    ) else previous
+    base = previous if any(
+        isinstance(section, dict) and section
+        for section in previous.values()
+    ) else source
+    result: dict = {}
+    for section_id, section in (base or {}).items():
+        if not isinstance(section, dict):
+            continue
+        incoming_section = source.get(section_id) if isinstance(source, dict) else None
+        incoming_section = incoming_section if isinstance(incoming_section, dict) else {}
+        merged_section: dict = {}
+        for question_id, entry in section.items():
+            merged_section[question_id] = dict(entry) if isinstance(entry, dict) else {}
+        for question_id, entry in incoming_section.items():
+            merged_section[question_id] = {
+                **(merged_section.get(question_id) or {}),
+                **(dict(entry) if isinstance(entry, dict) else {}),
+            }
+        result[section_id] = merged_section
+
+    # A hidden question is usually the one that feeds the plain-text onboarding
+    # fields (location, ISP, cloud hosting). Derive them when they were hidden —
+    # otherwise the region request would be rejected for a value the form never
+    # let the client (re)enter.
+    derived = {
+        "infrastructure_locations": ["scope_ip_ranges"],
+        "internet_service_provider": ["scope_ip_ranges"],
+        "cloud_service_provider_hosting": ["scope_ip_ranges", "out_of_scope_systems"],
+    }
+    for question_id, field_names in derived.items():
+        for section_id, section in result.items():
+            entry = section.get(question_id)
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("answer") or "").strip() or entry.get("na"):
+                continue
+            populated = [str(payload.get(name) or "").strip() for name in field_names]
+            populated = [value for value in populated if value]
+            if populated:
+                entry["answer"] = " | ".join(populated)
+    return result
+
+
+def _is_blank(value) -> bool:
+    if isinstance(value, bool):
+        return value is False
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
+
 def _onboarding_to_dict(record: VaptOnboardingChecklist) -> dict:
     return {
         "org_id": record.org_id,
@@ -135,7 +400,134 @@ def _onboarding_to_dict(record: VaptOnboardingChecklist) -> dict:
         "review_status": record.review_status,
         "reviewed_at": record.reviewed_at,
         "review_note": record.review_note or "",
+        "review_flags": record.review_flags or [],
     }
+
+
+@router.post("/onboarding/attachment")
+async def upload_checklist_attachment(
+    file: UploadFile = File(...),
+    section_id: str = Form(""),
+    question_id: str = Form(...),
+    region_code: str = Form(""),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Store a file uploaded against an upload-capable checklist question."""
+    if not current_user.org_id:
+        raise HTTPException(status_code=400, detail="No organization linked.")
+    if current_user.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only org owners/admins can upload checklist files.")
+
+    rule = CHECKLIST_UPLOAD_QUESTIONS.get((question_id or "").strip())
+    if not rule:
+        raise HTTPException(status_code=400, detail="This checklist question does not accept a file upload.")
+
+    filename = os.path.basename(file.filename or "").strip()
+    extension = os.path.splitext(filename)[1].lower()
+    if not filename or extension not in rule["extensions"]:
+        allowed = ", ".join(sorted(rule["extensions"]))
+        raise HTTPException(status_code=400, detail=f"{rule['label']} must be uploaded as one of: {allowed}.")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+    if len(contents) > MAX_ATTACHMENT_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds the {MAX_ATTACHMENT_SIZE // (1024 * 1024)} MB size limit.",
+        )
+
+    attachment_id = str(uuid.uuid4())
+    org_folder = os.path.basename(current_user.org_id)
+    os.makedirs(os.path.join(_attachment_dir(), org_folder), exist_ok=True)
+    stored_name = os.path.join(org_folder, f"{attachment_id}{extension}")
+    with open(os.path.join(ATTACHMENT_DIR, stored_name), "wb") as handle:
+        handle.write(contents)
+
+    row = VaptChecklistAttachment(
+        id=attachment_id,
+        org_id=current_user.org_id,
+        region_code=(region_code or "").strip()[:64] or None,
+        section_id=(section_id or "").strip()[:64],
+        question_id=question_id.strip()[:64],
+        original_filename=filename[:255],
+        content_type=file.content_type,
+        size_bytes=len(contents),
+        stored_name=stored_name,
+        uploaded_by=current_user.user_id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    _record_audit_log(
+        db,
+        current_user,
+        "VAPT_CHECKLIST_ATTACHMENT_UPLOADED",
+        "vapt_onboarding",
+        current_user.org_id,
+        {"question_id": row.question_id, "filename": row.original_filename, "size_bytes": row.size_bytes},
+    )
+    return _attachment_to_dict(row)
+
+
+@router.get("/onboarding/attachment/{attachment_id}")
+def download_checklist_attachment(
+    attachment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Stream a stored attachment to its own org, or to the admin/SOC reviewing it."""
+    row = db.query(VaptChecklistAttachment).filter(VaptChecklistAttachment.id == attachment_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    if row.org_id != current_user.org_id and current_user.role not in ("admin", "soc_analyst"):
+        raise HTTPException(status_code=403, detail="You do not have access to this attachment.")
+
+    path = os.path.join(ATTACHMENT_DIR, row.stored_name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="The stored file is no longer available.")
+
+    def _iter_chunks():
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+
+    safe_name = os.path.basename(row.original_filename).replace('"', "") or "attachment"
+    return StreamingResponse(
+        _iter_chunks(),
+        media_type=row.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
+
+
+@router.delete("/onboarding/attachment/{attachment_id}")
+def delete_checklist_attachment(
+    attachment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Remove an attachment the client uploaded, before the checklist is submitted."""
+    if not current_user.org_id:
+        raise HTTPException(status_code=400, detail="No organization linked.")
+    row = db.query(VaptChecklistAttachment).filter(
+        VaptChecklistAttachment.id == attachment_id,
+        VaptChecklistAttachment.org_id == current_user.org_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    path = os.path.join(ATTACHMENT_DIR, row.stored_name)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        logger.warning("Could not remove stored attachment at %s", path)
+    db.delete(row)
+    db.commit()
+    return {"success": True, "id": attachment_id}
 
 
 @router.get("/onboarding")
@@ -177,6 +569,11 @@ def update_onboarding_checklist(
         "proposed_start_at", "proposed_end_at", "proposed_timezone",
         "out_of_scope_systems", "checklist_answers",
     }
+    # A hard rejection is cleared as soon as the client edits again, so the form
+    # becomes submittable. A "changes_requested" round is deliberately left
+    # alone: autosave fires while the form is being read, and clearing it here
+    # would wipe the SOC remarks and per-question flags before the client has
+    # even seen them. Resubmitting resolves them instead.
     if record.review_status == "rejected":
         record.review_status = "pending"
         record.reviewed_by = None
@@ -193,17 +590,15 @@ def update_onboarding_checklist(
                 value = _parse_datetime(value, key)
             setattr(record, key, value)
 
-    # Auto-complete if all required fields are filled
-    if _is_onboarding_complete(record) and not record.completed_at:
-        record.completed_at = datetime.now(timezone.utc)
-        # Audit log for onboarding completion
-        try:
-            _record_audit_log(db, current_user, "VAPT_ONBOARDING_COMPLETED", "vapt_onboarding", current_user.org_id, {
-                "org_id": current_user.org_id,
-            })
-        except Exception:
-            pass
-    # If user un-fills a required field, re-open
+    # Completion is explicit: autosave keeps the checklist editable while the
+    # client fills it in. When the answers change — including an attachment being
+    # added or removed — any previously stamped submission is cleared, so SOC
+    # only ever sees a checklist that is still current. `completed_at` is stamped
+    # again by POST /vapt/onboarding/submit.
+    if "checklist_answers" in payload and record.completed_at:
+        current_answers = normalize_checklist_answers(record.checklist_answers)
+        if current_answers != _normalize_answers_for_compare(payload.get("checklist_answers")):
+            record.completed_at = None
     if record.completed_at and not _is_onboarding_complete(record):
         record.completed_at = None
 
@@ -213,6 +608,118 @@ def update_onboarding_checklist(
     return _onboarding_to_dict(record)
 
 
+@router.post("/onboarding/submit")
+async def submit_onboarding_checklist(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(protect),
+):
+    """Submit the org onboarding checklist for SOC review.
+
+    This is the second step of the VAPT onboarding flow: the client's region
+    must already be approved (first step), after which the checklist is
+    submitted and SOC reviews it separately.
+    """
+    if not current_user.org_id:
+        raise HTTPException(status_code=400, detail="No organization linked.")
+
+    has_approved_region = db.query(OrganizationRegion).filter(
+        OrganizationRegion.org_id == current_user.org_id,
+        OrganizationRegion.status == "approved",
+    ).first() is not None
+    if not has_approved_region:
+        raise HTTPException(
+            status_code=403,
+            detail="An approved VAPT region is required before submitting the checklist.",
+        )
+
+    record = _get_onboarding_or_create(db, current_user.org_id)
+    onboarding_fields = {
+        "scope_ip_ranges",
+        "authorization_confirmed",
+        "authorization_letter_url",
+        "tech_contact_name",
+        "tech_contact_email",
+        "tech_contact_phone",
+        "testing_window",
+        "testing_start_at",
+        "testing_end_at",
+        "testing_timezone",
+        "proposed_start_at",
+        "proposed_end_at",
+        "proposed_timezone",
+        "out_of_scope_systems",
+        "checklist_answers",
+    }
+    datetime_fields = {"testing_start_at", "testing_end_at", "proposed_start_at", "proposed_end_at"}
+    for key in onboarding_fields:
+        if key in payload and payload.get(key) is not None:
+            value = payload.get(key)
+            if key in datetime_fields and isinstance(value, str):
+                value = _parse_datetime(value, key)
+            setattr(record, key, value)
+
+    # Trust the stored answers plus this payload. A question hidden by a
+    # condition can still feed the region request (location, ISP, cloud hosting),
+    # and treating those as never-answered is what made a valid submission look
+    # incomplete. Uploads are validated against the merged set below.
+    record.checklist_answers = _build_submission_answers(record.checklist_answers, payload) or record.checklist_answers
+    if not _is_onboarding_complete(record):
+        raise HTTPException(status_code=400, detail="The checklist is incomplete.")
+
+    record.completed_at = datetime.now(timezone.utc)
+    record.review_status = "pending"
+    record.reviewed_by = None
+    record.reviewed_at = None
+    record.review_note = None
+    # Re-submitting resolves whatever SOC asked for, so clear the flags.
+    record.review_flags = None
+    attachment_ids = _attachment_ids_in(record.checklist_answers)
+    _missing_uploads = _missing_required_uploads(db, current_user.org_id, record.checklist_answers)
+    if _missing_uploads:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload the following file(s) before submitting: {', '.join(_missing_uploads)}.",
+        )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+
+    _record_audit_log(
+        db,
+        current_user,
+        "VAPT_ONBOARDING_SUBMITTED",
+        "vapt_onboarding",
+        current_user.org_id,
+        {"org_id": current_user.org_id},
+    )
+    recipients = {u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email}
+    recipients.update(u.email for u in db.query(User).filter(User.org_id == current_user.org_id).all() if u.email)
+    for email in recipients:
+        try:
+            send_vapt_access_event_email(
+                email,
+                "checklist_submitted",
+                current_user.org_id,
+                "",
+                "Organization onboarding",
+                "Checklist submitted for SOC review.",
+                _attachment_email_note(db, current_user.org_id, _attachment_ids_in(record.checklist_answers)),
+            )
+        except Exception:
+            pass
+    await ws_manager.send(current_user.org_id, {"event": "vapt_onboarding_submitted", "status": "pending"})
+    await ws_manager.send(
+        "platform",
+        {"event": "vapt_onboarding_submitted", "org_id": current_user.org_id},
+    )
+    return {
+        "success": True,
+        "onboarding": _onboarding_to_dict(record),
+        **_get_org_region_status(db, current_user.org_id),
+    }
+
+
 @router.post("/admin/onboarding/{org_id}/review")
 async def review_vapt_onboarding(
     org_id: str,
@@ -220,32 +727,74 @@ async def review_vapt_onboarding(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_soc_analyst),
 ):
-    """SOC/admin approves or rejects a client's initial VAPT checklist."""
+    """SOC/admin reviews a client's initial VAPT checklist.
+
+    Three outcomes:
+      * ``approved`` — the checklist is accepted.
+      * ``changes_requested`` — some answers/documents are missing or wrong. The
+        submission is kept intact; the client only has to supply the flagged
+        items, so a single missing document never forces a full redo.
+      * ``rejected`` — the engagement is declined and the client must redo the
+        whole checklist.
+    """
     status = str(payload.get("status") or "").strip().lower()
-    if status not in {"approved", "rejected"}:
-        raise HTTPException(status_code=400, detail="status must be approved or rejected")
+    if status not in CHECKLIST_REVIEW_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail="status must be approved, changes_requested or rejected",
+        )
     checklist = db.query(VaptOnboardingChecklist).filter(VaptOnboardingChecklist.org_id == org_id).first()
     if not checklist:
         raise HTTPException(status_code=404, detail="VAPT checklist not found")
     if status == "approved" and not _is_onboarding_complete(checklist):
         raise HTTPException(status_code=400, detail="The client checklist is incomplete")
+
+    note = str(payload.get("note") or "").strip() or None
+    flags = _normalize_review_flags(payload.get("flags"))
+    if status in {"changes_requested", "rejected"} and not note and not flags:
+        raise HTTPException(
+            status_code=400,
+            detail="Add remarks or flag at least one checklist item.",
+        )
+
     checklist.review_status = status
     checklist.reviewed_by = current_user.user_id
     checklist.reviewed_at = datetime.now(timezone.utc)
-    checklist.review_note = str(payload.get("note") or "").strip() or None
-    if status == "rejected":
+    checklist.review_note = note
+    if status == "changes_requested":
+        # Keep completed_at so the submission (and every answer) survives.
+        checklist.review_flags = flags
+    elif status == "approved":
+        checklist.review_flags = None
+    else:  # rejected → full redo
         checklist.completed_at = None
-        checklist.review_status = "rejected"
+        checklist.review_flags = None
     db.add(checklist)
     db.commit()
-    _record_audit_log(db, current_user, "VAPT_CHECKLIST_REVIEWED", "vapt_onboarding", org_id, {"status": status})
-    event = "checklist_approved" if status == "approved" else "checklist_rejected"
+    db.refresh(checklist)
+    _record_audit_log(
+        db,
+        current_user,
+        "VAPT_CHECKLIST_REVIEWED",
+        "vapt_onboarding",
+        org_id,
+        {"status": status, "flag_count": len(flags)},
+    )
+    event = {
+        "approved": "checklist_approved",
+        "changes_requested": "checklist_changes_requested",
+        "rejected": "checklist_rejected",
+    }[status]
+    email_note = _checklist_review_email_note(status, note, flags)
     for email in {u.email for u in db.query(User).filter(User.org_id == org_id).all() if u.email}:
         try:
-            send_vapt_access_event_email(email, event, org_id, "", "Organization onboarding", checklist.review_note or "")
+            send_vapt_access_event_email(email, event, org_id, "", "Organization onboarding", email_note)
         except Exception:
             pass
-    await ws_manager.send(org_id, {"event": "vapt_onboarding_reviewed", "status": status, "note": checklist.review_note or ""})
+    await ws_manager.send(
+        org_id,
+        {"event": "vapt_onboarding_reviewed", "status": status, "note": note or "", "flags": flags},
+    )
     return _onboarding_to_dict(checklist)
 
 
@@ -366,7 +915,7 @@ async def propose_initial_vapt_date(
         try:
             send_vapt_access_event_email(email, "initial_date_proposed", org_id, code, region.name, payload.note or "SOC proposed a different testing window.", start.isoformat(), end.isoformat(), row.proposed_timezone)
         except Exception as email_error:
-            print(f"VAPT initial-date proposal email failed for {email}: {email_error}")
+            logger.exception("VAPT initial-date proposal email failed for recipient=%s", email)
     await ws_manager.send(org_id, {"event": "vapt_initial_date_proposed", "region": code, "proposed_start_at": start.isoformat(), "proposed_end_at": end.isoformat(), "proposed_timezone": row.proposed_timezone, "note": payload.note or ""})
     return {"success": True, "status": row.schedule_status, "region_code": code, "proposed_start_at": start, "proposed_end_at": end, "proposed_timezone": row.proposed_timezone}
 
@@ -417,7 +966,7 @@ async def decide_initial_vapt_date(
         try:
             send_vapt_access_event_email(email, event, current_user.org_id, code, region.name, payload.get("note") or f"Client {decision} the proposed testing window.", row.testing_start_at.isoformat() if row.testing_start_at else "", row.testing_end_at.isoformat() if row.testing_end_at else "", row.testing_timezone or "")
         except Exception as email_error:
-            print(f"VAPT initial-date rejection email failed for {email}: {email_error}")
+            logger.exception("VAPT initial-date rejection email failed for recipient=%s", email)
     await ws_manager.send(current_user.org_id, {"event": "vapt_initial_date_decided", "region": code, "decision": decision, "status": row.status, "schedule_status": row.schedule_status})
     return {"success": True, "decision": decision, "status": row.status, "schedule_status": row.schedule_status, **_get_org_region_status(db, current_user.org_id)}
 
@@ -428,7 +977,12 @@ async def request_vapt_region(
     db: Session = Depends(get_db),
     current_user: User = Depends(protect),
 ):
-    """Request an additional region without resubmitting org onboarding."""
+    """Request an additional region, optionally with its own onboarding checklist.
+
+    The checklist travels with the region request (stored on the organization
+    region row) so SOC reviews the region + checklist together, and the org's
+    existing approved checklist/access is never invalidated.
+    """
     if not current_user.org_id:
         raise HTTPException(status_code=400, detail="This account is not linked to an organization.")
     checklist = db.query(VaptOnboardingChecklist).filter(VaptOnboardingChecklist.org_id == current_user.org_id).first()
@@ -462,14 +1016,63 @@ async def request_vapt_region(
     row.testing_timezone = str(payload.get("testing_timezone") or "").strip() or None
     if not row.testing_start_at or not row.testing_timezone:
         raise HTTPException(status_code=400, detail="A testing start and timezone are required.")
+
+    # Optional per-region checklist submitted together with the region request.
+    submission_fields = (
+        "scope_ip_ranges",
+        "authorization_confirmed",
+        "authorization_letter_url",
+        "tech_contact_name",
+        "tech_contact_email",
+        "tech_contact_phone",
+        "testing_window",
+        "out_of_scope_systems",
+        "checklist_answers",
+    )
+    submission = {
+        key: payload.get(key)
+        for key in submission_fields
+        if payload.get(key) is not None
+    }
+    if submission.get("checklist_answers"):
+        missing_uploads = _missing_required_uploads(db, current_user.org_id, submission.get("checklist_answers"))
+        if missing_uploads:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Upload the following file(s) before submitting: {', '.join(missing_uploads)}.",
+            )
+        submission["submitted_at"] = datetime.now(timezone.utc).isoformat()
+        row.checklist_submission = submission
+    else:
+        row.checklist_submission = None
+    # A (re)submission is a fresh review: clear any previous remarks/flags.
+    row.checklist_review_status = "pending"
+    row.checklist_review_note = None
+    row.checklist_flags = None
     db.add(row)
     db.commit()
-    _record_audit_log(db, current_user, "VAPT_REGION_REQUESTED", "organization_region", str(row.id), {"region": code})
+    _record_audit_log(
+        db,
+        current_user,
+        "VAPT_REGION_REQUESTED",
+        "organization_region",
+        str(row.id),
+        {"region": code, "with_checklist": row.checklist_submission is not None},
+    )
     recipients = {u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email}
     recipients.update(u.email for u in db.query(User).filter(User.org_id == current_user.org_id).all() if u.email)
     for email in recipients:
         try:
-            send_vapt_access_event_email(email, "region_access_requested", current_user.org_id, code, region.name, "Awaiting SOC review.", row.testing_start_at.isoformat(), "", row.testing_timezone or "")
+            note = "Awaiting SOC review."
+            if row.checklist_submission:
+                attachment_note = _attachment_email_note(
+                    db,
+                    current_user.org_id,
+                    _attachment_ids_in(row.checklist_submission.get("checklist_answers")),
+                )
+                if attachment_note:
+                    note = f"{note}\n\n{attachment_note}"
+            send_vapt_access_event_email(email, "region_access_requested", current_user.org_id, code, region.name, note, row.testing_start_at.isoformat(), "", row.testing_timezone or "")
         except Exception:
             pass
     await ws_manager.send(current_user.org_id, {"event": "vapt_region_requested", "region": code, "status": row.status})
@@ -542,6 +1145,40 @@ def _region_display_name(db: Session, record: VaptImport) -> str:
     return region.name if region else region_code
 
 
+VERIFICATION_DISPLAY_NAME_MAX = 120
+
+
+def _clean_verification_display_name(value: str | None) -> str | None:
+    """Normalize an optional SOC-supplied verification report name.
+
+    Collapses whitespace and caps the length so the value is safe to render in
+    report titles and download filenames. Returns None when nothing usable is left.
+    """
+    cleaned = " ".join(str(value or "").split()).strip()
+    return cleaned[:VERIFICATION_DISPLAY_NAME_MAX] or None
+
+
+def _verification_display_name(schedule: VaptRescanSchedule) -> str | None:
+    """Read the custom report name a SOC analyst gave a verification upload."""
+    result_data = schedule.result_data if isinstance(schedule.result_data, dict) else {}
+    return _clean_verification_display_name(result_data.get("display_name"))
+
+
+def _slugify_filename_part(value: str | None, fallback: str) -> str:
+    """Reduce an arbitrary label to a header-safe filename fragment."""
+    cleaned = "".join(c for c in str(value or "") if c.isalnum() or c in " ._-").strip()
+    # Collapse separator runs so dropped characters (e.g. "/") don't leave "--".
+    cleaned = "-".join(part for part in cleaned.replace(" ", "-").split("-") if part)
+    return cleaned or fallback
+
+
+def _verification_download_filename(schedule: VaptRescanSchedule, schedule_id: str, ext: str) -> str:
+    """Filename for a verification report download, using the SOC-given name when set."""
+    fallback = f"vapt-verification-{schedule_id[:8]}"
+    display_name = _verification_display_name(schedule)
+    return f"{_slugify_filename_part(display_name, fallback)}.{ext}" if display_name else f"{fallback}.{ext}"
+
+
 def _to_list_item(record: VaptImport, uploader_email: str | None = None) -> dict:
     return {
         "import_id": str(record.import_id),
@@ -600,8 +1237,8 @@ def _get_org_region_status(db: Session, org_id: str | None, blocked: bool = Fals
         .filter(OrganizationRegion.org_id == org_id)
         .all()
     )
-    status_by_code = {
-        region.code: org_region.status
+    row_by_code = {
+        region.code: org_region
         for org_region, region in org_region_rows
     }
 
@@ -611,10 +1248,22 @@ def _get_org_region_status(db: Session, org_id: str | None, blocked: bool = Fals
 
     for region in active_regions:
         item = {"code": region.code, "name": region.name}
-        status = status_by_code.get(region.code)
+        org_region = row_by_code.get(region.code)
+        status = org_region.status if org_region else None
         if status == "approved":
             approved_regions.append(item)
         elif status == "pending":
+            # Surface the attached checklist's review state so the client can
+            # see SOC's remarks/flags and amend only the flagged items.
+            item.update(
+                {
+                    "checklist_review_status": org_region.checklist_review_status or "pending",
+                    "checklist_review_note": org_region.checklist_review_note or "",
+                    "checklist_flags": org_region.checklist_flags or [],
+                    "has_checklist": org_region.checklist_submission is not None,
+                    "checklist_submission": org_region.checklist_submission,
+                }
+            )
             pending_regions.append(item)
         else:
             available_regions.append(item)
@@ -838,6 +1487,10 @@ async def approve_vapt_access(
     org_region.rejection_reason = None if approved else reason
     org_region.reviewed_at = datetime.now(timezone.utc)
     org_region.reviewed_by = current_user.user_id
+    # Keep the attached checklist's review state in step when a region carrying
+    # a checklist is decided through this plain approve/deny path.
+    if org_region.checklist_submission is not None:
+        org_region.checklist_review_status = "approved" if approved else "rejected"
     db.commit()
     db.refresh(org_region)
     event = "region_access_approved" if approved else "region_access_rejected"
@@ -857,6 +1510,126 @@ async def approve_vapt_access(
         "org_id": org_id,
         "region": region.code,
         "status": org_region.status,
+        **_get_org_region_status(db, org_id),
+    }
+
+
+@router.post("/admin/region-checklist/decision")
+async def decide_region_checklist(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Review the checklist attached to an additional-region request.
+
+    Mirrors the org-level checklist review so a few wrong answers never force a
+    full rejection:
+      * ``approved`` — region + checklist accepted together.
+      * ``changes_requested`` — the region stays pending and only the flagged
+        items need fixing; the client is emailed the list.
+      * ``rejected`` — the whole region request is declined.
+    """
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in CHECKLIST_REVIEW_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail="status must be approved, changes_requested or rejected",
+        )
+    org_id = str(payload.get("org_id") or "").strip()
+    code = str(payload.get("region_code") or payload.get("region") or "").strip().upper()
+    if not org_id or not code:
+        raise HTTPException(status_code=400, detail="org_id and region_code are required.")
+
+    region = db.query(Region).filter(Region.code == code).first()
+    if not region:
+        raise HTTPException(status_code=404, detail=f"Unknown region code: {code}")
+    row = (
+        db.query(OrganizationRegion)
+        .filter(OrganizationRegion.org_id == org_id, OrganizationRegion.region_id == region.region_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Region request not found.")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="This region request is no longer pending.")
+
+    note = str(payload.get("note") or "").strip() or None
+    flags = _normalize_review_flags(payload.get("flags"))
+    if status in {"changes_requested", "rejected"} and not note and not flags:
+        raise HTTPException(
+            status_code=400,
+            detail="Add remarks or flag at least one checklist item.",
+        )
+
+    now = datetime.now(timezone.utc)
+    row.checklist_review_status = status
+    row.checklist_review_note = note
+    row.checklist_flags = flags or None
+    row.reviewed_by = current_user.user_id
+    row.reviewed_at = now
+    if status == "approved":
+        row.status = "approved"
+        row.schedule_status = "confirmed"
+        row.rejection_reason = None
+        row.checklist_flags = None
+    elif status == "rejected":
+        row.status = "rejected"
+        row.schedule_status = "rejected"
+        row.rejection_reason = note
+    else:  # changes_requested — keep the region pending
+        row.status = "pending"
+        row.schedule_status = "pending"
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    _record_audit_log(
+        db,
+        current_user,
+        "VAPT_REGION_CHECKLIST_REVIEWED",
+        "organization_region",
+        str(row.id),
+        {"status": status, "region": code, "flag_count": len(flags)},
+    )
+    event = {
+        "approved": "region_access_approved",
+        "changes_requested": "checklist_changes_requested",
+        "rejected": "region_access_rejected",
+    }[status]
+    email_note = _checklist_review_email_note(status, note, flags)
+    recipients = {u.email for u in db.query(User).filter(User.org_id == org_id).all() if u.email}
+    recipients.update(u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email)
+    for email in recipients:
+        try:
+            send_vapt_access_event_email(email, event, org_id, code, region.name, email_note)
+        except Exception:
+            pass
+    await ws_manager.send(
+        org_id,
+        {
+            "event": "vapt_region_reviewed",
+            "region": code,
+            "status": row.status,
+            "checklist_status": status,
+            "note": note or "",
+            "flags": flags,
+        },
+    )
+    await ws_manager.send(
+        "platform",
+        {
+            "event": "vapt_region_reviewed",
+            "org_id": org_id,
+            "region": code,
+            "status": row.status,
+            "checklist_status": status,
+        },
+    )
+    return {
+        "success": True,
+        "region": code,
+        "status": row.status,
+        "checklist_review_status": status,
         **_get_org_region_status(db, org_id),
     }
 
@@ -887,9 +1660,24 @@ def list_vapt_access_requests(
                 "email": db.query(User).filter(User.user_id == org.user_id).first().email if db.query(User).filter(User.user_id == org.user_id).first() else None,
                 "requested_regions": [],
                 "approved_regions": [],
+                "pending_region_details": [],
             },
         )
         org_entry["requested_regions"].append(region.code)
+        org_entry["pending_region_details"].append(
+            {
+                "code": region.code,
+                "name": region.name,
+                "testing_start_at": org_region.testing_start_at,
+                "testing_end_at": org_region.testing_end_at,
+                "testing_timezone": org_region.testing_timezone,
+                "schedule_status": org_region.schedule_status,
+                "checklist_submission": org_region.checklist_submission,
+                "checklist_review_status": org_region.checklist_review_status or "pending",
+                "checklist_review_note": org_region.checklist_review_note or "",
+                "checklist_flags": org_region.checklist_flags or [],
+            }
+        )
 
     approved_rows = (
         db.query(OrganizationRegion, Organization, Region)
@@ -908,6 +1696,7 @@ def list_vapt_access_requests(
                 "email": db.query(User).filter(User.user_id == org.user_id).first().email if db.query(User).filter(User.user_id == org.user_id).first() else None,
                 "requested_regions": [],
                 "approved_regions": [],
+                "pending_region_details": [],
             },
         )
         result[org.org_id]["approved_regions"].append(region.code)
@@ -1171,10 +1960,15 @@ def _reopen_unresolved_findings(record: VaptImport, verification_data: dict | No
 async def upload_vapt_verification(
     schedule_id: str,
     file: UploadFile = File(...),
+    display_name: str | None = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_soc_analyst),
 ):
-    """Upload and synchronously evaluate a manual SOC verification export."""
+    """Upload and synchronously evaluate a manual SOC verification export.
+
+    `display_name` is an optional human-readable report name the SOC analyst can
+    give this verification; it becomes the report title and download filename.
+    """
     schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Rescan schedule not found.")
@@ -1209,8 +2003,10 @@ async def upload_vapt_verification(
 
     schedule.status = status
     schedule.error_message = error_message
+    clean_display_name = _clean_verification_display_name(display_name)
     schedule.result_data = {
         "verification_file_name": filename,
+        "display_name": clean_display_name,
         "verification_file_format": file_format,
         "verification_source_tool": source_tool,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
@@ -1254,12 +2050,13 @@ async def upload_vapt_verification(
                 pass
     except Exception:
         pass
-    _record_audit_log(db, current_user, "VAPT_VERIFICATION_UPLOADED", "vapt_rescan_schedule", str(schedule.id), {"status": status, "file_name": filename})
+    _record_audit_log(db, current_user, "VAPT_VERIFICATION_UPLOADED", "vapt_rescan_schedule", str(schedule.id), {"status": status, "file_name": filename, "display_name": clean_display_name})
     return {
         "success": True,
         "schedule_id": str(schedule.id),
         "import_id": str(record.import_id),
         "file_name": filename,
+        "display_name": clean_display_name,
         "status": status,
         "lifecycle_status": record.lifecycle_status,
         "fixed_count": len(fixed_findings),
@@ -1339,7 +2136,7 @@ def download_vapt_verification_report(
     return StreamingResponse(
         iter([pdf_bytes]),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="vapt-verification-{schedule_id[:8]}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{_verification_download_filename(schedule, schedule_id, "pdf")}"'},
     )
 
 
@@ -1548,6 +2345,7 @@ async def submit_vapt_import(
 
 class RescanScheduleRequest(BaseModel):
     scheduled_at: str
+    scheduled_timezone: str = "UTC"
     hosts: List[str] | None = None
     recurrence: dict | None = None
     note: str | None = None
@@ -1590,13 +2388,13 @@ async def schedule_vapt_rescan(
 
     try:
         scheduled_at = datetime.fromisoformat(body.scheduled_at)
-        # Always normalize to UTC: naive = assume UTC, aware = convert
         if scheduled_at.tzinfo is None:
-            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+            scheduled_at = scheduled_at.replace(tzinfo=ZoneInfo(body.scheduled_timezone))
         else:
-            scheduled_at = scheduled_at.astimezone(timezone.utc)
-    except Exception:
-        raise HTTPException(status_code=400, detail="scheduled_at must be an ISO8601 datetime")
+            scheduled_at = scheduled_at.astimezone(ZoneInfo(body.scheduled_timezone))
+        scheduled_at = scheduled_at.astimezone(timezone.utc)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        raise HTTPException(status_code=400, detail="scheduled_at must be an ISO8601 datetime and scheduled_timezone must be a valid IANA timezone")
 
     if scheduled_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="scheduled_at must be in the future")
@@ -1604,7 +2402,16 @@ async def schedule_vapt_rescan(
     # optional: validate hosts format
     hosts = body.hosts or []
 
-    schedule = await schedule_service.create_schedule(db, record, current_user, scheduled_at, hosts=hosts, recurrence=body.recurrence, note=body.note)
+    schedule = await schedule_service.create_schedule(
+        db,
+        record,
+        current_user,
+        scheduled_at,
+        hosts=hosts,
+        recurrence=body.recurrence,
+        note=body.note,
+        scheduled_timezone=body.scheduled_timezone,
+    )
 
     # Notify SOC that a client requested a verification slot. Confirmation
     # email is intentionally sent only after SOC approves the request.
@@ -1910,27 +2717,62 @@ async def set_client_next_vapt_due_date(
     if next_due <= datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="next_vapt_due_at must be in the future")
 
-    record.lifecycle_status = "closed"
+    record.lifecycle_status = "closure_pending_soc_due_date"
     record.next_vapt_due_at = next_due
     db.add(record)
     db.commit()
-    _record_audit_log(db, current_user, "VAPT_CYCLE_CLOSED", "vapt_import", str(record.import_id), {"next_vapt_due_at": next_due.isoformat(), "selected_by": "client"})
-    payload = {"event": "vapt_cycle_closed", "import_id": str(record.import_id), "org_id": record.org_id, "next_vapt_due_at": next_due.isoformat()}
+    _record_audit_log(db, current_user, "VAPT_DUE_DATE_PROPOSED", "vapt_import", str(record.import_id), {"next_vapt_due_at": next_due.isoformat(), "selected_by": "client"})
+    payload = {"event": "vapt_due_date_proposed", "import_id": str(record.import_id), "org_id": record.org_id, "next_vapt_due_at": next_due.isoformat()}
     try:
         await ws_manager.send(record.org_id, payload)
         await ws_manager.send("platform", payload)
     except Exception:
         pass
+    return {"success": True, "import_id": import_id, "lifecycle_status": record.lifecycle_status, "next_vapt_due_at": next_due}
+
+
+@router.post("/admin/imports/{import_id}/approve-next-due-date")
+async def approve_client_next_vapt_due_date(
+    import_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """SOC approves the next VAPT date proposed by the client."""
     try:
-        from app.utils.email import send_vapt_cycle_closed_email
-        for email in {u.email for u in db.query(User).filter(User.org_id == record.org_id).all() if u.email}:
-            try:
-                send_vapt_cycle_closed_email(email, record.file_name, next_due.isoformat())
-            except Exception:
-                pass
+        parsed_import_id = uuid.UUID(import_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="VAPT import not found")
+    record = db.query(VaptImport).filter(VaptImport.import_id == parsed_import_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="VAPT import not found")
+    if record.lifecycle_status != "closure_pending_soc_due_date" or not record.next_vapt_due_at:
+        raise HTTPException(status_code=409, detail="No client due date is awaiting SOC approval.")
+
+    record.lifecycle_status = "closed"
+    record.due_soon_reminder_sent_at = None
+    record.overdue_notice_sent_at = None
+    db.add(record)
+    db.commit()
+    _record_audit_log(
+        db,
+        current_user,
+        "VAPT_CYCLE_CLOSED",
+        "vapt_import",
+        str(record.import_id),
+        {"next_vapt_due_at": record.next_vapt_due_at.isoformat(), "approved_by": current_user.user_id},
+    )
+    payload = {
+        "event": "vapt_cycle_closed",
+        "import_id": str(record.import_id),
+        "org_id": record.org_id,
+        "next_vapt_due_at": record.next_vapt_due_at.isoformat(),
+    }
+    try:
+        await ws_manager.send(record.org_id, payload)
+        await ws_manager.send("platform", payload)
     except Exception:
         pass
-    return {"success": True, "import_id": import_id, "lifecycle_status": record.lifecycle_status, "next_vapt_due_at": next_due}
+    return {"success": True, "import_id": import_id, "lifecycle_status": record.lifecycle_status, "next_vapt_due_at": record.next_vapt_due_at}
 
 
 # ------------------ Admin: rescan requests management -------------------
@@ -1984,10 +2826,15 @@ def list_admin_rescan_requests(
             "id": str(s.id),
             "import_id": str(s.import_id),
             "file_name": imp.file_name if imp else None,
+            "display_name": _verification_display_name(s),
             "org_id": s.org_id,
             "org_domain": org_domain,
+            # Region the original assessment was performed in — lets the SOC upload
+            # screen pre-fill organization + region when a verification is picked.
+            "region": imp.region if imp else None,
             "requested_by": user.email if user else None,
             "scheduled_at": s.scheduled_at,
+            "scheduled_timezone": s.scheduled_timezone,
             "status": s.status,
             "error_message": getattr(s, 'error_message', None),
             "created_at": s.created_at,
@@ -1997,6 +2844,7 @@ def list_admin_rescan_requests(
 
 class AdminRescheduleRequest(BaseModel):
     proposed_at: str
+    proposed_timezone: str = "Asia/Kolkata"
     note: str | None = None
 
 
@@ -2086,18 +2934,17 @@ async def admin_request_new_date(
 
     try:
         proposed = datetime.fromisoformat(body.proposed_at)
-        # Always normalize to UTC: naive = assume UTC, aware = convert
         if proposed.tzinfo is None:
-            proposed = proposed.replace(tzinfo=timezone.utc)
+            proposed = proposed.replace(tzinfo=ZoneInfo(body.proposed_timezone))
         else:
-            proposed = proposed.astimezone(timezone.utc)
-    except Exception:
-        raise HTTPException(status_code=400, detail="proposed_at must be an ISO8601 datetime")
+            proposed = proposed.astimezone(ZoneInfo(body.proposed_timezone))
+        proposed = proposed.astimezone(timezone.utc)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        raise HTTPException(status_code=400, detail="proposed_at must be an ISO8601 datetime and proposed_timezone must be a valid IANA timezone")
 
     if proposed <= datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="proposed_at must be in the future")
 
-    # update scheduled_at to proposed and mark as requested
     schedule.scheduled_at = proposed
     if body.note is not None:
         schedule.note = body.note.strip() or None
@@ -2110,7 +2957,7 @@ async def admin_request_new_date(
         try:
             send_vapt_access_event_email(email, "rescan_date_proposed", schedule.org_id, "", "VAPT verification", body.note or "A new verification date was proposed.", proposed.isoformat(), "", "UTC")
         except Exception as email_error:
-            print(f"VAPT rescan-date proposal email failed for {email}: {email_error}")
+            logger.exception("VAPT rescan-date proposal email failed for recipient=%s", email)
 
     # alert and notify
     try:
@@ -2179,6 +3026,7 @@ def list_vapt_rescan_schedules(
         {
             "id": str(s.id),
             "scheduled_at": s.scheduled_at,
+            "scheduled_timezone": s.scheduled_timezone,
             "hosts": s.hosts or [],
             "status": s.status,
             "created_at": s.created_at,
@@ -2218,16 +3066,18 @@ async def client_request_new_date(
     try:
         proposed = datetime.fromisoformat(body.proposed_at)
         if proposed.tzinfo is None:
-            proposed = proposed.replace(tzinfo=timezone.utc)
+            proposed = proposed.replace(tzinfo=ZoneInfo(body.proposed_timezone))
         else:
-            proposed = proposed.astimezone(timezone.utc)
-    except Exception:
-        raise HTTPException(status_code=400, detail="proposed_at must be an ISO8601 datetime")
+            proposed = proposed.astimezone(ZoneInfo(body.proposed_timezone))
+        proposed = proposed.astimezone(timezone.utc)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        raise HTTPException(status_code=400, detail="proposed_at must be an ISO8601 datetime and proposed_timezone must be a valid IANA timezone")
 
     if proposed <= datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="proposed_at must be in the future")
 
     schedule.scheduled_at = proposed
+    schedule.scheduled_timezone = body.proposed_timezone
     if body.note is not None:
         schedule.note = body.note.strip() or None
     schedule.status = "requested"
@@ -2325,7 +3175,7 @@ async def reject_proposed_date(
         try:
             send_vapt_access_event_email(email, "rescan_date_rejected", current_user.org_id, "", "VAPT verification", "Client rejected the proposed verification date.")
         except Exception as email_error:
-            print(f"VAPT rescan-date rejection email failed for {email}: {email_error}")
+            logger.exception("VAPT rescan-date rejection email failed for recipient=%s", email)
 
     # Notify SOC that a new date is needed.
     try:
@@ -2441,63 +3291,7 @@ def check_remediation_followup_reminders(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_soc_analyst),
 ):
-    """Scan all reports in ``remediation_required`` and fire a follow-up
-    reminder email to SOC if the report has been there for 7+ days with
-    no logged support-contact.
-
-    This endpoint can be triggered manually by SOC or by the hourly backend
-    maintenance task.
-    """
-    now = datetime.now(timezone.utc)
-    threshold = now - timedelta(days=7)
-    reports = (
-        db.query(VaptImport)
-        .filter(VaptImport.lifecycle_status == "remediation_required")
-        .all()
-    )
-    fired = []
-    for record in reports:
-        # Determine the "clock start": either the last support-offered
-        # timestamp or the report's created_at, whichever is more recent.
-        clock_start = record.support_offered_at or record.created_at
-        if clock_start.tzinfo is None:
-            clock_start = clock_start.replace(tzinfo=timezone.utc)
-        if clock_start > threshold:
-            continue  # too recent — within the 7-day window
-        # Don't re-fire if we already sent a reminder after the clock start
-        if record.remediation_reminder_sent_at:
-            sent_at = record.remediation_reminder_sent_at
-            if sent_at.tzinfo is None:
-                sent_at = sent_at.replace(tzinfo=timezone.utc)
-            if sent_at > clock_start:
-                continue  # already reminded since the last outreach
-        # Fire reminder emails to all SOC analysts
-        try:
-            from app.utils.email import send_remediation_followup_reminder_email
-            soc_emails = [u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email]
-            org = db.query(Organization).filter(Organization.org_id == record.org_id).first()
-            org_domain = None
-            if org and org.domain:
-                org_domain = ", ".join(str(d) for d in (org.domain if isinstance(org.domain, list) else [org.domain]) if d)
-            for email in soc_emails:
-                try:
-                    send_remediation_followup_reminder_email(
-                        to_email=email,
-                        import_id=str(record.import_id),
-                        file_name=record.file_name,
-                        org_id=record.org_id,
-                        org_domain=org_domain,
-                        since=clock_start.isoformat(),
-                    )
-                except Exception:
-                    pass
-            record.remediation_reminder_sent_at = now
-            db.add(record)
-            db.commit()
-            fired.append(str(record.import_id))
-        except Exception:
-            db.rollback()
-    return {"success": True, "reminders_sent": len(fired), "import_ids": fired}
+    return run_remediation_followup_reminders(db)
 
 
 @router.post("/admin/check-due-dates")
@@ -2505,67 +3299,7 @@ def check_vapt_due_dates(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_soc_analyst),
 ):
-    """Send each due-date reminder once for closed VAPT cycles."""
-    now = datetime.now(timezone.utc)
-    due_soon_threshold = now + timedelta(days=7)
-    reports = db.query(VaptImport).filter(
-        VaptImport.lifecycle_status == "closed",
-        VaptImport.next_vapt_due_at.isnot(None),
-    ).all()
-    due_soon_reminders = 0
-    overdue_notices = 0
-
-    for record in reports:
-        due_at = record.next_vapt_due_at
-        if due_at.tzinfo is None:
-            due_at = due_at.replace(tzinfo=timezone.utc)
-        org = db.query(Organization).filter(Organization.org_id == record.org_id).first()
-        if org and org.domain:
-            org_domain = ", ".join(str(domain) for domain in (org.domain if isinstance(org.domain, list) else [org.domain]) if domain)
-        else:
-            org_domain = None
-
-        if due_at <= now:
-            if record.overdue_notice_sent_at:
-                continue
-            days_overdue = max(1, (now.date() - due_at.date()).days)
-            try:
-                from app.utils.email import send_vapt_overdue_email
-                recipients = {user.email for user in db.query(User).filter(User.org_id == record.org_id).all() if user.email}
-                recipients.update(user.email for user in db.query(User).filter(User.role == "soc_analyst").all() if user.email)
-                for email in recipients:
-                    try:
-                        send_vapt_overdue_email(email, record.file_name, org_domain, due_at.isoformat(), days_overdue)
-                    except Exception:
-                        pass
-                record.overdue_notice_sent_at = now
-                db.add(record)
-                db.commit()
-                overdue_notices += 1
-            except Exception:
-                db.rollback()
-        elif due_at <= due_soon_threshold and not record.due_soon_reminder_sent_at:
-            days_left = max(1, (due_at.date() - now.date()).days)
-            try:
-                from app.utils.email import send_vapt_due_soon_email
-                recipients = {user.email for user in db.query(User).filter(User.org_id == record.org_id).all() if user.email}
-                for email in recipients:
-                    try:
-                        send_vapt_due_soon_email(email, record.file_name, org_domain, due_at.isoformat(), days_left)
-                    except Exception:
-                        pass
-                record.due_soon_reminder_sent_at = now
-                db.add(record)
-                db.commit()
-                due_soon_reminders += 1
-            except Exception:
-                db.rollback()
-
-    return {
-        "success": True,
-        "due_soon_reminders": due_soon_reminders,
-        "overdue_notices": overdue_notices,
-    }
+    return run_vapt_due_date_reminders(db)
 
 
 @router.delete("/imports/{import_id}")

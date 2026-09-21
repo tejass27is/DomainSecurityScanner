@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth.routes import router as auth_router
@@ -18,12 +19,14 @@ from app.db.base import SessionLocal
 from app.api.report_issue.routes import router as report_issue_router
 from app.api.public.routes import router as public_router
 from app.api.vapt.routes import router as vapt_router
-from app.api.vapt.routes import check_remediation_followup_reminders, check_vapt_due_dates, list_admin_rescan_requests
+from app.api.vapt.maintenance import run_remediation_followup_reminders, run_vapt_due_date_reminders
+from app.api.webscan.routes import router as webscan_router
 from app.api.admin.service import seed_default_subscription_plans, delete_expired_unclaimed_promo_codes, check_escalation_rules
 import threading
 import time
+import logging
 
-app = FastAPI()
+logger = logging.getLogger(__name__)
 
 # Background task to clean up expired unclaimed promo codes
 def cleanup_expired_promo_codes():
@@ -34,24 +37,20 @@ def cleanup_expired_promo_codes():
             db = SessionLocal()
             try:
                 delete_expired_unclaimed_promo_codes(db)
-                list_admin_rescan_requests(db, None)
-                check_remediation_followup_reminders(db, None)
-                check_vapt_due_dates(db, None)
+                run_remediation_followup_reminders(db)
+                run_vapt_due_date_reminders(db)
                 check_escalation_rules(db, None)
             finally:
                 db.close()
-        except Exception as e:
-            print(f"Error cleaning up expired promo codes: {e}")
+        except Exception:
+            logger.exception("Background maintenance cycle failed")
 
-# Initialize database on startup
-@app.on_event("startup")
-async def startup_event():
-    # print("Initializing database...")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     init_db()
     init_tables()
 
     db = SessionLocal()
-
     try:
         seed_default_subscription_plans(db)
 
@@ -68,9 +67,12 @@ async def startup_event():
     finally:
         db.close()
 
-    # Start background cleanup task
     cleanup_thread = threading.Thread(target=cleanup_expired_promo_codes, daemon=True)
     cleanup_thread.start()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 # CORS
 # CORS configuration — accepts both CORS_ORIGINS and FRONTEND_URL.
@@ -100,7 +102,7 @@ if not cors_origins_set:
     )
 
 cors_origins = sorted(cors_origins_set)
-print(f"[CORS] Allowed origins: {cors_origins}")
+logger.info("Configured CORS origins: %s", cors_origins)
 
 app.add_middleware(
     CORSMiddleware,
@@ -132,6 +134,7 @@ app.include_router(malware_router)
 app.include_router(report_issue_router)
 app.include_router(public_router)
 app.include_router(vapt_router)
+app.include_router(webscan_router)
 
 if __name__ == "__main__":
     import uvicorn
@@ -142,5 +145,5 @@ if __name__ == "__main__":
     if not _port_raw:
         raise RuntimeError("PORT environment variable is not set. Set it to your desired port (e.g. 8000).")
     _port = int(_port_raw)
-    _reload = os.getenv("RELOAD", "true").lower() in {"1", "true", "yes"}
+    _reload = os.getenv("RELOAD", "false").lower() in {"1", "true", "yes"}
     uvicorn.run("main:app", host=_host, port=_port, reload=_reload)

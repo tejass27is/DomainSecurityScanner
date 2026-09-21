@@ -40,7 +40,8 @@ function Sidebar({
   }, []);
 
   useEffect(() => {
-    setIsSettingsOpen(false);
+    const resetTimer = window.setTimeout(() => setIsSettingsOpen(false), 0);
+    return () => window.clearTimeout(resetTimer);
   }, [location.pathname]);
 
   useEffect(() => {

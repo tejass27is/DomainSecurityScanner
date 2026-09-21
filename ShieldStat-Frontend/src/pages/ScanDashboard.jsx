@@ -13,6 +13,7 @@ import {
 } from "../data/checklistData";
 // ScoringBreakdown removed — no criticality selector import
 import { getScore, getMalwareLatestReport, getProfile, getAssessment, getIpReputation, downloadScanReport } from "../services/api";
+import WebScanTab from "../components/WebScanTab";
 
 import {
   FileText, Link2, Globe, Zap, ShieldAlert, CheckCircle2, Bug, Download,
@@ -309,10 +310,7 @@ function DomainTab({ domain, isActive, onClick }) {
 function EnhanceScorecardPanel({ completeness, domain }) {
   const [actionIdx, setActionIdx] = useState(0);
   const { percent, level, pending, checks } = completeness;
-
-  useEffect(() => {
-    if (actionIdx >= pending.length) setActionIdx(0);
-  }, [pending.length, actionIdx]);
+  const safeActionIdx = pending.length ? Math.min(actionIdx, pending.length - 1) : 0;
 
   if (pending.length === 0) {
     return (
@@ -326,7 +324,7 @@ function EnhanceScorecardPanel({ completeness, domain }) {
     );
   }
 
-  const action = pending[actionIdx];
+  const action = pending[safeActionIdx];
   const segments = checks.length;
   const filled = completeness.completedCount;
 
@@ -372,7 +370,7 @@ function EnhanceScorecardPanel({ completeness, domain }) {
             >
               <span className="material-symbols-outlined text-lg">chevron_left</span>
             </button>
-            <span className="text-sm font-bold">{actionIdx + 1}/{pending.length}</span>
+            <span className="text-sm font-bold">{safeActionIdx + 1}/{pending.length}</span>
             <button
               type="button"
               onClick={() => setActionIdx((i) => (i + 1) % pending.length)}
@@ -496,6 +494,8 @@ function ScanDashboard() {
   const [selections, setSelections] = useState({});
   const [loading, setLoading] = useState(true);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  // "domain" = the existing domain security overview, "webscan" = Acunetix scans.
+  const [activeTab, setActiveTab] = useState("domain");
 
   // Load profile and default domain
   useEffect(() => {
@@ -691,23 +691,23 @@ function ScanDashboard() {
         .scan-dashboard-accent .text-purple-700,
         .scan-dashboard-accent .text-purple-400,
         .scan-dashboard-accent .text-purple-300,
-        .scan-dashboard-accent .group-hover\:text-purple-600:hover,
-        .scan-dashboard-accent .group-hover\:text-purple-400:hover,
-        .scan-dashboard-accent .hover\:text-purple-700:hover,
-        .scan-dashboard-accent .hover\:text-purple-400:hover,
-        .scan-dashboard-accent .dark\:text-purple-400,
-        .scan-dashboard-accent .dark\:text-purple-300,
-        .scan-dashboard-accent .dark\:hover\:text-purple-400:hover,
-        .scan-dashboard-accent .dark\:hover\:text-purple-300:hover {
+        .scan-dashboard-accent .group-hover\\:text-purple-600:hover,
+        .scan-dashboard-accent .group-hover\\:text-purple-400:hover,
+        .scan-dashboard-accent .hover\\:text-purple-700:hover,
+        .scan-dashboard-accent .hover\\:text-purple-400:hover,
+        .scan-dashboard-accent .dark\\:text-purple-400,
+        .scan-dashboard-accent .dark\\:text-purple-300,
+        .scan-dashboard-accent .dark\\:hover\\:text-purple-400:hover,
+        .scan-dashboard-accent .dark\\:hover\\:text-purple-300:hover {
           color: #800080 !important;
         }
 
         .scan-dashboard-accent .border-purple-200,
         .scan-dashboard-accent .border-purple-600,
         .scan-dashboard-accent .border-purple-100,
-        .scan-dashboard-accent .hover\:border-purple-200:hover,
-        .scan-dashboard-accent .dark\:border-purple-800\/50,
-        .scan-dashboard-accent .dark\:border-purple-900\/40 {
+        .scan-dashboard-accent .hover\\:border-purple-200:hover,
+        .scan-dashboard-accent .dark\\:border-purple-800\\/50,
+        .scan-dashboard-accent .dark\\:border-purple-900\\/40 {
           border-color: rgba(128, 0, 128, 0.28) !important;
         }
 
@@ -719,10 +719,10 @@ function ScanDashboard() {
 
         .scan-dashboard-accent .bg-purple-50,
         .scan-dashboard-accent .bg-purple-100,
-        .scan-dashboard-accent .hover\:bg-purple-50:hover,
-        .scan-dashboard-accent .dark\:bg-purple-950\/30,
-        .scan-dashboard-accent .dark\:bg-purple-900\/50,
-        .scan-dashboard-accent .dark\:hover\:bg-purple-900\/40:hover {
+        .scan-dashboard-accent .hover\\:bg-purple-50:hover,
+        .scan-dashboard-accent .dark\\:bg-purple-950\\/30,
+        .scan-dashboard-accent .dark\\:bg-purple-900\\/50,
+        .scan-dashboard-accent .dark\\:hover\\:bg-purple-900\\/40:hover {
           background-color: rgba(128, 0, 128, 0.12) !important;
         }
 
@@ -732,8 +732,8 @@ function ScanDashboard() {
         .scan-dashboard-accent .to-purple-600,
         .scan-dashboard-accent .to-purple-700,
         .scan-dashboard-accent .to-purple-800,
-        .scan-dashboard-accent .hover\:from-purple-700:hover,
-        .scan-dashboard-accent .hover\:to-purple-800:hover {
+        .scan-dashboard-accent .hover\\:from-purple-700:hover,
+        .scan-dashboard-accent .hover\\:to-purple-800:hover {
           --tw-gradient-from: #800080 !important;
           --tw-gradient-to: #800080 !important;
         }
@@ -743,6 +743,34 @@ function ScanDashboard() {
       <div className="absolute bottom-0 left-0 w-96 h-96 bg-purple-400 rounded-full mix-blend-multiply filter blur-3xl opacity-5 animate-pulse"></div> */}
 
       <main className="flex-1 overflow-y-auto pt-8 pb-16 px-12 max-w-[1600px] mx-auto w-full text-slate-900 dark:text-slate-100 relative z-10">
+
+        {/* ── Scan mode tabs ── */}
+        <div className="mb-8 inline-flex flex-wrap items-center gap-1 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-1.5">
+          {[
+            { id: "domain", label: "Domain Security", icon: "shield" },
+            { id: "webscan", label: "Web Scan (Acunetix)", icon: "travel_explore" },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold transition-all duration-200 ${activeTab === tab.id
+                  ? "bg-gradient-to-r from-purple-600 to-purple-700 text-white shadow-md"
+                  : "text-slate-600 dark:text-slate-300 hover:text-purple-600 dark:hover:text-purple-400"
+                }`}
+            >
+              <span className="material-symbols-outlined text-lg">{tab.icon}</span>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Web Scan (Acunetix) renders in place of the domain overview. */}
+        {activeTab === "webscan" ? (
+          <WebScanTab />
+        ) : (
+          <>
+
 
         {/* ── Domain nav ── */}
         {knownDomains.length > 0 && (
@@ -1108,6 +1136,8 @@ function ScanDashboard() {
           )}
 
         </section>
+          </>
+        )}
       </main>
     </div>
   );

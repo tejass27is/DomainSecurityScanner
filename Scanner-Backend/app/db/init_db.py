@@ -52,6 +52,10 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS proposed_end_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS proposed_timezone VARCHAR(64) NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS schedule_status VARCHAR(32) NOT NULL DEFAULT 'pending'"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS checklist_submission JSONB NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS checklist_review_status VARCHAR(24) NOT NULL DEFAULT 'pending'"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS checklist_review_note TEXT NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS organization_regions ADD COLUMN IF NOT EXISTS checklist_flags JSONB NULL"))
 
         # ── vapt_imports ──────────────────────────────────────────────────────
         # Tables created by an earlier schema shipped a NOT NULL `status` column
@@ -93,6 +97,7 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(36) NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS review_note TEXT NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS review_flags JSONB NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS checklist_answers JSONB NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS testing_start_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS testing_end_at TIMESTAMPTZ NULL"))
@@ -106,6 +111,24 @@ def init_tables():
         conn.execute(text("CREATE TABLE IF NOT EXISTS vapt_finding_history (id SERIAL PRIMARY KEY, import_id UUID NOT NULL REFERENCES vapt_imports(import_id), schedule_id UUID NULL REFERENCES vapt_rescan_schedules(id), finding_id VARCHAR(255) NOT NULL, actor_id VARCHAR(36) NULL REFERENCES users(user_id), old_status VARCHAR(32) NULL, new_status VARCHAR(32) NOT NULL, comment TEXT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vapt_finding_history_import ON vapt_finding_history(import_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vapt_finding_history_schedule ON vapt_finding_history(schedule_id)"))
+
+        # ── vapt_checklist_attachments (client-uploaded checklist files) ──────
+        # The bytes live on the backend's mounted storage volume; this table is
+        # the handle binding a file to an org/question, so no third-party storage
+        # service is required. Created by the model on fresh installs; this DDL
+        # keeps existing databases in step without a migration step.
+        conn.execute(text("CREATE TABLE IF NOT EXISTS vapt_checklist_attachments (id VARCHAR(36) PRIMARY KEY, org_id VARCHAR(36) NOT NULL REFERENCES organizations(org_id), region_code VARCHAR(64) NULL, section_id VARCHAR(64) NOT NULL, question_id VARCHAR(64) NOT NULL, original_filename VARCHAR(255) NOT NULL, content_type VARCHAR(128) NULL, size_bytes INTEGER NOT NULL DEFAULT 0, stored_name VARCHAR(255) NOT NULL, uploaded_by VARCHAR(36) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vapt_attachment_org ON vapt_checklist_attachments(org_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vapt_attachment_question ON vapt_checklist_attachments(org_id, question_id)"))
+
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS initial_findings JSONB NULL"))
         conn.execute(text("UPDATE vapt_imports SET initial_findings = findings WHERE initial_findings IS NULL AND findings IS NOT NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS initial_findings JSONB NULL"))
+
+        # ── web_scans (Acunetix web-application scans) ────────────────────────
+        # Created by the WebScan model on fresh installs; the explicit DDL keeps
+        # existing databases in step without a migration step.
+        conn.execute(text("CREATE TABLE IF NOT EXISTS web_scans (scan_id UUID PRIMARY KEY, org_id VARCHAR(36) NOT NULL REFERENCES organizations(org_id), user_id VARCHAR(36) NULL REFERENCES users(user_id), target_url TEXT NOT NULL, target_host VARCHAR(255) NOT NULL, acunetix_target_id VARCHAR(64) NULL, acunetix_scan_id VARCHAR(64) NULL, profile_id VARCHAR(64) NULL, status VARCHAR(32) NOT NULL DEFAULT 'pending', progress INTEGER NOT NULL DEFAULT 0, current_stage VARCHAR(64) NULL, message TEXT NULL, total_findings INTEGER NOT NULL DEFAULT 0, unique_urls INTEGER NOT NULL DEFAULT 0, risk_score INTEGER NOT NULL DEFAULT 0, severity VARCHAR(20) NOT NULL DEFAULT 'none', severity_distribution JSONB NULL, findings JSONB NULL, summary JSONB NULL, error_message TEXT NULL, started_at TIMESTAMPTZ NULL, finished_at TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_webscan_org_created ON web_scans(org_id, created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_webscan_org_status ON web_scans(org_id, status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_webscan_acunetix_scan ON web_scans(acunetix_scan_id)"))

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft, Download, Search, AlertCircle,
+  ArrowLeft, Download, Search, AlertCircle, Loader2,
   Globe, Layers, Info, FileText, Lock, Activity,
   ShieldAlert, FilterX, Database, Clock, CheckCircle2,
 } from "lucide-react";
@@ -57,6 +57,7 @@ const LIFECYCLE_LABEL = {
   revalidation_scheduled: "Re-validation scheduled",
   revalidation_verification_pending: "Verification complete — SOC decision required",
   closure_pending_client_due_date: "SOC approved closure — due date required",
+  closure_pending_soc_due_date: "Client due date pending SOC approval",
   closed: "VAPT cycle closed",
   remediation_required: "Remediation required",
 };
@@ -186,11 +187,6 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
   );
   const hosts = (finding.affected_hosts || []).filter(Boolean);
   const evidence = (finding.evidence || "").trim();
-
-  useEffect(() => {
-    setStatus(finding.status || "pending");
-    setComment(finding.comment || "");
-  }, [finding.status, finding.comment]);
 
   useEffect(() => {
     if (readOnly) return;
@@ -359,7 +355,7 @@ function RescanRequestsPanel({
               const isActionable = ["scheduled", "requested"].includes((s.status || "scheduled").toLowerCase());
               return (
                 <tr key={s.id} className="border-t border-slate-100 align-top dark:border-slate-800">
-                  <td className="px-4 py-3 font-mono text-[12px]">{fmtDate(s.scheduled_at || s.requested_date || s.proposed_date)}</td>
+                  <td className="px-4 py-3 font-mono text-[12px]">{fmtDate(s.scheduled_at || s.requested_date || s.proposed_date, s.scheduled_timezone)}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_BADGE[s.status] || STATUS_BADGE.pending}`}>
                       {STATUS_LABEL[s.status] || s.status || "Pending"}
@@ -458,7 +454,7 @@ function RescanRequestsPanel({
   );
 }
 
-function RescanTimeline({ schedules, record, isPlatformView }) {
+function RescanTimeline({ schedules, record }) {
   if (!schedules || schedules.length === 0) return null;
   const icons = { scheduled: Clock, approved: CheckCircle2, completed: CheckCircle2, requested: Clock, cancelled: AlertCircle, failed: AlertCircle };
   return (
@@ -628,7 +624,7 @@ function NotificationPanel({ record, schedules, isPlatformView }) {
 
 // ─── Report view switcher tabs ───────────────────────────────────────────────
 
-function ReportSwitcherTabs({ selectedReport, onSelect, initialCount, verificationSchedules, record }) {
+function ReportSwitcherTabs({ selectedReport, onSelect, initialCount, verificationSchedules }) {
   const tabs = [
     { key: "initial", label: "Initial Report", count: initialCount },
     ...verificationSchedules.map((s, i) => {
@@ -980,6 +976,7 @@ export default function VaptReport() {
   // Rescan request row actions (platform/admin view)
   const [rescanActionLoading, setRescanActionLoading] = useState({});
   const [rescanActionError, setRescanActionError] = useState({});
+  const [remediationReviewLoading, setRemediationReviewLoading] = useState(false);
   const [newDateDraft, setNewDateDraft] = useState({}); // { [scheduleId]: { date, note, open } }
   // Report view switcher: "initial" or a schedule id string
   const [selectedReport, setSelectedReport] = useState("initial");
@@ -1193,12 +1190,15 @@ export default function VaptReport() {
   const handleRemediationReview = useCallback(async (decision) => {
     const token = localStorage.getItem("token");
     if (!token || !record) return;
+    setRemediationReviewLoading(true);
     try {
       const result = await postAdminRemediationReview(record.import_id, decision, token);
       setRecord((prev) => prev ? { ...prev, remediation_review_status: decision, lifecycle_status: result.lifecycle_status } : prev);
       setToast({ text: decision === "approved" ? "Remediation accepted; client may schedule verification" : "Remediation rejected; client must continue fixing findings", type: decision === "approved" ? "success" : "error" });
     } catch (err) {
       setToast({ text: err?.message || "Failed to review remediation", type: "error" });
+    } finally {
+      setRemediationReviewLoading(false);
     }
   }, [record]);
 
@@ -1643,7 +1643,9 @@ export default function VaptReport() {
             )}
             {isPlatformView && record.remediation_review_status === "pending_soc_review" && (
               <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" onClick={() => handleRemediationReview("approved")} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white">Accept client remediation</button>
+                <button type="button" onClick={() => handleRemediationReview("approved")} disabled={remediationReviewLoading} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-emerald-700 hover:shadow-md active:translate-y-0 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-70">
+                  {remediationReviewLoading ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} {remediationReviewLoading ? "Accepting…" : "Accept client remediation"}
+                </button>
                 <button type="button" onClick={() => handleRemediationReview("rejected")} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">Request more remediation</button>
               </div>
             )}
@@ -2040,7 +2042,7 @@ export default function VaptReport() {
                 <tbody>
                   {filteredFindings.map((f) => (
                     <FindingTableRow
-                      key={f.id}
+                      key={`${f.id}-${f.status || "pending"}-${f.comment || ""}`}
                       finding={f}
                       onDraftChange={handleDraftChange}
                       readOnly={isPlatformView}

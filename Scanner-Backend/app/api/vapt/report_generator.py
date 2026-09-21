@@ -1284,6 +1284,10 @@ def generate_vapt_verification_report_pdf(schedule, original_record, prepared_fo
     if not isinstance(remaining_findings, list):
         remaining_findings = []
     prepared_for = prepared_for or getattr(original_record, "region", None) or "Not specified"
+    # Optional SOC-supplied name for this verification report (set at upload time).
+    display_name = None
+    if isinstance(result_data, dict):
+        display_name = " ".join(str(result_data.get("display_name") or "").split()).strip() or None
     if not findings:
         findings = fixed_findings + remaining_findings
     severity_distribution = {severity: 0 for severity in SEVERITY_ORDER}
@@ -1298,7 +1302,7 @@ def generate_vapt_verification_report_pdf(schedule, original_record, prepared_fo
         import_id=getattr(original_record, "import_id", None),
         org_id=getattr(original_record, "org_id", ""),
         region=getattr(original_record, "region", ""),
-        file_name="Verification assessment",
+        file_name=display_name or "Verification assessment",
         file_format=getattr(original_record, "file_format", ""),
         source_tool=getattr(original_record, "source_tool", "generic"),
         status=getattr(schedule, "status", "completed"),
@@ -1314,7 +1318,7 @@ def generate_vapt_verification_report_pdf(schedule, original_record, prepared_fo
     return generate_vapt_report_pdf(
         verification_record,
         client_name=prepared_for,
-        report_title="VAPT Verification Report",
+        report_title=display_name or "VAPT Verification Report",
         assessment_type="Verification Assessment",
         methodology="Targeted re-validation of previously reported findings",
         scope=f"Verification assessment for {prepared_for}",
@@ -1491,8 +1495,13 @@ def generate_vapt_verification_report_xlsx(schedule, original_record, prepared_f
     if not isinstance(remaining_findings, list):
         remaining_findings = []
     prepared_for = prepared_for or getattr(original_record, "region", None) or "Not specified"
+    # Optional SOC-supplied name for this verification report (set at upload time).
+    display_name = None
+    if isinstance(result_data, dict):
+        display_name = " ".join(str(result_data.get("display_name") or "").split()).strip() or None
 
     wb = Workbook()
+    wb.properties.title = display_name or "VAPT Verification Report"
 
     # ── Sheet 1: Verification Findings ──
     ws = wb.active
@@ -1539,6 +1548,7 @@ def generate_vapt_verification_report_xlsx(schedule, original_record, prepared_f
     summary_ws = wb.create_sheet("Verification Summary")
     summary_data = [
         ["Field", "Value"],
+        ["Report Name", display_name or "VAPT Verification Report"],
         ["Prepared For", prepared_for],
         ["Verification Date", str(schedule.scheduled_at)],
         ["SOC Outcome", getattr(schedule, "verification_outcome", "pending")],
