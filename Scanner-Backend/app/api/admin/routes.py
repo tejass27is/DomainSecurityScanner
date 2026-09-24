@@ -17,6 +17,10 @@ from app.api.admin.service import (
     assign_promo_code_to_user,
     block_email,
     block_vapt_access,
+    approve_vapt_access,
+    approve_webscan_access,
+    revoke_vapt_access,
+    revoke_webscan_access,
     unblock_vapt_access,
     check_escalation_rules,
     create_personal_email_invitation,
@@ -554,7 +558,13 @@ def block_user_by_email(
     db: Session = Depends(get_db),
     current_admin: User = Depends(require_admin),
 ):
-    return block_email(req.email, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+    email = req.email
+    if not email and req.user_id:
+        target = db.query(User).filter(User.user_id == req.user_id).first()
+        email = target.email if target else None
+    if not email:
+        raise HTTPException(status_code=400, detail="email or user_id is required")
+    return block_email(email, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
 
 
 @router.post("/blacklist/unblock")
@@ -564,7 +574,13 @@ def unblock_user_by_email(
     db: Session = Depends(get_db),
     current_admin: User = Depends(require_admin),
 ):
-    return unblock_email(req.email, db, current_admin=current_admin, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+    email = req.email
+    if not email and req.user_id:
+        target = db.query(User).filter(User.user_id == req.user_id).first()
+        email = target.email if target else None
+    if not email:
+        raise HTTPException(status_code=400, detail="email or user_id is required")
+    return unblock_email(email, db, current_admin=current_admin, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
 
 
 @router.get("/blacklist")
@@ -585,6 +601,52 @@ def block_vapt_access_route(
     """Block an individual user from accessing VAPT (reversible)."""
     identifier = req.user_id or req.email
     return block_vapt_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
+@router.post("/vapt/approve")
+def approve_vapt_access_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Approve an individual user's VAPT access."""
+    identifier = req.user_id or req.email
+    return approve_vapt_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
+@router.post("/vapt/revoke")
+def revoke_vapt_access_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Revoke an individual user's VAPT approval."""
+    identifier = req.user_id or req.email
+    return revoke_vapt_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
+@router.post("/webscan/approve")
+def approve_webscan_access_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    identifier = req.user_id or req.email
+    return approve_webscan_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
+@router.post("/webscan/revoke")
+def revoke_webscan_access_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    identifier = req.user_id or req.email
+    return revoke_webscan_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
 
 
 @router.post("/vapt/unblock")

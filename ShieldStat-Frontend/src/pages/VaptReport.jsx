@@ -1682,23 +1682,27 @@ export default function VaptReport() {
                 </div>
               ))}
             </div>
-            {(!isPlatformView || rescanSchedules.some((schedule) => ["scheduled", "approved", "requested"].includes(schedule.status))) && <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            {((record.lifecycle_status === "closed" && record.next_vapt_due_at) || !isPlatformView || rescanSchedules.some((schedule) => ["scheduled", "approved", "requested"].includes(schedule.status))) && <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Next rescan</p>
                   <p className="mt-2 text-lg font-extrabold text-slate-900 dark:text-slate-100">
-                    {rescanSchedules.length > 0 ? new Date(rescanSchedules[0].scheduled_at).toLocaleString() : "No rescan scheduled"}
+                    {record.lifecycle_status === "closed" && record.next_vapt_due_at
+                      ? new Date(record.next_vapt_due_at).toLocaleString()
+                      : rescanSchedules.length > 0 ? new Date(rescanSchedules[0].scheduled_at).toLocaleString() : "No rescan scheduled"}
                   </p>
-                  {rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && !isPlatformView && (
+                  {record.lifecycle_status === "closed" && record.next_vapt_due_at ? (
+                    <p className="mt-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">Next VAPT assessment date selected by the client</p>
+                  ) : rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && !isPlatformView && (
                     <p className="mt-1 text-xs font-semibold text-amber-600 dark:text-amber-400">SOC proposed a new date — review below</p>
                   )}
-                  {rescanSchedules.length > 0 && ["completed", "completed_with_errors", "failed"].includes(rescanSchedules[0].status) && (
+                  {!(record.lifecycle_status === "closed" && record.next_vapt_due_at) && rescanSchedules.length > 0 && ["completed", "completed_with_errors", "failed"].includes(rescanSchedules[0].status) && (
                     <p className={`mt-1 text-xs font-semibold ${rescanSchedules[0].status === "failed" || rescanSchedules[0].status === "completed_with_errors" ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>{rescanSchedules[0].status === "failed" ? "Verification upload failed" : rescanSchedules[0].status === "completed_with_errors" ? "Completed with remaining findings" : "Verification upload completed"}</p>
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {/* User: accept/reject proposed dates */}
-                  {!isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && (
+                  {!(record.lifecycle_status === "closed" && record.next_vapt_due_at) && !isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && (
                     <>
                       <button
                         type="button"
@@ -1719,7 +1723,7 @@ export default function VaptReport() {
                       </button>
                     </>
                   )}
-                  {!isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "scheduled" && (
+                  {!(record.lifecycle_status === "closed" && record.next_vapt_due_at) && !isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "scheduled" && (
                     <button
                       type="button"
                       onClick={() => toggleNewDateForm(rescanSchedules[0].id)}
@@ -1739,7 +1743,7 @@ export default function VaptReport() {
                       Schedule next scan
                     </button>
                   )}
-                  {!isPlatformView && record.lifecycle_status === "revalidation_required" && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
+                  {!isPlatformView && !record.next_vapt_due_at && record.lifecycle_status === "revalidation_required" && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
                     <button
                       type="button"
                       onClick={() => setShowRescanModal(true)}
@@ -1751,7 +1755,9 @@ export default function VaptReport() {
                 </div>
               </div>
               <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">
-                {rescanSchedules.length > 0
+                {record.lifecycle_status === "closed" && record.next_vapt_due_at
+                  ? "The client-selected date is the next VAPT assessment date."
+                  : rescanSchedules.length > 0
                   ? rescanSchedules[0].status === "requested"
                     ? "SOC has proposed a new date for the verification scan. You can accept or reject it."
                     : ["completed", "completed_with_errors", "failed"].includes(rescanSchedules[0].status)

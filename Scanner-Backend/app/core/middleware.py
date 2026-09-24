@@ -121,11 +121,23 @@ def require_vapt_access(
     current_user: User = Depends(protect),
     db: Session = Depends(get_db),
 ):
-    """Users must have explicit VAPT approval (and not be blocked) before touching VAPT routes."""
+    """Users need explicit admin approval (and must not be blocked) before touching VAPT routes."""
     if is_user_vapt_blocked(current_user):
         raise HTTPException(status_code=403, detail="VAPT access has been blocked for this account.")
-    approved_regions = get_org_approved_region_codes(db, current_user.org_id)
-    if not approved_regions:
+    if not bool(getattr(current_user, "vapt_approved", False)):
         raise HTTPException(status_code=403, detail="VAPT access has not been approved for this account.")
+    return current_user
+
+
+def require_webscan_access(current_user: User = Depends(protect)):
+    """Users need explicit admin approval before using WebScan."""
+    if not bool(getattr(current_user, "webscan_approved", False)):
+        raise HTTPException(status_code=403, detail="WebScan access has not been approved for this account.")
+    return current_user
+
+
+def require_webscan_owner(current_user: User = Depends(require_webscan_access)):
+    if current_user.role != "owner":
+        raise HTTPException(status_code=403, detail="Only the organization owner can use WebScan.")
     return current_user
 

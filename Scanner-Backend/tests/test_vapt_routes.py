@@ -745,9 +745,8 @@ def test_region_checklist_changes_requested_then_approved():
         db.close()
 
 
-def test_changes_requested_keeps_submission_and_flags_items():
-    """A partial review must preserve the client's answers and record which
-    items SOC wants fixed, instead of wiping the whole checklist."""
+def test_changes_requested_clears_and_requires_flagged_items():
+    """A partial review clears flagged answers and requires fresh values."""
     db = Session(bind=engine)
     try:
         client = User(
@@ -815,12 +814,25 @@ def test_changes_requested_keeps_submission_and_flags_items():
             )
         )
         assert reviewed["review_status"] == "changes_requested"
-        assert reviewed["completed"] is True  # submission preserved, not wiped
+        assert reviewed["completed"] is True  # the submission cycle remains open
         assert len(reviewed["review_flags"]) == 1
         assert reviewed["review_flags"][0]["question_id"] == "network_diagram_available"
+        assert reviewed["checklist_answers"]["general_information"]["network_diagram_available"]["answer"] == ""
 
-        # Re-submitting resolves the request, so the flags clear.
-        resubmitted = _run(submit_onboarding_checklist(payload={}, db=db, current_user=client))
+        # Re-submitting the fresh flagged answer resolves the request.
+        resubmitted = _run(
+            submit_onboarding_checklist(
+                payload={
+                    "checklist_answers": {
+                        "general_information": {
+                            "network_diagram_available": {"answer": "Emailed", "na": False},
+                        }
+                    }
+                },
+                db=db,
+                current_user=client,
+            )
+        )
         assert resubmitted["onboarding"]["review_status"] == "pending"
         assert resubmitted["onboarding"]["review_flags"] == []
         assert resubmitted["onboarding"]["completed"] is True

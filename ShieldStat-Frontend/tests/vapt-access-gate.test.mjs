@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { getClientVaptAccessState } from '../src/utils/vaptAccessGate.js';
 
-// Step 1 — a brand-new client with no approved region can only request a region.
+// Step 1 — a brand-new client without admin approval cannot enter VAPT.
 assert.equal(
   getClientVaptAccessState({
     vaptAccessEnabled: false,
     onboarding: { completed: false, review_status: 'pending' },
   }),
-  'region_required',
-  'a new client without an approved region must be sent to the region request screen'
+  'approval_required',
+  'a new client without admin approval must remain locked'
 );
 
 assert.equal(
@@ -16,18 +16,18 @@ assert.equal(
     vaptAccessEnabled: false,
     onboarding: { completed: true, review_status: 'pending' },
   }),
-  'region_required',
-  'region approval gates the module even if a checklist was completed first'
+  'approval_required',
+  'admin approval gates the module even if a checklist was completed first'
 );
 
-// Step 2 — once the region is approved the checklist is unlocked.
+// Step 2 — once the admin approves the account the checklist is unlocked.
 assert.equal(
   getClientVaptAccessState({
     vaptAccessEnabled: true,
     onboarding: { completed: false, review_status: 'pending' },
   }),
   'checklist_required',
-  'approved region unlocks the onboarding checklist'
+  'admin approval unlocks the onboarding checklist'
 );
 
 assert.equal(
@@ -73,7 +73,7 @@ assert.equal(
     onboarding: { completed: true, review_status: 'approved' },
   }),
   'allowed',
-  'approved region + checklist should allow the client into the VAPT flow'
+  'admin approval + checklist should allow the client into the VAPT flow'
 );
 
 assert.equal(
@@ -81,8 +81,8 @@ assert.equal(
     vaptAccessEnabled: false,
     onboarding: { completed: true, review_status: 'approved' },
   }),
-  'region_required',
-  'the VAPT module stays locked until a region is approved'
+  'approval_required',
+  'the VAPT module stays locked until an admin approves the account'
 );
 
 console.log('vapt access gate tests passed');

@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   cancelWebScan,
   createWebScan,
+  downloadWebScanReport,
   getWebScan,
   getWebScanDiagnostics,
   listWebScans,
+  uploadStaticWebScan,
 } from "../services/api";
 import { normalizeTargetUrl } from "../utils/webScanUrl";
 
@@ -260,9 +262,32 @@ function StatusChip({ status }) {
 function WebScanTab() {
   const token = localStorage.getItem("token");
 
+  const [scanMode, setScanMode] = useState("dynamic");
   const [urlInput, setUrlInput] = useState("");
+  const [staticSource, setStaticSource] = useState("repo");
+  const [repoBranch, setRepoBranch] = useState("main");
+  const [repoVisibility, setRepoVisibility] = useState("public");
+  const [repoToken, setRepoToken] = useState("");
+  const [archiveFile, setArchiveFile] = useState(null);
+  const [scanProfile, setScanProfile] = useState("Full Scan");
+  const [criticality, setCriticality] = useState("medium");
+  const [authenticationRequired, setAuthenticationRequired] = useState(false);
+  const [authMethod, setAuthMethod] = useState("username_password");
+  const [loginUrl, setLoginUrl] = useState("");
+  const [authUsername, setAuthUsername] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authHeaderName, setAuthHeaderName] = useState("Authorization");
+  const [authToken, setAuthToken] = useState("");
+  const [sessionCookieName, setSessionCookieName] = useState("");
+  const [sessionCookieValue, setSessionCookieValue] = useState("");
+  const [authProfileId, setAuthProfileId] = useState("");
+  const [mfaInstructions, setMfaInstructions] = useState("");
+  const [authDetails, setAuthDetails] = useState("");
+  const [loginSequence, setLoginSequence] = useState("");
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [downloadingReport, setDownloadingReport] = useState(false);
+  const [reportType, setReportType] = useState("developer");
 
   const [scans, setScans] = useState([]);
   const [listLoading, setListLoading] = useState(true);
@@ -342,18 +367,82 @@ function WebScanTab() {
     event.preventDefault();
     setFormError("");
 
-    const { url, error } = normalizeTargetUrl(urlInput);
-    if (error) {
-      setFormError(error);
+    const trimmed = urlInput.trim();
+
+    if (isStaticUpload) {
+      if (!archiveFile) {
+        setFormError("Choose a .zip archive of the codebase to scan.");
+        return;
+      }
+    } else if (!trimmed) {
+      setFormError("Please enter a URL or repository URL.");
       return;
+    }
+
+    let finalUrl = trimmed;
+    if (!isStaticUpload) {
+      if (scanMode === "dynamic") {
+        const normalized = normalizeTargetUrl(trimmed);
+        if (normalized.error) {
+          setFormError(normalized.error);
+          return;
+        }
+        finalUrl = normalized.url;
+      } else {
+        if (!/^https?:\/\//i.test(trimmed)) {
+          setFormError("Static scan requires an http:// or https:// repository URL.");
+          return;
+        }
+        if (repoVisibility === "private" && !repoToken.trim()) {
+          setFormError("Enter an access token to scan a private repository.");
+          return;
+        }
+      }
     }
 
     setSubmitting(true);
     try {
-      const data = await createWebScan(url, token);
+      const data = isStaticUpload
+        ? await uploadStaticWebScan({ file: archiveFile, token })
+        : await createWebScan({
+            url: finalUrl,
+            token,
+            mode: scanMode,
+            branch: scanMode === "static" ? repoBranch : "",
+            repoVisibility,
+            repoToken: scanMode === "static" ? repoToken : "",
+            scanProfile,
+            criticality,
+            authenticationRequired,
+            authMethod,
+            loginUrl,
+            authUsername,
+            authPassword,
+            authHeaderName,
+            authToken,
+            sessionCookieName,
+            sessionCookieValue,
+            authProfileId,
+            mfaInstructions,
+            authDetails,
+            loginSequence,
+          });
       setActiveScan(data);
       setActiveId(data?.scan_id || null);
       setUrlInput("");
+      setArchiveFile(null);
+      setRepoToken("");
+      setAuthDetails("");
+      setLoginSequence("");
+      setLoginUrl("");
+      setAuthUsername("");
+      setAuthPassword("");
+      setAuthHeaderName("Authorization");
+      setAuthToken("");
+      setSessionCookieName("");
+      setSessionCookieValue("");
+      setAuthProfileId("");
+      setMfaInstructions("");
       loadList();
     } catch (err) {
       setFormError(err?.message || "Could not start the scan.");
@@ -390,11 +479,25 @@ function WebScanTab() {
     }
   };
 
+  const handleDownloadReport = async () => {
+    if (!activeScan?.scan_id) return;
+    setFormError("");
+    setDownloadingReport(true);
+    try {
+      await downloadWebScanReport(activeScan.scan_id, token, reportType);
+    } catch (err) {
+      setFormError(err?.message || "Could not download the scan report.");
+    } finally {
+      setDownloadingReport(false);
+    }
+  };
+
   const findings = useMemo(
     () => (Array.isArray(activeScan?.findings) ? activeScan.findings : []),
     [activeScan],
   );
 
+  const isStaticUpload = scanMode === "static" && staticSource === "upload";
   const isActive = Boolean(activeScan && ACTIVE_STATUSES.has(activeScan.status));
   const progress = Math.max(0, Math.min(100, Number(activeScan?.progress) || 0));
   const severityTone = severityStyle(activeScan?.severity);
@@ -431,39 +534,320 @@ function WebScanTab() {
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-3 md:flex-row">
-          <div className="relative flex-1">
-            <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-lg">
-              link
-            </span>
-            <input
-              type="text"
-              value={urlInput}
-              onChange={(event) => setUrlInput(event.target.value)}
-              placeholder="https://app.yourdomain.com"
-              spellCheck="false"
-              autoComplete="off"
-              className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 py-3.5 pl-12 pr-4 text-sm font-medium text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={submitting || !urlInput.trim()}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-purple-700 px-8 py-3.5 text-sm font-bold text-white shadow-md transition-all duration-300 hover:shadow-lg hover:from-purple-700 hover:to-purple-800 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {submitting ? (
-              <>
-                <span className="material-symbols-outlined animate-spin text-base">progress_activity</span>
-                Starting…
-              </>
-            ) : (
-              <>
-                <span className="material-symbols-outlined text-base">rocket_launch</span>
-                Start Web Scan
-              </>
-            )}
-          </button>
+        <div className="mb-4 flex flex-wrap gap-2">
+          {[
+            { id: "dynamic", label: "Dynamic", description: "Acunetix website scan" },
+            { id: "static", label: "Static", description: "Semgrep repo scan" },
+          ].map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => setScanMode(option.id)}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition-all ${
+                scanMode === option.id
+                  ? "bg-purple-600 text-white shadow-md"
+                  : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          {scanMode === "static" && (
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: "repo", label: "Git repository", icon: "link" },
+                { id: "upload", label: "Upload ZIP", icon: "upload_file" },
+              ].map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setStaticSource(option.id)}
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition-all ${
+                    staticSource === option.id
+                      ? "bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300"
+                      : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-base">{option.icon}</span>
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {isStaticUpload ? (
+            <div className="flex flex-col gap-3 md:flex-row md:items-end">
+              <div className="flex-1">
+                <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                  Codebase archive (.zip)
+                </label>
+                <input
+                  type="file"
+                  accept=".zip,application/zip"
+                  onChange={(event) => setArchiveFile(event.target.files?.[0] || null)}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2.5 text-sm font-medium text-slate-800 dark:text-slate-100 file:mr-3 file:rounded-lg file:border-0 file:bg-purple-100 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-purple-700 dark:file:bg-purple-950/50 dark:file:text-purple-300"
+                />
+                {archiveFile && (
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    {archiveFile.name} · {(archiveFile.size / (1024 * 1024)).toFixed(2)} MB
+                  </p>
+                )}
+              </div>
+              <button
+                type="submit"
+                disabled={submitting || !archiveFile}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-purple-700 px-8 py-3.5 text-sm font-bold text-white shadow-md transition-all duration-300 hover:shadow-lg hover:from-purple-700 hover:to-purple-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {submitting ? (
+                  <>
+                    <span className="material-symbols-outlined animate-spin text-base">progress_activity</span>
+                    Starting…
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-base">rocket_launch</span>
+                    Start Static Scan
+                  </>
+                )}
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 md:flex-row">
+              <div className="relative flex-1">
+                <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-lg">
+                  {scanMode === "static" ? "code" : "link"}
+                </span>
+                <input
+                  type="text"
+                  value={urlInput}
+                  onChange={(event) => setUrlInput(event.target.value)}
+                  placeholder={
+                    scanMode === "static"
+                      ? "https://github.com/semgrep/semgrep.git"
+                      : "https://app.yourdomain.com"
+                  }
+                  spellCheck="false"
+                  autoComplete="off"
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 py-3.5 pl-12 pr-4 text-sm font-medium text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                />
+              </div>
+              {scanMode === "static" && (
+                <div className="w-full md:w-44">
+                  <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Branch
+                  </label>
+                  <input
+                    type="text"
+                    value={repoBranch}
+                    onChange={(event) => setRepoBranch(event.target.value.trimStart())}
+                    placeholder="main"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-3 text-sm font-medium text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                  />
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={submitting || !urlInput.trim()}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-purple-700 px-8 py-3.5 text-sm font-bold text-white shadow-md transition-all duration-300 hover:shadow-lg hover:from-purple-700 hover:to-purple-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {submitting ? (
+                  <>
+                    <span className="material-symbols-outlined animate-spin text-base">progress_activity</span>
+                    Starting…
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-base">rocket_launch</span>
+                    {scanMode === "static" ? "Start Static Scan" : "Start Dynamic Scan"}
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+
+          {scanMode === "static" && staticSource === "repo" && (
+            <div className="grid gap-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/40 p-4 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                  Repository visibility
+                </label>
+                <select
+                  value={repoVisibility}
+                  onChange={(event) => setRepoVisibility(event.target.value)}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                >
+                  <option value="public">Public</option>
+                  <option value="private">Private</option>
+                </select>
+              </div>
+              {repoVisibility === "private" && (
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Access token
+                  </label>
+                  <input
+                    type="password"
+                    value={repoToken}
+                    onChange={(event) => setRepoToken(event.target.value)}
+                    placeholder="Personal access token with read access"
+                    autoComplete="new-password"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {scanMode === "dynamic" && (
+            <div className="grid gap-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/40 p-4 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                  Scan Profile
+                </label>
+                <input
+                  type="text"
+                  value={scanProfile}
+                  onChange={(event) => setScanProfile(event.target.value)}
+                  placeholder="Full Scan"
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                  Criticality
+                </label>
+                <select
+                  value={criticality}
+                  onChange={(event) => setCriticality(event.target.value)}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                >
+                  <option value="critical">Critical</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                </select>
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={authenticationRequired}
+                    onChange={(event) => setAuthenticationRequired(event.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-purple-600 focus:ring-purple-500"
+                  />
+                  Authentication required?
+                </label>
+              </div>
+
+              {authenticationRequired && (
+                <>
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Authentication method
+                    </label>
+                    <select
+                      value={authMethod}
+                      onChange={(event) => setAuthMethod(event.target.value)}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                    >
+                      <option value="username_password">Username and password</option>
+                      <option value="api_token">Bearer/API token</option>
+                      <option value="basic">Basic authentication</option>
+                      <option value="sso">SSO</option>
+                      <option value="mfa">MFA</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+
+                  {(authMethod === "username_password" || authMethod === "basic") && (
+                    <>
+                      {authMethod === "username_password" && (
+                        <div>
+                          <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Login URL</label>
+                          <input type="url" value={loginUrl} onChange={(event) => setLoginUrl(event.target.value)} placeholder="https://app.example.com/login" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                        </div>
+                      )}
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Username</label>
+                        <input type="text" value={authUsername} onChange={(event) => setAuthUsername(event.target.value)} placeholder="security-test@example.com" autoComplete="off" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Password</label>
+                        <input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Test account password" autoComplete="new-password" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      </div>
+                      {authMethod === "username_password" && (
+                        <div className="md:col-span-2">
+                          <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Login sequence</label>
+                          <textarea value={loginSequence} onChange={(event) => setLoginSequence(event.target.value)} rows={3} placeholder="Example: Open /login, enter username and password, click Sign in" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {authMethod === "api_token" && (
+                    <>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Header name</label>
+                        <input type="text" value={authHeaderName} onChange={(event) => setAuthHeaderName(event.target.value)} placeholder="Authorization" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Token value</label>
+                        <input type="password" value={authToken} onChange={(event) => setAuthToken(event.target.value)} placeholder="Bearer token" autoComplete="new-password" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      </div>
+                    </>
+                  )}
+
+                  {(authMethod === "sso" || authMethod === "mfa") && (
+                    <>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Session cookie name</label>
+                        <input type="text" value={sessionCookieName} onChange={(event) => setSessionCookieName(event.target.value)} placeholder="PHPSESSID" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Session cookie value</label>
+                        <input type="password" value={sessionCookieValue} onChange={(event) => setSessionCookieValue(event.target.value)} placeholder="Pre-authenticated session value" autoComplete="new-password" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      </div>
+                    </>
+                  )}
+
+                  {(authMethod === "sso" || authMethod === "mfa" || authMethod === "other") && (
+                    <div className="md:col-span-2">
+                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Authentication details</label>
+                      <textarea value={authDetails} onChange={(event) => setAuthDetails(event.target.value)} rows={3} placeholder="Non-secret notes about the identity provider or authentication flow" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                    </div>
+                  )}
+
+                  {authMethod === "mfa" && (
+                    <div className="md:col-span-2">
+                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">MFA instructions</label>
+                      <textarea value={mfaInstructions} onChange={(event) => setMfaInstructions(event.target.value)} rows={2} placeholder="Notes for the operator configuring the session in Acunetix" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                    </div>
+                  )}
+
+                  {authMethod === "other" && (
+                    <div className="md:col-span-2">
+                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Acunetix Authentication Profile ID</label>
+                      <input type="text" value={authProfileId} onChange={(event) => setAuthProfileId(event.target.value)} placeholder="Profile ID configured in Acunetix" autoComplete="off" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </form>
+
+        <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+          {scanMode === "static"
+            ? isStaticUpload
+              ? "Static mode extracts the uploaded ZIP archive and runs a Semgrep code scan on it."
+              : `Static mode clones the ${repoVisibility} repository and runs a Semgrep scan on the ${repoBranch || "main"} branch.`
+            : "Dynamic mode scans a live app URL through Acunetix."}
+        </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
@@ -568,7 +952,35 @@ function WebScanTab() {
                 </p>
               </div>
 
-              <div className="flex items-end gap-8">
+              <div className="flex flex-wrap items-end justify-end gap-3">
+                {activeScan.scan_type === "dynamic" && (
+                  <label className="text-left">
+                    <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                      Report format
+                    </span>
+                    <select
+                      value={reportType}
+                      onChange={(event) => setReportType(event.target.value)}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    >
+                      <option value="developer">Developer Report</option>
+                      <option value="executive">Executive Summary Report</option>
+                      <option value="quick">Quick Report</option>
+                      <option value="affected">Affected Items Report</option>
+                    </select>
+                  </label>
+                )}
+                <button
+                  type="button"
+                  onClick={handleDownloadReport}
+                  disabled={downloadingReport}
+                  className="inline-flex items-center gap-2 rounded-xl border border-purple-200 px-4 py-2.5 text-xs font-bold text-purple-700 transition-colors hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-purple-900/60 dark:text-purple-300 dark:hover:bg-purple-950/30"
+                >
+                  <span className="material-symbols-outlined text-base">
+                    {downloadingReport ? "progress_activity" : "download"}
+                  </span>
+                  {downloadingReport ? "Preparing…" : activeScan.scan_type === "dynamic" ? "Download Report" : "Download PDF"}
+                </button>
                 <div className="text-right">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
                     Risk score

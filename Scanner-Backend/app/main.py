@@ -57,8 +57,9 @@ async def lifespan(_app: FastAPI):
         # Clean up expired unclaimed promo codes on startup
         delete_expired_unclaimed_promo_codes(db)
 
-        from scripts.create_admin import create_admin_user
+        from scripts.create_admin import create_admin_user, create_soc_analyst_user
         create_admin_user()
+        create_soc_analyst_user()
     except RuntimeError as e:
         raise HTTPException(
             status_code=500,

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Loader2, CheckCircle2, XCircle, Clock, ShieldCheck, BriefcaseBusiness, AlertCircle, Download } from "lucide-react";
-import { getAdminVaptAccessRequests, approveVaptAccessRequest, getAdminVaptOnboardingReviews, reviewAdminVaptOnboarding, decideRegionChecklist, proposeInitialVaptDate, getWebSocketUrl, downloadVaptChecklistAttachment } from "../services/api";
+import { getAdminVaptAccessRequests, approveVaptAccessRequest, getAdminVaptOnboardingReviews, getApprovedVaptOnboarding, reviewAdminVaptOnboarding, decideRegionChecklist, proposeInitialVaptDate, getWebSocketUrl, downloadVaptChecklistAttachment, downloadApprovedVaptOnboardingBundle } from "../services/api";
 import ConfirmModal from "../components/ConfirmModal";
 import { buildReviewQueue, getReviewQueueCounts, matchesReviewTab } from "../utils/vaptReviewQueue";
 
@@ -71,6 +71,7 @@ export default function AdminVaptAccessRequests() {
   const navigate = useNavigate();
   const [requests, setRequests] = useState([]);
   const [checklists, setChecklists] = useState([]);
+  const [approvedChecklists, setApprovedChecklists] = useState([]);
   const [expandedChecklist, setExpandedChecklist] = useState({});
   // Region requests can carry their own checklist; keyed by `${org_id}::${region}`.
   const [expandedRegionChecklist, setExpandedRegionChecklist] = useState({});
@@ -81,6 +82,7 @@ export default function AdminVaptAccessRequests() {
   const [error, setError] = useState("");
   const [actionLoading, setActionLoading] = useState({});
   const [reviewActionLoading, setReviewActionLoading] = useState({});
+  const [bundleDownloadLoading, setBundleDownloadLoading] = useState({});
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState({ open: false, type: "approve", orgId: null, region: null });
   const [reviewNotes, setReviewNotes] = useState({});
@@ -126,13 +128,15 @@ export default function AdminVaptAccessRequests() {
         navigate("/auth", { replace: true });
         return;
       }
-      const [data, checklistData] = await Promise.all([
+      const [data, checklistData, approvedChecklistData] = await Promise.all([
         getAdminVaptAccessRequests(token),
         getAdminVaptOnboardingReviews(token),
+        getApprovedVaptOnboarding(token),
       ]);
       setRequests(Array.isArray(data) ? data : []);
       const checklistList = Array.isArray(checklistData) ? checklistData : [];
       setChecklists(checklistList);
+      setApprovedChecklists(Array.isArray(approvedChecklistData) ? approvedChecklistData : []);
       // Seed any flags already recorded by SOC so re-opening a checklist shows
       // the outstanding items, without clobbering in-progress edits.
       setReviewFlags((prev) => {
@@ -240,6 +244,18 @@ export default function AdminVaptAccessRequests() {
       await downloadVaptChecklistAttachment(attachment, localStorage.getItem("token"));
     } catch (err) {
       setToast({ text: err?.message || "Failed to download the attachment", type: "error" });
+    }
+  }, []);
+
+  const handleBundleDownload = useCallback(async (orgId, regionCode = "") => {
+    const downloadKey = `${orgId}:${regionCode || "organization"}`;
+    setBundleDownloadLoading((prev) => ({ ...prev, [downloadKey]: true }));
+    try {
+      await downloadApprovedVaptOnboardingBundle(orgId, localStorage.getItem("token"), regionCode);
+    } catch (err) {
+      setToast({ text: err?.message || "Failed to download the approved checklist package", type: "error" });
+    } finally {
+      setBundleDownloadLoading((prev) => ({ ...prev, [downloadKey]: false }));
     }
   }, []);
 
@@ -504,18 +520,19 @@ export default function AdminVaptAccessRequests() {
                 // the same request can never appear in two tabs.
                 const showChecklistPanel = Boolean(orgChecklist) && (activeTab === "all" || activeTab === "checklist");
                 const showRegionPanel = entry.hasPendingRegions && activeTab !== "checklist";
-                const visibleRegions =
-                  activeTab === "region"
-                    ? entry.plainRegions
-                    : activeTab === "combined"
-                      ? entry.regionsWithChecklist
-                      : entry.requested_regions;
+                const visibleRegions = Array.from(new Set([
+                  ...(entry.displayRegions || []),
+                  ...(entry.requested_regions || []),
+                  ...(entry.approvedRegions || []),
+                ]));
                 const reviewLabel =
-                  activeTab === "combined" || (activeTab === "all" && entry.regionsWithChecklist.length > 0)
-                    ? "Region + checklist review"
-                    : activeTab === "checklist" || (activeTab === "all" && entry.hasPendingChecklist)
-                      ? "Checklist pending"
-                      : "Region request pending";
+                  entry.hasApprovedRegions && !entry.hasPendingRegions && !entry.hasPendingChecklist
+                    ? "Approved access"
+                    : activeTab === "combined" || (activeTab === "all" && entry.regionsWithChecklist.length > 0)
+                      ? "Region + checklist review"
+                      : activeTab === "checklist" || (activeTab === "all" && entry.hasPendingChecklist)
+                        ? "Checklist pending"
+                        : "Region request pending";
                 return (
                   <div key={entry.org_id} className="rounded-xl border border-violet-200 bg-white p-4 dark:border-violet-900 dark:bg-slate-900">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -532,8 +549,23 @@ export default function AdminVaptAccessRequests() {
                         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                           {entry.summary.join(" • ") || "No details yet"}
                         </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {(visibleRegions.length ? visibleRegions : ["No regions requested"]).map((region) => (
+                            <span
+                              key={`${entry.org_id}-${region}`}
+                              className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-violet-700 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300"
+                            >
+                              {region}
+                            </span>
+                          ))}
+                        </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
+                        {!entry.hasPendingRegions && !entry.hasPendingChecklist && entry.hasApprovedRegions && (
+                          <span className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+                            Active VAPT access
+                          </span>
+                        )}
                         {orgChecklist && (
                           <button type="button" onClick={() => toggleChecklist(entry.org_id)} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300">
                             {expanded ? "Hide checklist" : "View checklist & review"}
@@ -781,6 +813,44 @@ export default function AdminVaptAccessRequests() {
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Try another tab, or wait for the next request to arrive.</p>
           </div>
         ) : null}
+
+        {approvedChecklists.length > 0 && (
+          <section className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-5 dark:border-emerald-900 dark:bg-emerald-950/20">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-emerald-950 dark:text-emerald-100">Approved client packages</h2>
+                <p className="mt-1 text-xs text-emerald-800 dark:text-emerald-300">Download the client-submitted checklist, network diagram, and asset list together.</p>
+              </div>
+              <span className="rounded-full border border-emerald-300 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-emerald-700 dark:border-emerald-800 dark:bg-slate-950 dark:text-emerald-300">
+                {approvedChecklists.length} approved
+              </span>
+            </div>
+            <div className="space-y-2">
+              {approvedChecklists.map((checklist) => {
+                const downloadKey = `${checklist.org_id}:${checklist.region_code || "organization"}`;
+                return (
+                <div key={downloadKey} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-white p-4 dark:border-emerald-900 dark:bg-slate-900">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{checklist.region_name || "Organization onboarding"}</p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      Approved {checklist.approved_at || checklist.reviewed_at ? new Date(checklist.approved_at || checklist.reviewed_at).toLocaleString() : "recently"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleBundleDownload(checklist.org_id, checklist.region_code || "")}
+                    disabled={bundleDownloadLoading[downloadKey]}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-70"
+                  >
+                    {bundleDownloadLoading[downloadKey] ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                    {bundleDownloadLoading[downloadKey] ? "Preparing…" : "Download package"}
+                  </button>
+                </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -45,6 +46,7 @@ func RunWebScan(ctx context.Context, job *models.WebScanJob) (any, error) {
 	pollInterval := time.Duration(envInt("ACUNETIX_POLL_INTERVAL_SEC", defaultAcunetixPollIntervalSec)) * time.Second
 	maxWait := time.Duration(envInt("ACUNETIX_MAX_WAIT_SEC", defaultAcunetixMaxWaitSec)) * time.Second
 	deadline := time.Now().Add(maxWait)
+	scanStartedAt := time.Now()
 
 	_ = notifyWebScan(job, "running", webScanProgressBase, "queued", "Waiting for Acunetix to start the scan")
 
@@ -65,7 +67,7 @@ func RunWebScan(ctx context.Context, job *models.WebScanJob) (any, error) {
 			return nil, fmt.Errorf("%s", reason)
 		}
 
-		status, progress, stage, message, err := fetchAcunetixScanStatus(client, job.AcunetixScanID)
+		status, progress, stage, message, err := fetchAcunetixScanStatus(client, job.AcunetixScanID, time.Since(scanStartedAt))
 		if err != nil {
 			// A transient API hiccup must not kill a scan that runs for hours.
 			log.Printf("Polling Acunetix scan %s failed (will retry): %v", job.AcunetixScanID, err)
@@ -119,7 +121,7 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 //
 // Acunetix reports progress under the current_session object; a few builds
 // expose the status at the top level instead, so both are checked.
-func fetchAcunetixScanStatus(client *acunetixClient, scanID string) (status string, progress int, stage string, message string, err error) {
+func fetchAcunetixScanStatus(client *acunetixClient, scanID string, elapsed time.Duration) (status string, progress int, stage string, message string, err error) {
 	payload, err := client.getScan(scanID)
 	if err != nil {
 		return "", 0, "", "", err
@@ -130,9 +132,19 @@ func fetchAcunetixScanStatus(client *acunetixClient, scanID string) (status stri
 	rawStatus := firstNonEmpty(stringField(session, "status"), stringField(payload, "status"))
 	status = normalizeAcunetixStatus(rawStatus)
 
-	progress = intField(session, "progress")
+	// Try every field name/location Acunetix is known to use across versions,
+	// and every numeric shape (int, float64, numeric string) intField might
+	// otherwise miss.
+	progress = firstNonZeroProgress(
+		anyField(session, "progress"),
+		anyField(payload, "progress"),
+		anyField(session, "progress_percent"),
+		anyField(payload, "progress_percent"),
+		anyField(session, "percentage"),
+		anyField(payload, "percentage"),
+	)
 	if progress == 0 {
-		progress = intField(payload, "progress")
+		progress = estimatedAcunetixProgress(payload, elapsed)
 	}
 
 	stage = firstNonEmpty(stringField(session, "current_stage"), stringField(payload, "current_stage"), rawStatus)
@@ -142,6 +154,85 @@ func fetchAcunetixScanStatus(client *acunetixClient, scanID string) (status stri
 
 	message = fmt.Sprintf("Acunetix status: %s", firstNonEmpty(stringField(session, "current_stage"), rawStatus, "running"))
 	return status, progress, stage, message, nil
+}
+
+// estimatedAcunetixProgress keeps the UI moving when an Acunetix profile
+// reports live activity but never populates its progress field. It deliberately
+// stays below the completion ceiling; only an Acunetix completed state may end
+// the scan at 100%.
+func estimatedAcunetixProgress(payload map[string]any, elapsed time.Duration) int {
+	activity := 0
+	session, _ := payload["current_session"].(map[string]any)
+	for _, source := range []map[string]any{session, payload} {
+		if source == nil {
+			continue
+		}
+		for _, key := range []string{"threat", "threats", "results_count", "vulnerabilities_count"} {
+			if value := firstNonZeroProgress(source[key]); value > activity {
+				activity = value
+			}
+		}
+		if counts, ok := source["severity_counts"].(map[string]any); ok {
+			count := 0
+			for _, value := range counts {
+				count += firstNonZeroProgress(value)
+			}
+			if count > activity {
+				activity = count
+			}
+		}
+	}
+
+	minutes := int(elapsed / time.Minute)
+	estimate := webScanProgressBase + minutes
+	if activity > 0 {
+		estimate += minInt(activity, 20)
+	}
+	return clampWebScanProgress(estimate)
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+// anyField returns the raw value at key in m, or nil if m is nil or the key
+// is absent — used so firstNonZeroProgress can inspect the real type instead
+// of assuming int.
+func anyField(m map[string]any, key string) any {
+	if m == nil {
+		return nil
+	}
+	return m[key]
+}
+
+// firstNonZeroProgress returns the first candidate that converts to a
+// non-zero int, checking int, float64 and numeric-string representations
+// (covers every shape Acunetix has been seen to return progress in).
+func firstNonZeroProgress(candidates ...any) int {
+	for _, c := range candidates {
+		switch v := c.(type) {
+		case int:
+			if v != 0 {
+				return v
+			}
+		case int64:
+			if v != 0 {
+				return int(v)
+			}
+		case float64:
+			if v != 0 {
+				return int(v)
+			}
+		case string:
+			if n, ok := toInt(v); ok && n != 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // normalizeAcunetixStatus collapses Acunetix' many states onto the four the
@@ -193,6 +284,10 @@ func getWebScanCancelSignal(scanID string) bool {
 // collectWebScanFindings gathers every vulnerability of a finished scan,
 // enriching each with its vulnerability_type metadata (fetched once per vt_id).
 func collectWebScanFindings(client *acunetixClient, job *models.WebScanJob) (*models.WebScanResult, error) {
+	scanPayload, err := client.getScan(job.AcunetixScanID)
+	if err != nil {
+		return nil, fmt.Errorf("fetching scan metadata for %s: %w", job.AcunetixScanID, err)
+	}
 	results, err := client.listScanResults(job.AcunetixScanID)
 	if err != nil {
 		return nil, fmt.Errorf("fetching scan results for %s: %w", job.AcunetixScanID, err)
@@ -241,13 +336,61 @@ func collectWebScanFindings(client *acunetixClient, job *models.WebScanJob) (*mo
 			"acunetix_scan_id": job.AcunetixScanID,
 			"result_count":     len(results),
 			"finding_count":    len(findings),
+			"scan_metadata":    extractScanMetadata(scanPayload),
+			"reconnaissance":   extractReconnaissance(scanPayload, results),
+			"best_practices":   extractCollection(scanPayload, "best_practices", "best_practice_recommendations"),
+			"compliance":       extractCollection(scanPayload, "compliance", "compliance_summary", "compliance_findings"),
 		},
 	}, nil
+}
+
+func extractScanMetadata(payload map[string]any) map[string]any {
+	metadata := map[string]any{}
+	for _, key := range []string{"target_id", "target_url", "start_date", "start_time", "end_date", "end_time", "duration", "description", "total_requests", "requests_count", "average_speed", "tags", "risk_level", "criticality"} {
+		if value, ok := payload[key]; ok && value != nil {
+			metadata[key] = value
+		}
+	}
+	if session, ok := payload["current_session"].(map[string]any); ok {
+		for _, key := range []string{"start_date", "start_time", "end_date", "end_time", "duration", "total_requests", "requests_count", "average_speed", "risk_level"} {
+			if value, ok := session[key]; ok && value != nil {
+				metadata[key] = value
+			}
+		}
+	}
+	return metadata
+}
+
+func extractReconnaissance(payload map[string]any, results []map[string]any) map[string]any {
+	reconnaissance := map[string]any{}
+	for _, key := range []string{"long_response_times", "files_with_long_response_times", "external_links", "emails", "email_addresses", "client_side_scripts", "scripts", "external_hosts"} {
+		if value, ok := payload[key]; ok && value != nil {
+			reconnaissance[key] = value
+		}
+	}
+	for _, result := range results {
+		for _, key := range []string{"external_links", "emails", "email_addresses", "client_side_scripts", "scripts", "external_hosts"} {
+			if value, ok := result[key]; ok && value != nil && reconnaissance[key] == nil {
+				reconnaissance[key] = value
+			}
+		}
+	}
+	return reconnaissance
+}
+
+func extractCollection(payload map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := payload[key]; ok && value != nil {
+			return value
+		}
+	}
+	return []any{}
 }
 
 // buildWebScanFinding flattens an Acunetix vulnerability + its type metadata
 // into the payload the backend expects.
 func buildWebScanFinding(client *acunetixClient, job *models.WebScanJob, resultID string, vuln, vulnType map[string]any) map[string]any {
+	vulnType = unwrapVulnerabilityType(vulnType)
 	vtID := stringField(vuln, "vt_id")
 
 	affectsURL := stringField(vuln, "affects_url")
@@ -256,8 +399,8 @@ func buildWebScanFinding(client *acunetixClient, job *models.WebScanJob, resultI
 
 	// The list endpoint omits the affected URL on some builds, so fall back to
 	// the per-vulnerability detail endpoint.
-	if affectsURL == "" {
-		if vulnID := stringField(vuln, "vuln_id"); vulnID != "" {
+	if vulnID := stringField(vuln, "vuln_id"); vulnID != "" {
+		if affectsURL == "" || (vuln["request"] == nil && vuln["http_request"] == nil && vuln["response"] == nil && vuln["http_response"] == nil) {
 			if detail, err := client.getVulnerability(job.AcunetixScanID, resultID, vulnID); err == nil {
 				affectsURL = stringField(detail, "affects_url")
 				if affectsDetail == "" {
@@ -265,6 +408,11 @@ func buildWebScanFinding(client *acunetixClient, job *models.WebScanJob, resultI
 				}
 				if evidence == "" {
 					evidence = stringField(detail, "evidence")
+				}
+				for _, key := range []string{"request", "response", "http_request", "http_response", "request_headers", "response_headers", "request_body", "response_body"} {
+					if value, ok := detail[key]; ok && value != nil {
+						vuln[key] = value
+					}
 				}
 			}
 		}
@@ -274,25 +422,75 @@ func buildWebScanFinding(client *acunetixClient, job *models.WebScanJob, resultI
 	}
 
 	cvssScore, cvssVector := extractCVSS(vulnType)
+	vulnerabilityID := stringField(vuln, "vuln_id")
+	references := stringSlice(vulnType["references"])
+	if len(references) == 0 {
+		references = stringSlice(vuln["references"])
+	}
+	cves := stringSlice(vulnType["cves"])
+	if len(cves) == 0 {
+		cves = stringSlice(vuln["cves"])
+	}
 
 	return map[string]any{
-		"vt_id":          vtID,
-		"name":           firstNonEmpty(stringField(vulnType, "name"), stringField(vuln, "name"), vtID),
-		"severity":       severityValue(vuln, vulnType),
-		"confidence":     intField(vuln, "confidence"),
-		"affects_url":    affectsURL,
-		"affects_detail": affectsDetail,
-		"description":    firstNonEmpty(stringField(vulnType, "description"), stringField(vuln, "description")),
-		"recommendation": firstNonEmpty(stringField(vulnType, "recommendation"), stringField(vulnType, "solution"), stringField(vuln, "solution")),
-		"cvss_score":     cvssScore,
-		"cvss_vector":    cvssVector,
-		"cwe":            extractCWE(vulnType),
-		"references":     stringSlice(vulnType["references"]),
-		"evidence":       firstNonEmpty(evidence, stringField(vulnType, "evidence")),
-		"status":         stringField(vuln, "status"),
-		"last_seen":      stringField(vuln, "last_seen"),
-		"target_id":      stringField(vuln, "target_id"),
+		"vt_id":            vtID,
+		"vuln_id":          vulnerabilityID,
+		"result_id":        resultID,
+		"name":             firstNonEmpty(stringField(vulnType, "name"), stringField(vuln, "name"), vtID),
+		"severity":         severityValue(vuln, vulnType),
+		"confidence":       intField(vuln, "confidence"),
+		"affects_url":      affectsURL,
+		"affects_detail":   affectsDetail,
+		"description":      firstNonEmpty(stringField(vulnType, "description"), stringField(vulnType, "long_description"), stringField(vulnType, "summary"), stringField(vuln, "description")),
+		"recommendation":   firstNonEmpty(stringField(vulnType, "recommendation"), stringField(vulnType, "remediation"), stringField(vulnType, "remediation_guidance"), stringField(vulnType, "solution"), stringField(vuln, "recommendation"), stringField(vuln, "solution")),
+		"cvss_score":       cvssScore,
+		"cvss_vector":      cvssVector,
+		"cwe":              extractCWE(vulnType),
+		"references":       references,
+		"cves":             cves,
+		"evidence":         firstNonEmpty(evidence, stringField(vuln, "proof"), stringField(vuln, "output"), stringField(vulnType, "evidence")),
+		"http_request":     mapValueText(vuln, "http_request", "request"),
+		"http_response":    mapValueText(vuln, "http_response", "response"),
+		"request_headers":  mapValueText(vuln, "request_headers"),
+		"response_headers": mapValueText(vuln, "response_headers"),
+		"request_body":     mapValueText(vuln, "request_body"),
+		"response_body":    mapValueText(vuln, "response_body"),
+		"status":           stringField(vuln, "status"),
+		"last_seen":        stringField(vuln, "last_seen"),
+		"target_id":        stringField(vuln, "target_id"),
+		"port":             vuln["port"],
+		"protocol":         stringField(vuln, "protocol"),
+		"service":          stringField(vuln, "service"),
 	}
+}
+
+func unwrapVulnerabilityType(payload map[string]any) map[string]any {
+	if payload == nil {
+		return map[string]any{}
+	}
+	for _, key := range []string{"vulnerability_type", "vulnerabilityType", "data"} {
+		if nested, ok := payload[key].(map[string]any); ok {
+			return nested
+		}
+	}
+	return payload
+}
+
+func mapValueText(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok || value == nil {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			return text
+		}
+		encoded, err := json.MarshalIndent(value, "", "  ")
+		if err == nil {
+			return string(encoded)
+		}
+	}
+	return ""
 }
 
 // severityValue prefers the per-vulnerability severity and falls back to the
@@ -346,7 +544,18 @@ func extractCVSS(vulnType map[string]any) (any, string) {
 	if value, ok := vulnType["cvss_score"]; ok && value != nil {
 		score = value
 	}
+	if score == nil {
+		for _, key := range []string{"cvss", "cvss3_score", "cvss2_score"} {
+			if value, ok := vulnType[key]; ok && value != nil {
+				score = value
+				break
+			}
+		}
+	}
 	vector := stringField(vulnType, "cvss_vector")
+	if vector == "" {
+		vector = firstNonEmpty(stringField(vulnType, "cvss3_vector"), stringField(vulnType, "cvss2_vector"))
+	}
 
 	for _, key := range []string{"cvss3", "cvss2"} {
 		nested, ok := vulnType[key].(map[string]any)
@@ -371,6 +580,9 @@ func extractCWE(vulnType map[string]any) any {
 		return nil
 	}
 	if value, ok := vulnType["cwe"]; ok && value != nil {
+		return value
+	}
+	if value, ok := vulnType["cwe_id"]; ok && value != nil {
 		return value
 	}
 	if ids := stringSlice(vulnType["cwe_ids"]); len(ids) > 0 {
@@ -407,13 +619,14 @@ func sendWebScanFailure(job *models.WebScanJob, reason string) error {
 	}
 
 	_, err := send_webscan_result_webhook(models.WebScanResult{
-		ScanID:    job.ScanID,
-		OrgID:     job.OrgID,
-		TargetURL: job.TargetURL,
-		Status:    "failed",
-		Error:     reason,
-		Metadata:  map[string]any{"acunetix_scan_id": job.AcunetixScanID},
-		Timestamp: time.Now(),
+		ScanID:          job.ScanID,
+		OrgID:           job.OrgID,
+		TargetURL:       job.TargetURL,
+		Status:          "failed",
+		Error:           reason,
+		Vulnerabilities: []map[string]any{}, // fixes 422: backend requires a list, not null
+		Metadata:        map[string]any{"acunetix_scan_id": job.AcunetixScanID},
+		Timestamp:       time.Now(),
 	})
 	if err != nil {
 		log.Printf("Failed to report web scan failure for %s: %v", job.ScanID, err)
@@ -427,12 +640,13 @@ func sendWebScanCancelled(job *models.WebScanJob) error {
 	}
 
 	_, err := send_webscan_result_webhook(models.WebScanResult{
-		ScanID:    job.ScanID,
-		OrgID:     job.OrgID,
-		TargetURL: job.TargetURL,
-		Status:    "cancelled",
-		Metadata:  map[string]any{"acunetix_scan_id": job.AcunetixScanID},
-		Timestamp: time.Now(),
+		ScanID:          job.ScanID,
+		OrgID:           job.OrgID,
+		TargetURL:       job.TargetURL,
+		Status:          "cancelled",
+		Vulnerabilities: []map[string]any{}, // fixes 422: backend requires a list, not null
+		Metadata:        map[string]any{"acunetix_scan_id": job.AcunetixScanID},
+		Timestamp:       time.Now(),
 	})
 	if err != nil {
 		log.Printf("Failed to report web scan cancellation for %s: %v", job.ScanID, err)

@@ -212,6 +212,8 @@ def get_profile(
         "requested_regions": pending_region_codes,
         "approved_regions": approved_region_codes,
         "vapt_blocked": vapt_blocked,
+        "vapt_approved": bool(getattr(current_user, "vapt_approved", False)),
+        "webscan_approved": bool(getattr(current_user, "webscan_approved", False)),
         "region": getattr(org, "region", None) if org else None,
     }
 

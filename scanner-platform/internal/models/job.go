@@ -70,12 +70,27 @@ type ScanResult struct {
 // WebScanJob is pushed by the backend after it has created the Acunetix target
 // and started the scan. The worker's only job is to watch it until it finishes.
 type WebScanJob struct {
-	ScanID           string `json:"scan_id"`
-	OrgID            string `json:"org_id,omitempty"`
-	TargetURL        string `json:"target_url"`
-	AcunetixTargetID string `json:"acunetix_target_id,omitempty"`
-	AcunetixScanID   string `json:"acunetix_scan_id,omitempty"`
-	ProfileID        string `json:"profile_id,omitempty"`
+	ScanID                 string `json:"scan_id"`
+	OrgID                  string `json:"org_id,omitempty"`
+	TargetURL              string `json:"target_url"`
+	AcunetixTargetID       string `json:"acunetix_target_id,omitempty"`
+	AcunetixScanID         string `json:"acunetix_scan_id,omitempty"`
+	ProfileID              string `json:"profile_id,omitempty"`
+	ScanProfile            string `json:"scan_profile,omitempty"`
+	Criticality            string `json:"criticality,omitempty"`
+	AuthenticationRequired bool   `json:"authentication_required,omitempty"`
+	AuthMethod             string `json:"auth_method,omitempty"`
+	LoginURL               string `json:"login_url,omitempty"`
+	AuthUsername           string `json:"auth_username,omitempty"`
+	AuthPassword           string `json:"auth_password,omitempty"`
+	AuthHeaderName         string `json:"auth_header_name,omitempty"`
+	AuthToken              string `json:"auth_token,omitempty"`
+	SessionCookieName      string `json:"session_cookie_name,omitempty"`
+	SessionCookieValue     string `json:"session_cookie_value,omitempty"`
+	AuthProfileID          string `json:"auth_profile_id,omitempty"`
+	MFAInstructions        string `json:"mfa_instructions,omitempty"`
+	AuthDetails            string `json:"auth_details,omitempty"`
+	LoginSequence          string `json:"login_sequence,omitempty"`
 }
 
 // WebScanNotification is the progress ping sent to the backend while a scan runs.

@@ -246,14 +246,76 @@ export function getActiveScan(domain, orgId, token) {
   return request(`/scanner/active?domain=${encodeURIComponent(domain)}&org_id=${orgId}`, { token });
 }
 
-// ─── Web Scan (Acunetix) ──────────────────────────────────────────────────────
+// ─── Web Scan (Acunetix + Semgrep static mode) ──────────────────────────────
 
-export function createWebScan(url, token) {
+export function createWebScan({
+  url,
+  token,
+  mode = "dynamic",
+  branch = "",
+  repoVisibility = "public",
+  repoToken = "",
+  scanProfile = "",
+  criticality = "normal",
+  authenticationRequired = false,
+  authMethod = "",
+  loginUrl = "",
+  authUsername = "",
+  authPassword = "",
+  authHeaderName = "Authorization",
+  authToken = "",
+  sessionCookieName = "",
+  sessionCookieValue = "",
+  authProfileId = "",
+  mfaInstructions = "",
+  authDetails = "",
+  loginSequence = "",
+}) {
   return request("/webscan/scans", {
     method: "POST",
-    body: { url },
+    body: {
+      url,
+      mode,
+      ...(branch ? { branch } : {}),
+      ...(mode === "static" ? { repo_visibility: repoVisibility } : {}),
+      ...(mode === "static" && repoToken ? { repo_token: repoToken } : {}),
+      ...(scanProfile ? { scan_profile: scanProfile } : {}),
+      ...(mode === "dynamic" ? { criticality } : {}),
+      ...(mode === "dynamic" ? { authentication_required: authenticationRequired } : {}),
+      ...(mode === "dynamic" && authMethod ? { auth_method: authMethod } : {}),
+      ...(mode === "dynamic" && loginUrl ? { login_url: loginUrl } : {}),
+      ...(mode === "dynamic" && authUsername ? { auth_username: authUsername } : {}),
+      ...(mode === "dynamic" && authPassword ? { auth_password: authPassword } : {}),
+      ...(mode === "dynamic" && authHeaderName ? { auth_header_name: authHeaderName } : {}),
+      ...(mode === "dynamic" && authToken ? { auth_token: authToken } : {}),
+      ...(mode === "dynamic" && sessionCookieName ? { session_cookie_name: sessionCookieName } : {}),
+      ...(mode === "dynamic" && sessionCookieValue ? { session_cookie_value: sessionCookieValue } : {}),
+      ...(mode === "dynamic" && authProfileId ? { auth_profile_id: authProfileId } : {}),
+      ...(mode === "dynamic" && mfaInstructions ? { mfa_instructions: mfaInstructions } : {}),
+      ...(mode === "dynamic" && authDetails ? { auth_details: authDetails } : {}),
+      ...(mode === "dynamic" && loginSequence ? { login_sequence: loginSequence } : {}),
+    },
     token,
   });
+}
+
+export async function uploadStaticWebScan({ file, token } = {}) {
+  // Multipart upload, so it bypasses the JSON `request` helper.
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch(`${API_BASE}/webscan/scans/static/upload`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  });
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(data?.detail || `Upload failed (${res.status})`);
+  }
+  requestCache.clear();
+  return data;
 }
 
 export function listWebScans(token) {
@@ -263,6 +325,27 @@ export function listWebScans(token) {
 export function getWebScan(scanId, token) {
   // Polled while a scan runs — never serve it from the GET cache.
   return request(`/webscan/scans/${encodeURIComponent(scanId)}`, { token, skipCache: true });
+}
+
+export async function downloadWebScanReport(scanId, token, reportType = "developer") {
+  const query = reportType ? `?report_type=${encodeURIComponent(reportType)}` : "";
+  const response = await fetch(`${API_BASE}/webscan/scans/${encodeURIComponent(scanId)}/report${query}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || `Failed to download report (${response.status})`);
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `webscan-${String(scanId).slice(0, 8)}-report.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 export function cancelWebScan(scanId, token) {
@@ -535,7 +618,7 @@ export async function blockUserByEmail(email, token) {
   const publicIp = await getPublicIp();
   return request("/admin/blacklist/block", {
     method: "POST",
-    body: { email },
+    body: { email: String(email || "").trim() },
     token,
     publicIp,
   });
@@ -545,7 +628,7 @@ export async function unblockUserByEmail(email, token) {
   const publicIp = await getPublicIp();
   return request("/admin/blacklist/unblock", {
     method: "POST",
-    body: { email },
+    body: { email: String(email || "").trim() },
     token,
     publicIp,
   });
@@ -1167,6 +1250,30 @@ export function getAdminVaptOnboardingReviews(token) {
   return request("/vapt/admin/onboarding", { token, skipCache: true });
 }
 
+export function getApprovedVaptOnboarding(token) {
+  return request("/vapt/admin/onboarding/approved", { token, skipCache: true });
+}
+
+export async function downloadApprovedVaptOnboardingBundle(orgId, token, regionCode = "") {
+  const query = regionCode ? `?region_code=${encodeURIComponent(regionCode)}` : "";
+  const res = await fetch(buildUrl(`/vapt/admin/onboarding/${encodeURIComponent(orgId)}/bundle${query}`), {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || `Download failed (HTTP ${res.status}).`);
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = `vapt-checklist-${String(regionCode || orgId).slice(0, 32)}.zip`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 export function reviewAdminVaptOnboarding(orgId, status, note, token, flags = []) {
   return request(`/vapt/admin/onboarding/${encodeURIComponent(orgId)}/review`, {
     method: "POST",
@@ -1211,4 +1318,42 @@ export function proposeInitialVaptDate(orgId, body, token) {
     body,
     token,
   });
+}
+
+export async function downloadVaptAssetListTemplate(token) {
+  const res = await fetch(buildUrl("/vapt/onboarding/asset-template"), {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.detail || `Template download failed (HTTP ${res.status}).`);
+  }
+  const blobUrl = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = "vapt-asset-list-template.xlsx";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(blobUrl);
+}
+
+export function approveVaptAccess(userId, token) {
+  return request("/admin/vapt/approve", { method: "POST", body: { user_id: userId }, token });
+}
+
+export function revokeVaptAccess(userId, token) {
+  return request("/admin/vapt/revoke", { method: "POST", body: { user_id: userId }, token });
+}
+
+export function approveWebscanAccess(userId, token) {
+  return request("/admin/webscan/approve", { method: "POST", body: { user_id: userId }, token });
+}
+
+export function revokeWebscanAccess(userId, token) {
+  return request("/admin/webscan/revoke", { method: "POST", body: { user_id: userId }, token });
+}
+
+export function getWebscanAccessStatus(token) {
+  return request("/auth/profile", { token, skipCache: true });
 }

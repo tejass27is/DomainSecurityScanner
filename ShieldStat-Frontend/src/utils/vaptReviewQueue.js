@@ -45,34 +45,40 @@ export function buildReviewQueue(requests = [], checklists = []) {
 
   return Array.from(byOrg.values()).map((entry) => {
     const requested = entry.requested_regions || [];
+    const approved = entry.approved_regions || [];
     const detailByCode = new Map((entry.pending_region_details || []).map((item) => [item.code, item]));
     const hasChecklist = (region) => regionHasChecklist(detailByCode.get(region));
+    const displayRegions = Array.from(new Set([...requested, ...approved]));
 
     return {
       ...entry,
       hasPendingRegions: requested.length > 0,
+      hasApprovedRegions: approved.length > 0,
       hasPendingChecklist: Boolean(entry.checklist),
+      approvedRegions: approved,
+      displayRegions,
       regionsWithChecklist: requested.filter(hasChecklist),
       plainRegions: requested.filter((region) => !hasChecklist(region)),
       summary: [
         ...requested.map((region) => (hasChecklist(region) ? `Region: ${region} (+ checklist)` : `Region: ${region}`)),
+        ...approved.map((region) => `Approved: ${region}`),
         entry.checklist ? `Checklist: ${entry.checklist.review_status || "pending"}` : null,
       ].filter(Boolean),
     };
   });
 }
 
-/** True when the entry has at least one request that belongs to the tab. */
+/** True when the entry has at least one request or approved region that belongs to the tab. */
 export function matchesReviewTab(entry, tab) {
   switch (tab) {
     case "combined":
       return (entry?.regionsWithChecklist || []).length > 0;
     case "region":
-      return (entry?.plainRegions || []).length > 0;
+      return (entry?.plainRegions || []).length > 0 || (entry?.approvedRegions || []).length > 0;
     case "checklist":
       return Boolean(entry?.hasPendingChecklist);
     default:
-      return Boolean(entry?.hasPendingRegions || entry?.hasPendingChecklist);
+      return Boolean(entry?.hasPendingRegions || entry?.hasPendingChecklist || entry?.hasApprovedRegions);
   }
 }
 
@@ -80,7 +86,7 @@ export function matchesReviewTab(entry, tab) {
 export function getReviewQueueCounts(queue = []) {
   return {
     combinedCount: queue.reduce((sum, entry) => sum + (entry?.regionsWithChecklist || []).length, 0),
-    regionCount: queue.reduce((sum, entry) => sum + (entry?.plainRegions || []).length, 0),
+    regionCount: queue.reduce((sum, entry) => sum + ((entry?.plainRegions || []).length + (entry?.approvedRegions || []).length), 0),
     checklistCount: queue.filter((entry) => entry?.hasPendingChecklist).length,
   };
 }

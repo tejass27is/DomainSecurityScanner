@@ -22,6 +22,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+#: Auth methods this client can configure on a target through Acunetix' API.
+#: Any other method (username/password login sequence, SSO, MFA, or an
+#: Acunetix Auth Profile ID) has no verified request shape yet, so it is left
+#: for an operator to configure manually in Acunetix.
+CONFIGURABLE_AUTH_METHODS = {"basic", "api_token"}
+
 
 class AcunetixError(RuntimeError):
     """Raised when Acunetix is misconfigured, unreachable, or answers with an error."""
@@ -214,6 +220,7 @@ class AcunetixClient:
         """Create (or reuse) an Acunetix target and return its ``target_id``."""
         existing = self.find_target_by_address(address)
         if existing:
+            self.update_target(existing, address=address, description=description, criticality=criticality)
             logger.info("Reusing existing Acunetix target %s for %s", existing, address)
             return existing
 
@@ -223,7 +230,7 @@ class AcunetixClient:
             json={
                 "address": address,
                 "description": description or f"ShieldStat web scan for {address}",
-                "criticality": criticality,
+                "criticality": max(0, min(10, int(criticality))),
             },
         )
         target_id = str(payload.get("target_id") or "").strip()
@@ -232,6 +239,73 @@ class AcunetixClient:
         logger.info("Created Acunetix target %s for %s", target_id, address)
         return target_id
 
+    def update_target(self, target_id: str, address: str, description: str = "", criticality: int = 10) -> None:
+        """Apply the requested scan criticality to an existing target."""
+        self._request(
+            "PUT",
+            f"/targets/{target_id}",
+            json={
+                "address": address,
+                "description": description,
+                "criticality": max(0, min(10, int(criticality))),
+            },
+        )
+
+    # ── authentication ────────────────────────────────────────────────────────
+
+    def configure_authentication(
+        self,
+        target_id: str,
+        method: str,
+        username: str = "",
+        password: str = "",
+        token_header: str = "Authorization",
+        token_value: str = "",
+    ) -> str | None:
+        """Apply the credentials for ``method`` to an existing target.
+
+        Only the two shapes verified against the Acunetix API are sent:
+
+        * ``basic`` — ``{"authentication": {"enabled": true, "username": …,
+          "password": …}}``
+        * ``api_token`` — ``{"custom_headers": ["Header-Name: value"]}``
+
+        Both go to ``PATCH /targets/{target_id}/configuration`` and must be
+        applied *before* the scan starts so the crawl is authenticated.
+
+        Returns ``None`` on success, or a human-readable note when the method is
+        one of the unverified ones (login sequence, SSO, MFA, Auth Profile ID) —
+        in that case nothing is sent and the operator must configure it in
+        Acunetix by hand.
+        """
+        normalized = (method or "").strip().lower()
+
+        if normalized not in CONFIGURABLE_AUTH_METHODS:
+            note = (
+                f"Authentication method '{normalized or 'unspecified'}' requires "
+                "manual configuration in Acunetix; no target configuration was sent."
+            )
+            logger.warning("Target %s: %s", target_id, note)
+            return note
+
+        if normalized == "basic":
+            body: dict = {
+                "authentication": {
+                    "enabled": True,
+                    "username": (username or "").strip(),
+                    "password": password or "",
+                }
+            }
+        else:  # api_token
+            header_name = (token_header or "").strip() or "Authorization"
+            body = {"custom_headers": [f"{header_name}: {token_value or ''}"]}
+
+        self._request("PATCH", f"/targets/{target_id}/configuration", json=body)
+        logger.info(
+            "Configured %s authentication on Acunetix target %s", normalized, target_id
+        )
+        return None
+
     # ── scanning profiles ─────────────────────────────────────────────────────
 
     def list_profiles(self) -> list[dict]:
@@ -239,14 +313,13 @@ class AcunetixClient:
         payload = self._request("GET", "/scanning_profiles")
         return payload.get("scanning_profiles") or []
 
-    def resolve_profile_id(self) -> str:
+    def resolve_profile_id(self, preferred_name: str | None = None) -> str:
         """Pick the scanning profile to use.
 
         ``ACUNETIX_PROFILE_ID`` wins when set. Otherwise a profile whose name
-        looks like a full scan is used. When nothing matches, an empty string is
-        returned so the caller can omit ``profile_id`` and let Acunetix apply its
-        own default (normally *Full Scan*) — blindly using the first returned
-        profile can select a crawl-only one that reports no vulnerabilities.
+        looks like a full scan is used. A caller can also pass a preferred name,
+        such as ``Full Scan`` or ``SQL Injection``, to map the UI request to the
+        correct Acunetix profile id.
         """
         configured = (os.getenv("ACUNETIX_PROFILE_ID") or "").strip()
         if configured:
@@ -258,6 +331,18 @@ class AcunetixClient:
                 "Acunetix reported no scanning profiles. Set ACUNETIX_PROFILE_ID "
                 "to the profile you want to use."
             )
+
+        preferred = (preferred_name or "").strip()
+        if preferred:
+            preferred_lower = preferred.lower()
+            for profile in profiles:
+                name = str(profile.get("name") or "").strip()
+                if name.lower() == preferred_lower:
+                    return str(profile.get("profile_id") or "").strip()
+            for profile in profiles:
+                name = str(profile.get("name") or "").strip()
+                if preferred_lower in name.lower():
+                    return str(profile.get("profile_id") or "").strip()
 
         for profile in profiles:
             name = str(profile.get("name") or "").lower()

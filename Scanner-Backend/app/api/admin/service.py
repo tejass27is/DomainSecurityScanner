@@ -55,7 +55,9 @@ def _serialize_user(user: User, blocked_emails: set[str]) -> dict:
         "role": user.role,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "is_blacklisted": user.email.lower() in blocked_emails,
+        "vapt_approved": bool(getattr(user, "vapt_approved", False)),
         "vapt_blocked": bool(getattr(user, "vapt_blocked", False)),
+        "webscan_approved": bool(getattr(user, "webscan_approved", False)),
         "is_active": bool(getattr(user, "is_active", True)),
         "email_verified": bool(user.email_verified),
     }
@@ -604,6 +606,92 @@ def block_vapt_access(
         public_ip=public_ip,
     )
     return {"success": True, "user_id": user.user_id, "email": user.email, "vapt_blocked": True}
+
+
+def approve_vapt_access(
+    identifier: str,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    """Grant an individual user's VAPT access without requiring a region request."""
+    user = _get_user_for_vapt_action(identifier, db)
+    if user.user_id == current_admin.user_id:
+        raise HTTPException(status_code=400, detail="Admin cannot change their own VAPT access")
+    user.vapt_approved = True
+    user.vapt_blocked = False
+    db.add(user)
+    db.commit()
+    _record_audit_log(
+        db,
+        admin=current_admin,
+        action="VAPT_ACCESS_APPROVED",
+        target_type="user",
+        target_id=user.user_id,
+        details={"email": user.email, "status": "approved"},
+        ip_address=ip_address,
+        public_ip=public_ip,
+    )
+    return {"success": True, "user_id": user.user_id, "email": user.email, "vapt_approved": True}
+
+
+def revoke_vapt_access(
+    identifier: str,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    """Remove an individual user's VAPT approval."""
+    user = _get_user_for_vapt_action(identifier, db)
+    user.vapt_approved = False
+    user.vapt_blocked = False
+    db.add(user)
+    db.commit()
+    _record_audit_log(
+        db,
+        admin=current_admin,
+        action="VAPT_ACCESS_REVOKED",
+        target_type="user",
+        target_id=user.user_id,
+        details={"email": user.email, "status": "revoked"},
+        ip_address=ip_address,
+        public_ip=public_ip,
+    )
+    return {"success": True, "user_id": user.user_id, "email": user.email, "vapt_approved": False}
+
+
+def approve_webscan_access(
+    identifier: str,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    user = _get_user_for_vapt_action(identifier, db)
+    if user.user_id == current_admin.user_id:
+        raise HTTPException(status_code=400, detail="Admin cannot change their own WebScan access")
+    user.webscan_approved = True
+    db.add(user)
+    db.commit()
+    _record_audit_log(db, current_admin, "WEBSCAN_ACCESS_APPROVED", "user", user.user_id, {"email": user.email, "status": "approved"}, ip_address, public_ip)
+    return {"success": True, "user_id": user.user_id, "email": user.email, "webscan_approved": True}
+
+
+def revoke_webscan_access(
+    identifier: str,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    user = _get_user_for_vapt_action(identifier, db)
+    user.webscan_approved = False
+    db.add(user)
+    db.commit()
+    _record_audit_log(db, current_admin, "WEBSCAN_ACCESS_REVOKED", "user", user.user_id, {"email": user.email, "status": "revoked"}, ip_address, public_ip)
+    return {"success": True, "user_id": user.user_id, "email": user.email, "webscan_approved": False}
 
 
 def unblock_vapt_access(

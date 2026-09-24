@@ -18,9 +18,7 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
   });
   const isSocAnalyst = currentUser?.role === "soc_analyst";
 
-  // Clients only see the VAPT option once an admin/SOC has approved a region.
-  // Until then it is hidden entirely, so a brand-new user cannot reach the
-  // VAPT module before their region request is approved.
+  // Clients only see the VAPT option once an admin has approved the account.
   const [vaptVisible, setVaptVisible] = useState(false);
 
   useEffect(() => {

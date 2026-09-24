@@ -17,9 +17,9 @@ import {
   getVaptAccessStatus,
   getVaptOnboarding,
   updateVaptOnboarding,
-  submitVaptChecklist,
   uploadVaptChecklistAttachment,
   deleteVaptChecklistAttachment,
+  downloadVaptAssetListTemplate,
   getHasCompletedScans,
   decideInitialVaptDate,
   getWebSocketUrl,
@@ -220,11 +220,21 @@ export default function VaptUpload() {
   // `${sectionId}::${questionId}`. Declared with the other hooks because the
   // component returns early for blocked / ungated users.
   const [attachmentState, setAttachmentState] = useState({});
-  const QUESTION_SECTIONS = [
+  const ASSET_COLUMNS = [
+    { key: "employee_name", label: "Employee Name" },
+    { key: "hostname", label: "Host Name" },
+    { key: "ip_address", label: "IP Address" },
+    { key: "device", label: "Device", options: ["Laptop", "Desktop"] },
+    { key: "os_version", label: "OS/Version" },
+    { key: "device_type", label: "Device Type", options: ["Personal", "Office"] },
+    { key: "environment", label: "Environment" },
+    { key: "remarks", label: "Remarks" },
+  ];
+  const LEGACY_QUESTION_SECTIONS = [
     {
       id: "general_information",
-      title: "General Information",
-      description: "Client and scope overview for the VAPT engagement.",
+      title: "Company Details",
+      description: "Basic company, contact, location, and testing-scope information.",
       questions: [
         { id: "organization_name", label: "Organization Name", type: "text", short: true, helper: "Organization name.", example: "Example: Acme Finance Pvt Ltd" },
         { id: "primary_contact", label: "Primary Contact Name / Email / Phone", type: "text", short: true, helper: "Primary contact details.", example: "Example: Rahul Sharma | rahul@acme.com | +91 98xxxxxx" },
@@ -236,11 +246,24 @@ export default function VaptUpload() {
         { id: "previous_vapt_history", label: "Has a VAPT/penetration test previously been performed for the in-scope assets?", type: "textarea", helper: "Provide prior test history if any.", example: "Example: Last test in 2024; issues remediated." },
         { id: "network_diagram_available", label: "Is a network diagram available, if yes then please provide us with one.", type: "textarea", helper: "Provide any network diagram or architecture context.", example: "Example: Internet > WAF > App servers > DB cluster" },
         { id: "network_diagram_upload", label: "Upload your network / infrastructure diagram", type: "upload", required: false, accept: ".pdf,.png,.jpg,.jpeg", helper: "PDF, PNG or JPG up to 25 MB. Optional: upload the diagram here, or email it to your SOC contact quoting your region code.", example: "Topology diagram showing firewalls, servers and network segments" },
+        { id: "sensitive_information_handled", label: "Do any in-scope systems handle sensitive information such as customer data, card payments, or health records?", type: "textarea", helper: "Describe the type of sensitive information in general terms. Do not include actual sensitive data.", example: "Example: Customer contact details and payment-related information." },
+      ],
+    },
+    {
+      id: "testing_type",
+      title: "Type of Testing",
+      description: "Define where testing will happen and how much information the testing team receives.",
+      questions: [
+        { id: "testing_location", label: "Should the systems be tested from inside the office network, from the internet, or both?", type: "choice", options: ["Internal", "External", "Both", "Not sure"], helper: "Internal means testing from inside the office network; external means testing from the internet." },
+        { id: "testing_information_level", label: "How much information should we start with: none, some, or full access/details?", type: "choice", options: ["Black box - no information", "Grey box - some information", "White box - full information", "Not sure"], helper: "If unsure, Grey box is usually a practical starting point." },
+        { id: "mobile_apps_in_scope", label: "Are any mobile apps for iOS or Android in scope?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "If yes, provide the app name and store link or app file separately." },
+        { id: "wireless_network_in_scope", label: "Is the office Wi-Fi/wireless network included in this test?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "If yes, provide the Wi-Fi network names and security type if known." },
+        { id: "physical_security_in_scope", label: "Should physical security be tested, such as office or server-room access?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "This covers physical access controls such as locks, badges, and reception checks." },
       ],
     },
     {
       id: "network_infrastructure",
-      title: "Network & Infrastructure",
+      title: "Your Internet & Network",
       description: "Infrastructure, scanning exposure, and network segmentation details.",
       questions: [
         { id: "internal_ip_ranges", label: "Internal IP ranges / subnets to be scanned", type: "text", short: true, helper: "Internal private ranges to be scanned.", example: "Example: 10.20.0.0/16, 172.16.10.0/24" },
@@ -256,7 +279,7 @@ export default function VaptUpload() {
         { id: "physical_machine_count_by_type", label: "Please provide the physical machine count by type, if available.", type: "text", short: true, helper: "Machine count by type if available.", example: "Example: Servers: 42, desktops: 650, laptops: 300" },
         { id: "machines_included_in_vapt", label: "How many organization machines are intended to be included in this VAPT?", type: "text", short: true, helper: "Expected scope size for the VAPT.", example: "Example: 180" },
         { id: "asset_inventory_available", label: "Is an asset inventory/list available?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "Asset inventory availability.", example: "Example: Yes" },
-        { id: "asset_list_upload", label: "Upload your asset list (inventory of in-scope assets)", type: "upload", required: true, accept: ".xlsx,.xls,.csv,.pdf", helper: "Excel, CSV or PDF up to 25 MB. An asset list is required — if you cannot share it here, email it to your SOC contact and mark this N/A, then explain why.", example: "Hostname, IP, OS, owner and environment for every in-scope asset" },
+        { id: "asset_list_upload", label: "Asset list (inventory of in-scope assets)", type: "asset_table", required: true, helper: "Enter each in-scope asset in the table. Device: Laptop or Desktop. Device Type: Personal or Office." },
         { id: "approx_in_scope_servers", label: "Approximate number of in-scope servers", type: "text", short: true, helper: "Approximate count of in-scope servers.", example: "Example: 35" },
         { id: "approx_in_scope_endpoints", label: "Approximate number of in-scope desktops/laptops/endpoints with the type of OS", type: "text", short: true, helper: "Approximate in-scope endpoints and OS types.", example: "Example: 150 Windows, 20 macOS" },
         { id: "wfh_vpn", label: "Are WFH/remote users connected to the organization's office/network through a VPN?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "Remote access via VPN.", example: "Example: Yes" },
@@ -271,7 +294,7 @@ export default function VaptUpload() {
     },
     {
       id: "web_applications",
-      title: "Web Applications",
+      title: "Websites & Online Applications",
       description: "Web applications, APIs, and authentication flow details.",
       questions: [
         { id: "websites_in_scope", label: "Which websites/web applications are in scope?", type: "text", short: true, helper: "List primary in-scope websites or apps.", example: "Example: portal.acme.com, app.acme.in" },
@@ -295,7 +318,7 @@ export default function VaptUpload() {
     },
     {
       id: "cloud_and_container",
-      title: "Cloud & Platform",
+      title: "Cloud Services",
       description: "Cloud platform, relevant services, and access requirements.",
       questions: [
         { id: "cloud_platforms_used", label: "Which cloud platforms are used for assets relevant to the VAPT?", type: "text", short: true, helper: "Cloud vendor(s) used.", example: "Example: AWS, Azure" },
@@ -309,7 +332,7 @@ export default function VaptUpload() {
     },
     {
       id: "email_and_endpoint_security",
-      title: "Email & Endpoint Security",
+      title: "Email Security",
       description: "Email platform, endpoint security, and logging posture.",
       questions: [
         { id: "email_service_provider", label: "What email service/provider does the organization use?", type: "text", short: true, helper: "Email provider or platform.", example: "Example: Microsoft 365, Google Workspace" },
@@ -325,16 +348,41 @@ export default function VaptUpload() {
     },
     {
       id: "access_and_authorization",
-      title: "Access & Authorization",
-      description: "Additional access requirements and approval details.",
+      title: "Monitoring & Access",
+      description: "Monitoring tools, additional access, and safe access arrangements.",
       questions: [
         { id: "additional_vpn_remote_access_jump_server", label: "Will VAPT require any additional VPN, remote access, jump server or other access besides the WFH VPN described above?", type: "textarea", helper: "Any additional access required beyond WFH VPN.", example: "Example: Jump host required for prod segment access." },
         { id: "additional_credentials_required_for_vapt", label: "Will any additional credentials be required for VAPT?", type: "textarea", helper: "Any extra credentials required.", example: "Example: Root access or firewall admin credentials." },
+        { id: "temporary_monitoring_tool_allowed", label: "Can we install a temporary monitoring tool on the machines being tested?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "The tool helps record security-relevant activity during testing and is removed afterward." },
+      ],
+    },
+    {
+      id: "company_directory",
+      title: "Company Directory / Login System",
+      description: "Centralized employee login and directory information.",
+      questions: [
+        { id: "active_directory_used", label: "Do you use Active Directory or another central directory to manage employee logins?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "This is the central system employees use to sign in to company computers and services." },
+        { id: "directory_domain_name", label: "If yes, what is the directory/domain name?", type: "text", short: true, helper: "Example: company.local or company.com" },
+        { id: "domain_controller_count", label: "How many servers manage this login system?", type: "text", short: true, helper: "Approximate number of domain controllers or directory servers." },
+        { id: "domain_controller_addresses", label: "What are the addresses of the login-management servers?", type: "text", short: true, helper: "Example: 192.168.1.10, 192.168.1.11" },
+        { id: "directory_in_scope", label: "Should this login system be included in the security test?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "Confirm whether the directory itself is part of the VAPT scope." },
+      ],
+    },
+    {
+      id: "safety_rules",
+      title: "Safety & Rules of Engagement",
+      description: "Systems to protect, emergency contacts, backups, and testing limits.",
+      questions: [
+        { id: "fragile_critical_systems", label: "Are any systems old, fragile, or business-critical that we should handle carefully or avoid?", type: "textarea", helper: "Identify systems that could be disrupted by testing." },
+        { id: "recent_backup_available", label: "Do you have a recent backup of the systems being tested?", type: "choice", options: ["Yes", "No", "Not sure"], helper: "This is a safety check before testing begins." },
+        { id: "avoid_denial_of_service", label: "Should we avoid tests that could overload or crash a system?", type: "choice", options: ["Yes - avoid them", "No - may include them", "Not sure"], helper: "By default, potentially disruptive tests are avoided." },
+        { id: "emergency_contact", label: "Is there a separate emergency contact for unexpected issues during testing?", type: "text", helper: "This may be the technical contact or another person available during and after office hours." },
+        { id: "third_party_permission_required", label: "Are any in-scope systems owned or managed by a third-party vendor who must give permission?", type: "textarea", helper: "List any vendor and permission requirements." },
       ],
     },
     {
       id: "testing_window_section",
-      title: "Testing Window & Approval",
+      title: "Scheduling & Approval",
       description: "Scheduling, approval, and engagement constraints.",
       questions: [
         { id: "preferred_vapt_date_window", label: "Preferred VAPT date / window", type: "text", short: true, helper: "Preferred testing date or window.", example: "Example: 9/4/2026, 11:00 PM to 3:00 AM IST" },
@@ -345,6 +393,153 @@ export default function VaptUpload() {
       ],
     },
   ];
+
+  const q = (id, label, type = "text", extra = {}) => ({ id, label, type, ...extra });
+  const choice = (id, label, options = ["Yes", "No", "Not sure"], extra = {}) => q(id, label, "choice", { options, ...extra });
+  const answerSections = [
+    {
+      id: "company_details", title: "Company Details", description: "Company, contacts, locations, and scope.",
+      questions: [
+        q("organization_name", "Organization name", "text", { helper: "Legal / registered name of your company." }),
+        q("primary_contact", "Primary contact - name, email and phone", "text", { helper: "The main person we should reach out to for this project (could be you)." }),
+        q("office_locations", "Office / location(s) to be tested", "text", { helper: "Which office address(es) have the computers, network or systems we'll be testing?" }),
+        q("technical_contact", "Technical contact for this VAPT (name, email, phone)", "text", { helper: "The person who looks after your computers, internet or website - this could be an in-house IT person, or an outside IT company/vendor you use. If you don't have anyone, tell us and we'll guide the business contact directly." }),
+        q("assets_in_scope", "What are we testing? (assets/systems in scope)", "textarea", { helper: "In plain words, what should we test? Example: office laptops, desktops, CCTV cameras, printers, Wi-Fi router, your website. A detailed list can be added later." }),
+        q("previous_vapt", "Has there been any VAPT before (a VAPT / security test)?", "textarea", { helper: "Yes / No / Not Sure - has anyone done a security test on these systems in the past?" }),
+        q("network_diagram", "Do you have a network diagram or map of your systems?", "choice", { options: ["Yes", "No", "N/A"], helper: "This is simply a drawing/picture showing how your computers, internet and devices connect to each other. If you have one (even a rough one made by your IT vendor), please attach it. If not, write 'Not available'." }),
+        q("network_diagram_upload", "Upload the network diagram or map", "upload", { required: false, hidden: true, inlineFor: "network_diagram", accept: ".pdf,.png,.jpg,.jpeg", helper: "PDF, PNG or JPG." }),
+        q("sensitive_information", "Do any of these systems handle sensitive information such as customer data, card payments, or health records?", "textarea", { helper: "This helps us understand what's at stake and prioritize testing accordingly. Just describe in general terms - no need to share the actual data." }),
+      ],
+    },
+    {
+      id: "type_of_testing", title: "Type of Testing", description: "Testing location, access level, mobile, wireless, and physical scope.",
+      questions: [
+        choice("testing_location", "Should the systems be tested from inside your office network, from the internet, or both?", ["Internal", "External", "Both", "Not sure"], { helper: "'Internal' means testing as if someone were already inside your office network. 'External' means testing as an outsider would, from the internet. Most companies want both." }),
+        choice("testing_information_level", "How much information should we start with - none, some, or full access/details?", ["Black box", "Grey box", "White box", "Not sure"], { helper: "This is sometimes called Black box (we start with no information, like a real attacker), Grey box (we're given some basic details/logins), or White box (we're given full access/details upfront). If unsure, we usually recommend Grey box - we can decide together on the call." }),
+        choice("mobile_apps_in_scope", "Are any mobile apps (iOS/Android) in scope?", ["Yes", "No", "Not sure"], { helper: "Yes / No. If yes, please share the app name and a link to it (App Store/Play Store), or the app file if it's not public." }),
+        choice("wireless_in_scope", "Is your office Wi-Fi (wireless network) included in this test?", ["Yes", "No", "Not sure"], { helper: "Yes / No. If yes, please share the Wi-Fi network name(s) (SSID) and what type of Wi-Fi security is used, if known." }),
+        choice("physical_security_in_scope", "Should physical security be tested, such as office or server-room access?", ["Yes", "No", "Not sure"], { helper: "Yes / No. This checks physical access controls like door locks, ID badges or reception checks." }),
+      ],
+    },
+    {
+      id: "internet_network", title: "Your Internet & Network", description: "Internet addresses, devices, and DNS.",
+      questions: [
+        q("internal_ip_ranges", "Internal computer address ranges to be scanned (IP ranges)", "text", { helper: "Every device on your office network has an internal address, e.g. 192.168.1.1 to 192.168.1.254. If you don't know this, ask whoever set up your office Wi-Fi/network (your IT vendor) - they will have this information." }),
+        q("network_devices", "What network devices do you have?", "textarea", { helper: "Example: Firewall (security box for internet), Router, Switch, Wi-Fi Access Point. If unsure, ask your internet/IT provider what hardware they installed." }),
+        q("firewall_make_model", "Firewall brand and model (if known)", "text", { helper: "A firewall is a device/software that protects your network from the internet. Example: FortiGate 100F. Leave blank if unknown." }),
+        choice("static_public_ips", "Do you have fixed/public internet (static IP) addresses for your office?", ["Yes", "No", "Not sure"], { helper: "Yes / No. This is the address your office uses to connect to the internet, given by your Internet Service Provider (ISP). If yes, please share it - your ISP or IT vendor can provide this." }),
+        q("cloud_public_addresses", "Are any cloud-hosted systems included, with their public addresses?", "textarea", { helper: "If any of your systems/website run on a cloud service (like AWS, Azure, Google Cloud) and have their own internet address, please share it if known." }),
+        q("internet_address_type", "Is your internet address fixed or does it change automatically?", "text", { helper: "In simple terms: does your office internet address stay the same always (Static), or change from time to time (DHCP)? If it changes, roughly how often? Your internet provider or IT vendor will know this." }),
+        q("dns_provider", "What service manages your website addresses (DNS provider)?", "text", { helper: "DNS is like the 'phonebook' of the internet that turns your website name into an address. Example: GoDaddy, Cloudflare, Google DNS. Ask whoever manages your website/domain if unsure." }),
+      ],
+    },
+    {
+      id: "computers_servers", title: "Computers, Laptops & Servers", description: "Company devices, servers, endpoints, and shared storage.",
+      questions: [
+        q("total_machines", "Total number of computers/machines in the whole company. Breakdown by type and OS, if known", "textarea", { helper: "A rough total count across the entire organization (not just the ones being tested). Example: 20 desktops, 15 laptops, 5 servers. Mention OS as well for these. Approximate numbers are fine." }),
+        q("machines_in_scope", "How many of these will actually be tested in this project?", "text", { helper: "The number of machines that should be included in this specific security test." }),
+        choice("asset_inventory", "Do you have a list of all your devices (an asset list)?", ["Yes", "No", "Will provide"], { helper: "Yes / No / Will provide. This is simply a list of computers/devices your company owns, if one exists." }),
+        q("servers_in_scope", "Roughly how many servers are included in this test?", "text", { helper: "A server is a computer that runs shared services (like email, files, or a website) for your company." }),
+        q("endpoints_by_os", "Roughly how many desktops/laptops are included, and what type (Windows/Mac/Linux)?", "textarea", { helper: "Example: 80 Windows laptops, 10 Apple (Mac) laptops, 5 Linux computers." }),
+        q("asset_list_upload", "Upload the asset list", "asset_table", { required: true, helper: "Enter each in-scope asset in the table. Device: Laptop or Desktop. Device Type: Personal or Office. You can also download the Excel template." }),
+        choice("nas_or_file_server", "Do you have a shared storage device or file server (NAS)?", ["Yes", "No", "Not sure"], { helper: "Yes / No. This is a device that stores shared company files, separate from individual computers. Share its address/name if you know it." }),
+      ],
+    },
+    {
+      id: "remote_access", title: "Remote / Work-from-Home Access", description: "VPN, remote devices, and remote test-account requirements.",
+      questions: [
+        choice("remote_vpn_used", "Do employees working from home connect to office systems using a VPN?", ["Yes", "No", "Not sure"], { helper: "A VPN is a secure private connection that lets remote/work-from-home staff safely reach office systems over the internet. Yes / No." }),
+        q("vpn_service", "If yes, which VPN service/software is used?", "text", { helper: "Example: Cisco AnyConnect, FortiClient, OpenVPN. Ask your IT vendor if unsure." }),
+        q("remote_vpn_range", "What address range is used for remote/work-from-home users on the VPN?", "text", { helper: "If known, provide the range of addresses assigned to people connecting remotely. Example: 10.10.50.10 to 10.10.50.100." }),
+        choice("vpn_access_for_testing", "Will our testing team need VPN access to reach and test remote/WFH machines?", ["Yes", "No", "Not sure"], { helper: "Yes / No. If yes, we'll arrange the access details together with your IT contact." }),
+        choice("separate_vpn_test_account", "If VPN access is needed, will a separate test account be created for us?", ["Yes", "No", "Not sure"], { helper: "Yes / No. Please do not write any passwords or login details in this sheet - these will be shared securely and separately." }),
+        q("remote_machine_count", "Roughly how many remote/work-from-home machines does your company have?", "text", { helper: "An approximate number of laptops/computers used by staff working outside the office." }),
+        choice("remote_machine_ownership", "Are these remote machines company-owned, personal (employee-owned), or a mix?", ["Company-owned", "Personal", "A mix", "Not sure"], { helper: "Let us know roughly how many fall into each category, if possible." }),
+        q("remote_login_rules", "Any special login rules for our test account? (e.g. extra verification codes, or only certain addresses allowed)", "textarea", { helper: "This refers to things like two-step verification (MFA/OTP) or address restrictions on the VPN login. Mention anything your IT vendor has set up." }),
+      ],
+    },
+    {
+      id: "web_applications", title: "Websites & Online Applications", description: "Websites, applications, APIs, authentication, and protections.",
+      questions: [
+        q("websites_in_scope", "Which websites or web applications should be tested?", "textarea", { helper: "Give the name and web address (URL) of each site/app. Example: Company Website - www.example.com, HR Portal - hr.example.com." }),
+        q("website_access_type", "Are these websites open to the public internet, only inside the office, or reachable only via VPN?", "text", { helper: "Just describe how each one is normally accessed - anyone on the internet, only office computers, or only after connecting via VPN." }),
+        choice("staging_in_scope", "Are any test/practice versions included (staging, UAT, development)?", ["Yes", "No", "Not sure"], { helper: "Yes / No. These are 'draft' or 'testing' copies of a website used before it goes live. If yes, share their web address too." }),
+        choice("web_login_required", "Do users need to log in (with a username/password) to use the website/app?", ["Yes", "No", "Not sure"], { helper: "Yes / No." }),
+        q("web_login_method", "How do people log in?", "text", { helper: "Example: Username & Password, 'Sign in with Google/Microsoft' (SSO), or an extra verification code (MFA/2FA/OTP)." }),
+        q("web_user_roles", "What types of user accounts exist on the website/app?", "text", { helper: "Example: Regular Employee, Manager, Administrator. Just list the different levels of access that exist." }),
+        choice("web_test_accounts", "Will separate test accounts be created for each account type?", ["Yes", "No", "Not sure"], { helper: "Yes / No. Please do not write any usernames/passwords in this sheet." }),
+        choice("web_mfa_enabled", "Is extra login verification (like an OTP/authenticator code) turned on for the test account?", ["Yes", "No", "Partially", "Not sure"], { helper: "Yes / No / Partially / Not Sure. If yes, let us know how we'll receive that code during testing (this can be worked out on the call)." }),
+        choice("apis_in_scope", "Are there any APIs in scope (a way other software connects to your app)?", ["Yes", "No", "Not sure"], { helper: "Yes / No. An API lets other computer programs talk to your website/app automatically. If yes, share the web address if known - do not share any access keys here." }),
+        choice("waf_or_security_service", "Is the website protected by any extra security service (e.g. Cloudflare) that might block our scan?", ["Yes", "No", "Not sure"], { helper: "Yes / No / Not Sure. Some websites use a protective service in front of them that can mistake our security test for an attack and block it. If you use one, let us know its name so it can allow our testing." }),
+      ],
+    },
+    {
+      id: "cloud_services", title: "Cloud Services", description: "Cloud platforms, systems, approvals, and access.",
+      questions: [
+        q("cloud_platforms", "Do you use any cloud computing service? (e.g. Amazon AWS, Microsoft Azure, Google Cloud)", "text", { helper: "Write 'None' if you don't use any cloud service." }),
+        q("cloud_systems_in_scope", "Which cloud-based systems are included in this test?", "textarea", { helper: "Example: a website hosted online, an online server, cloud storage." }),
+        q("cloud_provider_approval", "Does your cloud provider need to approve or be informed about security testing first?", "text", { helper: "Some cloud companies require permission before a security test is run on systems hosted with them. Write 'None / Not Sure' if you don't know." }),
+        q("online_business_tools", "What other online business tools/platforms do you use?", "textarea", { helper: "Example: Google Workspace, an accounting/CRM/HR system, a remote-access tool." }),
+        q("cloud_tools_mfa", "Is extra login verification (MFA/2FA) turned on for these tools?", "textarea", { helper: "Example: Google Workspace - Yes; Accounting Software - No." }),
+        choice("cloud_admin_access", "Will any of these need admin-level (highest) access for our testing?", ["Yes", "No", "Not sure"], { helper: "Yes / No / Not Sure." }),
+      ],
+    },
+    {
+      id: "email_security", title: "Email Security", description: "Email platform, domain, and anti-phishing protection.",
+      questions: [
+        q("email_service", "What email service do you use?", "text", { helper: "Example: Microsoft 365 / Outlook, Google Workspace / Gmail, Zoho Mail." }),
+        choice("email_domain_matches", "Is your email address the same as your main company website address?", ["Yes", "No", "Not sure"], { helper: "Example: website is company.com and email is name@company.com = Yes. If email is name@companymail.com instead = No." }),
+        q("email_domains", "If different, what email address(es)/domain(s) do you use?", "text", { helper: "Example: companymail.com" }),
+        q("email_security_protection", "Do you use any email security or anti-phishing protection?", "textarea", { helper: "Yes / No. This is a service that filters spam/scam emails before they reach your inbox. Give its name if known." }),
+      ],
+    },
+    {
+      id: "endpoint_protection", title: "Antivirus & Device Protection", description: "Antivirus, EDR/XDR, and endpoint coverage.",
+      questions: [
+        q("antivirus_solution", "What antivirus / protection software is installed on your computers?", "text", { helper: "Example: Microsoft Defender, Norton, Quick Heal, CrowdStrike, SentinelOne." }),
+        q("edr_xdr_solution", "Is any advanced threat-monitoring software (EDR/XDR) installed?", "text", { helper: "This is a more advanced type of antivirus that actively watches for suspicious activity. Yes / No / Not Sure - give the name if known." }),
+        q("protected_machine_count", "Roughly how many computers have this protection installed?", "text", { helper: "An approximate number or percentage of your machines that are protected." }),
+      ],
+    },
+    {
+      id: "company_directory", title: "Company Directory / Login System", description: "Centralized employee login and directory information.",
+      questions: [
+        choice("active_directory_used", "Do you use 'Active Directory' to manage employee logins centrally?", ["Yes", "No", "Not sure"], { helper: "This is a system many offices use so employees log into any office computer with one company account. Yes / No / Not Sure." }),
+        q("directory_domain", "If yes, what is its domain name?", "text", { helper: "Example: company.local or company.com" }),
+        q("domain_controller_count", "How many servers manage this login system (Domain Controllers)?", "text", { helper: "An approximate count. Example: 2." }),
+        q("domain_controller_addresses", "What are the addresses of these login-management servers?", "text", { helper: "Example: 192.168.1.10, 192.168.1.11" }),
+        choice("directory_in_scope", "Should this login system be included in the security test?", ["Yes", "No", "Not sure"], { helper: "Yes / No / Not Sure." }),
+      ],
+    },
+    {
+      id: "monitoring_access", title: "Monitoring & Access", description: "Monitoring tools and additional testing access.",
+      questions: [
+        q("siem_solution", "Do you use any centralized security-monitoring software (SIEM)?", "text", { helper: "This is software that collects alerts from across your systems in one place. Yes / No - name it if known." }),
+        choice("temporary_monitoring_tool", "Can we install a temporary monitoring tool on the machines being tested?", ["Yes", "No", "Not sure"], { helper: "This small tool helps us record security-relevant activity during the test, and is removed afterward. Yes / No / Not Sure." }),
+        q("additional_testing_access", "Will any extra login access be needed for our team to complete the testing?", "textarea", { helper: "Example: VPN, a jump server, or accounts for specific applications. Please do not write any passwords here - these are shared securely, separately." }),
+      ],
+    },
+    {
+      id: "safety_rules", title: "Safety & Rules of Engagement", description: "Systems to protect, backups, emergency contacts, and testing limits.",
+      questions: [
+        q("fragile_critical_systems", "Are there any systems that are old, fragile, or business-critical that we should be extra careful with (or avoid)?", "textarea", { helper: "Example: an old billing server that crashes easily, or a machine running 24x7 production. This helps us test safely without disrupting your business." }),
+        choice("recent_backup", "Do you have a recent backup of the systems being tested, in case something needs to be restored?", ["Yes", "No", "Not sure"], { helper: "Yes / No / Not Sure. This is just a safety check - testing is done carefully, but it's good practice to have a recent backup beforehand." }),
+        choice("avoid_dos_tests", "Should we avoid tests that could overload or crash a system (Denial-of-Service style tests)?", ["Yes - avoid", "No - may include", "Not sure"], { helper: "By default we avoid anything that could crash your systems unless you specifically ask us to include it. Yes (avoid) / No (can include) / Not Sure." }),
+        q("emergency_contact", "Is there a separate emergency contact to reach if something unexpected happens during testing?", "text", { helper: "This can be the same as your technical contact, or someone else who can be reached quickly (including after office hours) if needed." }),
+        q("third_party_permission", "Are any of the in-scope systems owned/managed by a third-party vendor who would also need to give permission?", "textarea", { helper: "Example: a website hosted by an outside web development company. If yes, please mention who they are - we may need their sign-off too." }),
+      ],
+    },
+    {
+      id: "scheduling_approval", title: "Scheduling & Approval", description: "Preferred dates, final approval, and required sign-offs.",
+      questions: [
+        q("preferred_testing_window", "When would you prefer the testing to happen? (dates & time window)", "text", { helper: "Example: 1-5 Sept, during office hours (10 AM - 6 PM)." }),
+        q("testing_blackout_times", "Are there any dates/times we should avoid?", "textarea", { helper: "Example: month-end billing days, a big company event, festival holidays." }),
+        q("final_testing_approver", "Who will give the final go-ahead/approval for this test?", "text", { helper: "Name, designation and email of the person authorized to approve the testing." }),
+        q("approval_documents", "Are there any approval documents or sign-offs needed before we start?", "textarea", { helper: "Example: an authorization letter, or approval from a third-party vendor whose system is involved." }),
+      ],
+    },
+  ];
+  const QUESTION_SECTIONS = answerSections;
 
   const buildEmptyChecklistAnswers = () => {
     const result = {};
@@ -372,6 +567,7 @@ export default function VaptUpload() {
           question: question.label,
           answer: typeof item.answer === "string" ? item.answer : "",
           na: Boolean(item.na),
+          ...(Array.isArray(item.rows) ? { rows: item.rows } : {}),
           // Attachment metadata lives in the answer itself, so it must survive
           // normalization — otherwise every re-render would drop the upload.
           ...(attachment && attachment.id ? { attachment } : {}),
@@ -398,12 +594,12 @@ export default function VaptUpload() {
   };
 
   const syncDerivedOnboardingFields = useCallback((nextOnboarding) => {
-    const generalAnswers = nextOnboarding?.checklist_answers?.general_information || {};
+    const generalAnswers = nextOnboarding?.checklist_answers?.company_details || {};
     const primaryContactAnswer = generalAnswers.primary_contact?.answer || "";
     const derivedContact = extractPrimaryContactInfo(primaryContactAnswer);
     const testingAuthorizationAnswer = generalAnswers.testing_authorization?.answer || "";
 
-    const scopeIpRanges = nextOnboarding?.scope_ip_ranges || nextOnboarding?.checklist_answers?.network_infrastructure?.internal_ips?.answer || "";
+    const scopeIpRanges = nextOnboarding?.scope_ip_ranges || nextOnboarding?.checklist_answers?.internet_network?.internal_ip_ranges?.answer || "";
     const derived = {
       ...nextOnboarding,
       scope_ip_ranges: scopeIpRanges,
@@ -460,7 +656,7 @@ export default function VaptUpload() {
   // True while SOC has sent the checklist back for changes: only the flagged
   // items stay editable, everything else is locked (already reviewed).
   const [restrictToFlagged, setRestrictToFlagged] = useState(false);
-  const [activeSection, setActiveSection] = useState("general_information");
+  const [activeSection, setActiveSection] = useState("company_details");
   const [saveState, setSaveState] = useState("saved");
   const sectionNumberMap = Object.fromEntries(QUESTION_SECTIONS.map((section, index) => [section.id, index + 1]));
 
@@ -484,6 +680,18 @@ export default function VaptUpload() {
       .map((flag) => [`${flag.section}::${flag.question_id}`, flag]),
   );
   const flagFor = (sectionId, questionId) => reviewFlagMap[`${sectionId}::${questionId}`];
+  const clearFlaggedAnswers = (answers, flags) => {
+    const nextAnswers = normalizeChecklistAnswers(answers || {});
+    (flags || []).forEach((flag) => {
+      const entry = nextAnswers?.[flag.section]?.[flag.question_id];
+      if (!entry) return;
+      entry.answer = "";
+      entry.na = false;
+      delete entry.attachment;
+      delete entry.rows;
+    });
+    return nextAnswers;
+  };
   // Locking only kicks in when SOC actually flagged something: a "more info"
   // request carrying only free-text remarks keeps the whole form editable.
   const lockUnflagged = restrictToFlagged && Object.keys(reviewFlagMap).length > 0;
@@ -509,8 +717,17 @@ export default function VaptUpload() {
           if (cancelled) return;
           const normalized = status || DEFAULT_STATUS;
           setVaptAccessStatus((prev) =>
-            prev.vapt_access_enabled === normalized.vapt_access_enabled &&
-            (prev.requested_regions || []).join(",") === (normalized.requested_regions || []).join(",")
+            JSON.stringify({
+              enabled: prev.vapt_access_enabled,
+              requested: prev.requested_regions || [],
+              approved: prev.approved_regions || [],
+              pending: prev.pending_regions || [],
+            }) === JSON.stringify({
+              enabled: normalized.vapt_access_enabled,
+              requested: normalized.requested_regions || [],
+              approved: normalized.approved_regions || [],
+              pending: normalized.pending_regions || [],
+            })
               ? prev
               : normalized,
           );
@@ -567,7 +784,7 @@ export default function VaptUpload() {
       setRequestRegionCode("");
       setRequestRegionName("");
       setChecklistMessage("");
-      setActiveSection("general_information");
+      setActiveSection("company_details");
       setSocReviewNote("");
     };
     
@@ -613,7 +830,7 @@ export default function VaptUpload() {
         // For rejected submissions, reset completed flag so user can resubmit
         if ((onbData?.review_status || "").toLowerCase() === "rejected") {
           nextOnboarding.completed = false;
-          setActiveSection("general_information");
+          setActiveSection("company_details");
           setChecklistMessage("");
         }
 
@@ -621,6 +838,7 @@ export default function VaptUpload() {
         // first section SOC flagged instead of making them hunt for it.
         const orgChangesRequested = (onbData?.review_status || "").toLowerCase() === "changes_requested";
         if (orgChangesRequested) {
+          nextOnboarding.checklist_answers = clearFlaggedAnswers(nextOnboarding.checklist_answers, onbData?.review_flags || []);
           const firstFlag = (onbData?.review_flags || []).find((flag) => flag?.section);
           if (firstFlag?.section) setActiveSection(firstFlag.section);
           setChecklistMessage("");
@@ -648,14 +866,14 @@ export default function VaptUpload() {
             setOnboarding((prev) => ({
               ...prev,
               ...submission,
-              checklist_answers: normalizeChecklistAnswers(submission.checklist_answers || {}),
+              checklist_answers: clearFlaggedAnswers(submission.checklist_answers || {}, pending.checklist_flags || []),
               testing_start_at: toDatetimeLocal(pending.testing_start_at) || prev.testing_start_at,
               testing_timezone: pending.testing_timezone || prev.testing_timezone,
               review_flags: pending.checklist_flags || [],
               completed: false,
               review_status: "pending",
             }));
-            setActiveSection(pending.checklist_flags?.[0]?.section || "general_information");
+            setActiveSection(pending.checklist_flags?.[0]?.section || "company_details");
           } else {
             setOnboarding((prev) => ({
               ...prev,
@@ -668,7 +886,7 @@ export default function VaptUpload() {
             }));
             setRequestRegionCode("");
             setRequestRegionName("");
-            setActiveSection("general_information");
+            setActiveSection("company_details");
           }
           setChecklistMessage("");
         }
@@ -808,6 +1026,21 @@ export default function VaptUpload() {
     );
   }
 
+  if (!canUpload && clientAccessState === "approval_required") {
+    return (
+      <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="mb-6 flex items-center gap-3">
+          <span className="material-symbols-outlined text-purple-600">fact_check</span>
+          <span className="text-xs font-black uppercase tracking-[0.28em] text-purple-700 dark:text-purple-400">VAPT access</span>
+        </div>
+        <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100">VAPT access is not enabled</h2>
+        <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
+          An administrator must approve VAPT access for your account before you can use this module. Contact your administrator.
+        </p>
+      </div>
+    );
+  }
+
   if (!canUpload && clientAccessState === "region_required") {
     return (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -894,22 +1127,31 @@ export default function VaptUpload() {
   // attached (or the client marks it N/A).
   const isQuestionProvided = (question, entry) => {
     if (entry?.na) return true;
+    if (question?.type === "asset_table") {
+      return Boolean(entry?.attachment?.id) || (Array.isArray(entry?.rows) && entry.rows.some((row) => Object.values(row || {}).some((value) => String(value || "").trim())));
+    }
     if (String(entry?.answer ?? "").trim()) return true;
     return question?.type === "upload" && Boolean(entry?.attachment?.id);
   };
-  const requiredQuestionsOf = (section) => section.questions.filter((question) => question.required !== false);
+  const requiredQuestionsOf = (section) => section.questions.filter((question) => !question.hidden && question.required !== false);
   const totalChecklistItems = QUESTION_SECTIONS.reduce((sum, section) => sum + requiredQuestionsOf(section).length, 0);
   const answeredChecklistCount = QUESTION_SECTIONS.reduce((sum, section) => {
     const sectionAnswers = normalizeChecklistAnswers(onboarding.checklist_answers || {})[section.id] || {};
     return sum + requiredQuestionsOf(section).filter((question) => isQuestionProvided(question, sectionAnswers[question.id])).length;
   }, 0);
   const allChecklistComplete = answeredChecklistCount >= totalChecklistItems;
+  const flaggedQuestionsComplete = Object.keys(reviewFlagMap).every((key) => {
+    const [sectionId, questionId] = key.split("::");
+    const question = QUESTION_SECTIONS.find((section) => section.id === sectionId)?.questions.find((item) => item.id === questionId);
+    const entry = onboarding.checklist_answers?.[sectionId]?.[questionId];
+    return question && !entry?.na && isQuestionProvided(question, entry);
+  });
 
   const requiredFieldsComplete = [
     onboarding.testing_start_at,
     onboarding.testing_timezone,
   ].every((value) => value !== "" && value != null);
-  const canSubmitChecklist = allChecklistComplete && requiredFieldsComplete;
+  const canSubmitChecklist = allChecklistComplete && requiredFieldsComplete && flaggedQuestionsComplete;
 
   // ── Onboarding checklist for first-time org users ──
   const attachmentKey = (sectionId, questionId) => `${sectionId}::${questionId}`;
@@ -949,6 +1191,14 @@ export default function VaptUpload() {
     }
   };
 
+  const handleAssetTemplateDownload = async () => {
+    try {
+      await downloadVaptAssetListTemplate(localStorage.getItem("token"));
+    } catch (err) {
+      setChecklistMessage(err?.message || "Unable to download the asset list template.");
+    }
+  };
+
   const handleAttachmentRemove = async (sectionId, question) => {
     if (isQuestionLocked(sectionId, question.id)) return;
     const attachmentId = normalizeChecklistAnswers(onboarding.checklist_answers || {})[sectionId]?.[question.id]?.attachment?.id;
@@ -983,6 +1233,22 @@ export default function VaptUpload() {
     setSaveState("saving");
   };
 
+  const updateAssetRows = (sectionId, questionId, rows) => {
+    const meaningfulRows = rows.filter((row) => Object.values(row || {}).some((value) => String(value || "").trim()));
+    setOnboarding((prev) => {
+      const nextAnswers = normalizeChecklistAnswers(prev.checklist_answers || {});
+      nextAnswers[sectionId] = { ...(nextAnswers[sectionId] || {}) };
+      nextAnswers[sectionId][questionId] = {
+        ...(nextAnswers[sectionId][questionId] || {}),
+        answer: meaningfulRows.length ? JSON.stringify(meaningfulRows) : "",
+        na: false,
+        rows,
+      };
+      return syncDerivedOnboardingFields({ ...prev, checklist_answers: nextAnswers });
+    });
+    setSaveState("saving");
+  };
+
   const toggleNa = (sectionId, questionId) => {
     if (isQuestionLocked(sectionId, questionId)) return;
     const current = onboarding.checklist_answers?.[sectionId]?.[questionId];
@@ -1009,14 +1275,14 @@ export default function VaptUpload() {
 
     const regionCode = (requestRegionCode || "").trim().toUpperCase();
     const regionName = (requestRegionName || "").trim();
-    if (regionRequestMode && (!regionCode || !regionName)) {
-      setChecklistMessage("Please add the region code and region name before submitting the region request.");
+    if (!regionCode || !regionName) {
+      setChecklistMessage("Please add the region code and region name before submitting the checklist.");
       return;
     }
 
-    const derivedScopeIpRanges = onboarding.scope_ip_ranges || onboarding.checklist_answers?.network_infrastructure?.internal_ips?.answer || "";
-    const derivedPrimaryContact = extractPrimaryContactInfo(onboarding.checklist_answers?.general_information?.primary_contact?.answer || "");
-    const derivedAuthorizationConfirmed = Boolean(onboarding.authorization_confirmed) || (onboarding.checklist_answers?.general_information?.testing_authorization?.answer || "").toLowerCase() === "yes";
+    const derivedScopeIpRanges = onboarding.scope_ip_ranges || onboarding.checklist_answers?.internet_network?.internal_ip_ranges?.answer || "";
+    const derivedPrimaryContact = extractPrimaryContactInfo(onboarding.checklist_answers?.company_details?.primary_contact?.answer || "");
+    const derivedAuthorizationConfirmed = Boolean(onboarding.authorization_confirmed);
     const requiredFields = {
       testing_start_at: onboarding.testing_start_at,
       testing_timezone: onboarding.testing_timezone,
@@ -1028,8 +1294,7 @@ export default function VaptUpload() {
       section.questions.map((question) => ({ ...question, sectionId: section.id })),
     ).find((question) => {
       const entry = normalizedAnswers?.[question.sectionId]?.[question.id];
-      const answer = entry?.answer ?? "";
-      return !entry?.na && !String(answer).trim();
+      return question.required !== false && !isQuestionProvided(question, entry);
     });
 
     if (missing.length > 0) {
@@ -1039,6 +1304,11 @@ export default function VaptUpload() {
 
     if (unansweredQuestion) {
       setChecklistMessage("Please answer every mandatory question before submitting the form.");
+      return;
+    }
+
+    if (!flaggedQuestionsComplete) {
+      setChecklistMessage("Update every SOC-flagged question before submitting the form.");
       return;
     }
 
@@ -1055,9 +1325,9 @@ export default function VaptUpload() {
       checklist_answers: normalizedAnswers,
     };
 
-    // An additional region carries its own checklist so SOC reviews the region
-    // and the checklist together. The org's existing approved checklist (and
-    // therefore its access to other regions) is left untouched.
+      // An additional region carries its own checklist so SOC reviews the region
+      // and the checklist together. The initial region follows the same combined
+      // request path after the administrator grants account access.
     if (regionRequestMode) {
       setChecklistSubmitting(true);
       setChecklistMessage("");
@@ -1083,21 +1353,19 @@ export default function VaptUpload() {
     setChecklistSubmitting(true);
     setChecklistMessage("");
     try {
-      // The region is already approved at this point, so submitting the
-      // checklist is a separate step that SOC reviews on its own.
-      const response = await submitVaptChecklist(payload, token);
+      // Initial access approval unlocks this form; the region and checklist
+      // are submitted together for the administrator's review.
+      const response = await requestVaptAccess([{ code: regionCode, name: regionName }], token, payload);
       setOnboarding((prev) => ({
         ...prev,
-        ...(response?.onboarding
-          ? { ...response.onboarding, testing_start_at: toDatetimeLocal(response.onboarding.testing_start_at) }
-          : payload),
+        ...payload,
         completed: true,
         review_status: "pending",
       }));
       if (response) {
-        setVaptAccessStatus((prev) => ({ ...prev, ...response }));
+        setVaptAccessStatus(response);
       }
-      setChecklistMessage("Your VAPT checklist has been submitted. The SOC team will review it before your reports are unlocked.");
+      setChecklistMessage("Your checklist and region request have been submitted. The administrator will review them together.");
     } catch (err) {
       setChecklistMessage(err?.message || "Unable to submit the checklist. Please try again.");
     } finally {
@@ -1230,13 +1498,30 @@ export default function VaptUpload() {
                   </div>
                 </>
               ) : (
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">Approved region</label>
-                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
-                    <CheckCircle2 size={16} />
-                    {(vaptAccessStatus.approved_regions || []).map((region) => `${region.code} · ${region.name}`).join(", ") || "—"}
+                <>
+                  <div className="space-y-2">
+                    <label htmlFor="initial-region-code" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Region code</label>
+                    <input
+                      id="initial-region-code"
+                      type="text"
+                      value={requestRegionCode}
+                      onChange={(e) => setRequestRegionCode(e.target.value.toUpperCase())}
+                      placeholder="e.g. ACC-IND"
+                      className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500"
+                    />
                   </div>
-                </div>
+                  <div className="space-y-2">
+                    <label htmlFor="initial-region-name" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Region name</label>
+                    <input
+                      id="initial-region-name"
+                      type="text"
+                      value={requestRegionName}
+                      onChange={(e) => setRequestRegionName(e.target.value)}
+                      placeholder="e.g. Accenture India"
+                      className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500"
+                    />
+                  </div>
+                </>
               )}
               <div className="space-y-2">
                 <label htmlFor="testing-start-at" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Testing start</label>
@@ -1316,8 +1601,9 @@ export default function VaptUpload() {
 
                     <div className="space-y-4">
                       {(() => {
-                        const twoColumnQuestions = section.questions.filter((question) => question.short || question.type === "choice");
-                        const fullWidthQuestions = section.questions.filter((question) => !question.short && question.type !== "choice");
+                        const visibleQuestions = section.questions.filter((question) => !question.hidden);
+                        const twoColumnQuestions = [];
+                        const fullWidthQuestions = visibleQuestions;
 
                         return (
                           <>
@@ -1338,7 +1624,7 @@ export default function VaptUpload() {
                                           <span className="inline-flex items-center gap-1.5">
                                             <span className="text-violet-700 dark:text-violet-300">{getQuestionNumber(section.id, question.id)}.</span>
                                             <span>{question.label}</span>
-                                            <span className="text-red-500">*</span>
+                                            {question.required !== false && <span className="text-red-500">*</span>}
                                           </span>
                                         </label>
                                         <button
@@ -1364,12 +1650,39 @@ export default function VaptUpload() {
                                       )}
 
                                       {question.type === "choice" ? (
-                                        <ChoiceChipGroup
-                                          options={question.options}
-                                          value={entry.answer}
-                                          disabled={isQuestionLocked(section.id, question.id)}
-                                          onChange={(option) => updateQuestionAnswer(section.id, question.id, option, false)}
-                                        />
+                                        <>
+                                          <ChoiceChipGroup
+                                            options={question.options}
+                                            value={entry.answer}
+                                            disabled={isQuestionLocked(section.id, question.id)}
+                                            onChange={(option) => updateQuestionAnswer(section.id, question.id, option, false)}
+                                          />
+                                          {question.id === "network_diagram" && entry.answer === "Yes" && (() => {
+                                            const uploadQuestion = section.questions.find((item) => item.inlineFor === question.id);
+                                            const uploadState = uploadQuestion && attachmentState[attachmentKey(section.id, uploadQuestion.id)];
+                                            if (!uploadQuestion) return null;
+                                            return (
+                                              <div className="mt-3 rounded-xl border border-dashed border-violet-300 bg-violet-50/70 p-3 dark:border-violet-800 dark:bg-violet-950/30">
+                                                <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-violet-300 bg-white px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100 dark:border-violet-700 dark:bg-slate-900 dark:text-violet-300 dark:hover:bg-violet-950/60">
+                                                  <FileUp size={15} />
+                                                  {uploadState?.uploading ? "Uploading..." : onboarding.checklist_answers?.[section.id]?.[uploadQuestion.id]?.attachment?.filename || "Upload network diagram"}
+                                                  <input
+                                                    type="file"
+                                                    accept={uploadQuestion.accept}
+                                                    className="hidden"
+                                                    disabled={uploadState?.uploading || isQuestionLocked(section.id, question.id)}
+                                                    onChange={(event) => {
+                                                      handleAttachmentSelected(section.id, uploadQuestion, event.target.files?.[0]);
+                                                      event.target.value = "";
+                                                    }}
+                                                  />
+                                                </label>
+                                                <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">PDF, PNG or JPG. Optional if the diagram is not available.</p>
+                                                {uploadState?.error && <p className="mt-2 text-xs font-semibold text-red-600">{uploadState.error}</p>}
+                                              </div>
+                                            );
+                                          })()}
+                                        </>
                                       ) : (
                                         <input
                                           type="text"
@@ -1403,7 +1716,7 @@ export default function VaptUpload() {
                                           <span className="inline-flex items-center gap-1.5">
                                             <span className="text-violet-700 dark:text-violet-300">{getQuestionNumber(section.id, question.id)}.</span>
                                             <span>{question.label}</span>
-                                            <span className="text-red-500">*</span>
+                                            {question.required !== false && <span className="text-red-500">*</span>}
                                           </span>
                                         </label>
                                         <button
@@ -1428,7 +1741,127 @@ export default function VaptUpload() {
                                         </p>
                                       )}
 
-                                      {question.type === "upload" ? (
+                                      {question.type === "choice" ? (
+                                        <>
+                                          <ChoiceChipGroup
+                                            options={question.options}
+                                            value={entry.answer}
+                                            disabled={isQuestionLocked(section.id, question.id)}
+                                            onChange={(option) => updateQuestionAnswer(section.id, question.id, option, false)}
+                                          />
+                                          {question.id === "network_diagram" && entry.answer === "Yes" && (() => {
+                                            const uploadQuestion = section.questions.find((item) => item.inlineFor === question.id);
+                                            const uploadState = uploadQuestion && attachmentState[attachmentKey(section.id, uploadQuestion.id)];
+                                            if (!uploadQuestion) return null;
+                                            return (
+                                              <div className="mt-3 rounded-xl border border-dashed border-violet-300 bg-violet-50/70 p-3 dark:border-violet-800 dark:bg-violet-950/30">
+                                                <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-violet-300 bg-white px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100 dark:border-violet-700 dark:bg-slate-900 dark:text-violet-300">
+                                                  <FileUp size={15} />
+                                                  {uploadState?.uploading ? "Uploading..." : onboarding.checklist_answers?.[section.id]?.[uploadQuestion.id]?.attachment?.filename || "Upload network diagram"}
+                                                  <input type="file" accept={uploadQuestion.accept} className="hidden" disabled={uploadState?.uploading || isQuestionLocked(section.id, question.id)} onChange={(event) => { handleAttachmentSelected(section.id, uploadQuestion, event.target.files?.[0]); event.target.value = ""; }} />
+                                                </label>
+                                                <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">PDF, PNG or JPG. Optional if the diagram is not available.</p>
+                                                {uploadState?.error && <p className="mt-2 text-xs font-semibold text-red-600">{uploadState.error}</p>}
+                                              </div>
+                                            );
+                                          })()}
+                                        </>
+                                      ) : question.type === "asset_table" ? (
+                                        <div className="space-y-3">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <button
+                                              type="button"
+                                              onClick={handleAssetTemplateDownload}
+                                              className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                                            >
+                                              <FileSpreadsheet size={15} /> Open Excel template
+                                            </button>
+                                            <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-violet-300 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300">
+                                              <FileUp size={15} /> Upload Excel/PDF
+                                              <input
+                                                type="file"
+                                                accept=".xlsx,.xls,.csv,.pdf"
+                                                className="hidden"
+                                                disabled={entry.na || isQuestionLocked(section.id, question.id)}
+                                                onChange={(event) => {
+                                                  handleAttachmentSelected(section.id, question, event.target.files?.[0]);
+                                                  event.target.value = "";
+                                                }}
+                                              />
+                                            </label>
+                                          </div>
+                                          {entry.attachment?.id && (
+                                            <p className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+                                              <CheckCircle2 size={14} /> {entry.attachment.filename}
+                                            </p>
+                                          )}
+                                          <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+                                          <table className="min-w-[1060px] w-full text-left text-xs">
+                                            <thead className="bg-slate-100 text-[10px] font-black uppercase tracking-[0.12em] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                              <tr>
+                                                {ASSET_COLUMNS.map((column) => <th key={column.key} className="whitespace-nowrap px-2 py-2">{column.label}</th>)}
+                                                <th className="px-2 py-2"> </th>
+                                              </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                                              {(entry.rows?.length ? entry.rows : [{}]).map((row, rowIndex) => (
+                                                <tr key={`${question.id}-${rowIndex}`} className="bg-white dark:bg-slate-950">
+                                                  {ASSET_COLUMNS.map((column) => (
+                                                    <td key={column.key} className="p-1.5 align-top">
+                                                      {column.options ? (
+                                                        <select
+                                                          value={row[column.key] || ""}
+                                                          disabled={entry.na || isQuestionLocked(section.id, question.id)}
+                                                          onChange={(event) => {
+                                                            const rows = [...(entry.rows?.length ? entry.rows : [{}])];
+                                                            rows[rowIndex] = { ...rows[rowIndex], [column.key]: event.target.value };
+                                                            updateAssetRows(section.id, question.id, rows);
+                                                          }}
+                                                          className="w-full min-w-[105px] rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                                                        >
+                                                          <option value="">Select</option>
+                                                          {column.options.map((option) => <option key={option} value={option}>{option}</option>)}
+                                                        </select>
+                                                      ) : (
+                                                        <input
+                                                          value={row[column.key] || ""}
+                                                          disabled={entry.na || isQuestionLocked(section.id, question.id)}
+                                                          onChange={(event) => {
+                                                            const rows = [...(entry.rows?.length ? entry.rows : [{}])];
+                                                            rows[rowIndex] = { ...rows[rowIndex], [column.key]: event.target.value };
+                                                            updateAssetRows(section.id, question.id, rows);
+                                                          }}
+                                                          className="w-full min-w-[105px] rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                                                          placeholder={column.label}
+                                                        />
+                                                      )}
+                                                    </td>
+                                                  ))}
+                                                  <td className="p-1.5 align-top">
+                                                    <button
+                                                      type="button"
+                                                      disabled={entry.na || isQuestionLocked(section.id, question.id) || (entry.rows?.length || 0) <= 1}
+                                                      onClick={() => updateAssetRows(section.id, question.id, (entry.rows || [{}]).filter((_, index) => index !== rowIndex))}
+                                                      className="rounded-lg border border-red-200 px-2 py-2 text-[10px] font-bold text-red-600 disabled:opacity-40"
+                                                    >
+                                                      Remove
+                                                    </button>
+                                                  </td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                          <button
+                                            type="button"
+                                            disabled={entry.na || isQuestionLocked(section.id, question.id)}
+                                            onClick={() => updateAssetRows(section.id, question.id, [...(entry.rows || [{}]), {}])}
+                                            className="m-2 rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300"
+                                          >
+                                            Add asset row
+                                          </button>
+                                          </div>
+                                        </div>
+                                      ) : question.type === "upload" ? (
                                         <div className="space-y-2">
                                           <div className="flex flex-wrap items-center gap-2">
                                             <label className={`inline-flex items-center justify-center gap-2 rounded-xl border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300 ${entry.na || isQuestionLocked(section.id, question.id) || attachmentState[attachmentKey(section.id, question.id)]?.uploading ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
@@ -1463,7 +1896,7 @@ export default function VaptUpload() {
                                             </p>
                                           ) : (
                                             <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-slate-500 dark:text-slate-400">
-                                              {question.required === false ? "Optional — upload here, or email your SOC contact" : "Required — upload a file, or mark N/A and explain by email"}
+                                              {question.required === false ? "Optional — upload a file" : "Required — upload a file, or mark N/A and explain by email"}
                                             </p>
                                           )}
 

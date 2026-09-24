@@ -445,7 +445,11 @@ export default function SocAnalystVaptReports() {
                     const sev = severityMeta(item.severity);
                     const FormatIcon = FORMAT_ICON[item.file_format] || FileText;
                     return (
-                      <tr key={item.import_id} className="group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                      <tr
+                        key={item.import_id}
+                        onClick={() => navigate(`/admin/vapt-reports/${item.import_id}`)}
+                        className="group cursor-pointer transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                      >
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
                             <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${FORMAT_BADGE[item.file_format] || FORMAT_BADGE.xml}`}>
@@ -512,7 +516,10 @@ export default function SocAnalystVaptReports() {
                             <button
                               type="button"
                               title="View report"
-                              onClick={() => navigate(`/admin/vapt-reports/${item.import_id}`)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/admin/vapt-reports/${item.import_id}`);
+                              }}
                               className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-purple-300 hover:bg-purple-50 hover:text-purple-700 dark:border-slate-700 dark:text-slate-400 dark:hover:border-purple-700 dark:hover:bg-purple-950/30 dark:hover:text-purple-400"
                             >
                               <Eye size={15} />
@@ -520,7 +527,10 @@ export default function SocAnalystVaptReports() {
                             <button
                               type="button"
                               title="Download PDF"
-                              onClick={() => handleDownload(item.import_id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDownload(item.import_id);
+                              }}
                               className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-400 dark:hover:border-emerald-700 dark:hover:bg-emerald-950/30 dark:hover:text-emerald-400"
                             >
                               <Download size={15} />

@@ -3,7 +3,8 @@ from pydantic import BaseModel, EmailStr
 
 
 class BlacklistEmailRequest(BaseModel):
-    email: EmailStr
+    email: str | None = None
+    user_id: str | None = None
 
 
 class VaptBlockRequest(BaseModel):

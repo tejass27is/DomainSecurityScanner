@@ -506,7 +506,7 @@ def _risk_matrix(findings, styles, cell=15 * mm):
 # Cover & back cover — full-bleed, drawn directly on their own canvas pages
 # ─────────────────────────────────────────────────────────────────────────
 
-def _build_cover_pdf(record, client_name, report_title, version, assessment_date, cover_logo_path):
+def _build_cover_pdf(record, client_name, report_title, version, assessment_date, cover_logo_path, region_display=None):
     buf = BytesIO()
     c = pdfcanvas.Canvas(buf, pagesize=A4)
 
@@ -551,6 +551,8 @@ def _build_cover_pdf(record, client_name, report_title, version, assessment_date
     c.setLineWidth(1)
     c.line(cx - 30 * mm, title_y - 16 * mm, cx + 30 * mm, title_y - 16 * mm)
 
+    if region_display:
+        region_display = region_display if len(region_display) <= 46 else region_display[:43].rsplit(" ", 1)[0] + "..."
     meta_y = title_y - 30 * mm
     meta_rows = [("Prepared for", client_name), ("Assessment date", assessment_date), ("Report version", version)]
     for label, value in meta_rows:
@@ -561,6 +563,15 @@ def _build_cover_pdf(record, client_name, report_title, version, assessment_date
         c.setFillColor(INK)
         c.drawCentredString(cx, meta_y - 5.6 * mm, _latin1_safe(str(value)))
         meta_y -= 15 * mm
+
+
+        c.setFont(_font("bold"), 8.5)
+        c.setFillColor(PRIMARY)
+        c.drawCentredString(cx, meta_y, "REGION")
+        c.setFont(_font(), 10)
+        c.setFillColor(INK)
+        c.drawCentredString(cx, meta_y - 4.6 * mm, _latin1_safe(str(region_display)))
+        meta_y -= 12 * mm
 
     # confidential badge, bottom of page
     badge_w, badge_h = 46 * mm, 9 * mm
@@ -634,6 +645,15 @@ def _make_header_footer(report_title, client_name, version, assessment_date):
         canvas_.setFont(_font(), 8)
         canvas_.setFillColor(MUTED)
         canvas_.drawRightString(PAGE_W - MARGIN, PAGE_H - 10.6 * mm, client_name)
+
+        # Show the configured region label in the header so the report
+        # identifies the region on every page (Initial VAPT, verification,
+        # and closure reports all stay consistent).
+        if region_display:
+            _region_display = (str(region_display) if len(str(region_display)) <= 40 else region_display[:37].rsplit(" ", 1)[0] + "...")
+            canvas_.setFont(_font(), 7.5)
+            canvas_.setFillColor(PRIMARY)
+            canvas_.drawRightString(PAGE_W - MARGIN - 12 * mm, PAGE_H - 10.6 * mm, _region_display)
 
         # footer
         canvas_.setStrokeColor(BORDER)
@@ -1172,6 +1192,8 @@ def _reported_only(record, findings_override=None):
 # ─────────────────────────────────────────────────────────────────────────
 
 _DEFAULT_COVER_LOGO_CANDIDATES = [
+    "app/assets/isecurify_logo.png",
+    "/app/app/assets/isecurify_logo.png",
     "ShieldStat-Frontend/src/assets/iSecurify Logo - Full Colour - Transparent (2).png",
     "assets/isecurify-logo.png",
 ]
@@ -1214,6 +1236,23 @@ def generate_vapt_report_pdf(
 
     created = record.created_at or datetime.now(timezone.utc)
     client_name = client_name or getattr(record, "org_id", None) or "the client"
+    # Initial VAPT report: show the same configured region label as the
+    # verification/closure reports instead of the raw org_id.
+    region_code = str(getattr(record, "region", "") or "").strip()
+    if not region_code:
+        region_code = str(getattr(record, "region_code", "") or "").strip()
+    region_display = None
+    if region_code:
+        _region = getattr(record, "_region", None)
+        if _region is None:
+            _region = getattr(record, "region_row", None)
+        if _region is None:
+            try:
+                from sqlalchemy.orm import Session
+                _region = db.query(Region).filter(Region.code == region_code).first() if db is not None else None
+            except Exception:
+                _region = None
+        region_display = (_region.name if _region is not None and hasattr(_region, "name") else region_code)
     engagement_start = engagement_start or created.strftime("%d %b %Y")
     engagement_end = engagement_end or created.strftime("%d %b %Y")
     assessment_date = created.strftime("%d %b %Y")
@@ -1258,7 +1297,7 @@ def generate_vapt_report_pdf(
     body_buf.seek(0)
 
     # ── full-bleed cover + back cover, drawn separately, then merged ──
-    cover_buf = _build_cover_pdf(record, client_name, report_title, version, assessment_date, cover_logo)
+    cover_buf = _build_cover_pdf(record, client_name, report_title, version, assessment_date, cover_logo, region_display=region_display)
     back_buf = _build_back_cover_pdf(back_logo, version, assessment_date)
 
     writer = PdfWriter()

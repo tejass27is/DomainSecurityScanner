@@ -528,11 +528,22 @@ def _map_acunetix_vulnerabilities(vulnerabilities: list[dict], fallback_url: str
             "host": affected_url,
             "port": vuln.get("port"),
             "protocol": str(vuln.get("protocol") or ""),
-            "service": "",
+            "service": str(vuln.get("service") or ""),
             "evidence": str(vuln.get("evidence") or ""),
+            "http_request": str(vuln.get("http_request") or vuln.get("request") or ""),
+            "http_response": str(vuln.get("http_response") or vuln.get("response") or ""),
+            "request_headers": str(vuln.get("request_headers") or ""),
+            "response_headers": str(vuln.get("response_headers") or ""),
+            "request_body": str(vuln.get("request_body") or ""),
+            "response_body": str(vuln.get("response_body") or ""),
             "affected_detail": affects_detail,
             "cwe": vuln.get("cwe"),
-            "status": "pending",
+            "confidence": vuln.get("confidence"),
+            "status": str(vuln.get("status") or "pending"),
+            "last_seen": str(vuln.get("last_seen") or ""),
+            "target_id": str(vuln.get("target_id") or ""),
+            "vuln_id": str(vuln.get("vuln_id") or ""),
+            "result_id": str(vuln.get("result_id") or ""),
         })
 
     return mapped
@@ -669,9 +680,34 @@ async def webscan_result(
             finding["affected_url"] = str(affected_hosts[0]) if affected_hosts else record.target_url
             finding["affected_detail"] = detail_by_plugin.get(plugin_id, "") or str(finding.get("synopsis") or "")
 
+            # normalize_import intentionally keeps the common VAPT fields, so
+            # restore Acunetix-specific technical fields for the Developer PDF.
+            source_item = next((item for item in mapped if str(item.get("plugin_id") or "") == plugin_id), None)
+            if source_item:
+                for key in (
+                    "http_request", "http_response", "request_headers", "response_headers",
+                    "request_body", "response_body", "cvss_vector", "references", "cves",
+                    "vuln_id", "result_id", "confidence", "last_seen", "target_id",
+                    "port", "protocol", "service", "affected_detail", "status",
+                ):
+                    if source_item.get(key) not in (None, "", []):
+                        finding[key] = source_item[key]
+                if source_item.get("cvss_score") is not None:
+                    finding["cvss_score"] = source_item["cvss_score"]
+                if source_item.get("description"):
+                    finding["description"] = source_item["description"]
+                if source_item.get("recommendation"):
+                    finding["solution"] = source_item["recommendation"]
+                if source_item.get("evidence"):
+                    finding["evidence"] = source_item["evidence"]
+
         summary = dict(normalized.get("summary") or {})
         summary["target_url"] = record.target_url
         summary["acunetix_scan_id"] = record.acunetix_scan_id
+        summary["scan_metadata"] = (request.metadata or {}).get("scan_metadata") or {}
+        summary["reconnaissance"] = (request.metadata or {}).get("reconnaissance") or {}
+        summary["best_practices"] = (request.metadata or {}).get("best_practices") or []
+        summary["compliance"] = (request.metadata or {}).get("compliance") or []
 
         unique_urls = {
             str(finding.get("affected_url") or "").strip()

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Loader2, CheckCircle2, Clock, XCircle } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle } from "lucide-react";
 import {
   getProfile,
   getMembers,
@@ -8,15 +8,12 @@ import {
   deleteMember,
   getScore,
   redeemPromo,
-  requestVaptAccess,
   getVaptAccessStatus,
   removeDomain,
   getNotificationPreferences,
   updateNotificationPreferences,
 } from "../services/api";
 import { clearAuthSession } from "../utils/auth";
-
-const MAX_VAPT_REGIONS = 5;
 
 function normalizeDomain(domain) {
   return (domain || "").trim();
@@ -89,21 +86,6 @@ function Profile() {
     requested_regions: [],
   });
   const [vaptAccessLoading, setVaptAccessLoading] = useState(false);
-  const [vaptAccessCode, setVaptAccessCode] = useState(""); // Text code e.g. ACC-IND
-  const [vaptRegionName, setVaptRegionName] = useState(""); // User-typed region name e.g. Accenture India
-  const [vaptRequestSubmitting, setVaptRequestSubmitting] = useState(false);
-  const [vaptRequestMessage, setVaptRequestMessage] = useState("");
-
-  const normalizeRegionEntries = (items = []) =>
-    (Array.isArray(items) ? items : []).map((item) => {
-      if (typeof item === "string") return item;
-      if (item && typeof item === "object") return item.code || item.region || item.name || null;
-      return null;
-    }).filter(Boolean);
-
-  const approvedRegionCodes = normalizeRegionEntries(vaptAccessStatus.approved_regions || vaptAccessStatus.approved_region_codes || []);
-  const pendingRegionCodes = normalizeRegionEntries(vaptAccessStatus.pending_regions || vaptAccessStatus.pending_region_codes || vaptAccessStatus.requested_regions || []);
-  const requestedRegionCount = approvedRegionCodes.length + pendingRegionCodes.length;
 
   const [toast, setToast] = useState(null);
 
@@ -579,7 +561,7 @@ function Profile() {
           )}
         </div>
       </div>
-      {/* ═══════════════ VAPT ACCESS REQUEST (non-admin only) ═══════════════ */}
+      {/* ═══════════════ VAPT ACCESS (non-admin only) ═══════════════ */}
       {profile?.role !== "admin" && (
         <div className="mb-6 grid grid-cols-1 gap-6">
           <section>
@@ -597,16 +579,10 @@ function Profile() {
                     Blocked
                   </span>
                 )}
-                {!vaptAccessStatus.vapt_blocked && approvedRegionCodes.length > 0 && (
+                {!vaptAccessStatus.vapt_blocked && vaptAccessStatus.vapt_approved && (
                   <span className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 border border-emerald-200">
                     <CheckCircle2 size={14} />
-                    Approved ({approvedRegionCodes.length})
-                  </span>
-                )}
-                {!vaptAccessStatus.vapt_blocked && pendingRegionCodes.length > 0 && (
-                  <span className="flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700 border border-amber-200">
-                    <Clock size={14} />
-                    Pending ({pendingRegionCodes.length})
+                    Approved
                   </span>
                 )}
               </div>
@@ -627,127 +603,21 @@ function Profile() {
                   </div>
                 ) : (
                   <div className="space-y-5">
-                    {approvedRegionCodes.length === 0 && pendingRegionCodes.length === 0 && (
-                      <p className="text-sm text-slate-600 dark:text-slate-300">
-                        You don't have VAPT access yet. Request the region you need below and it will
-                        be sent to your admin for approval.
-                      </p>
-                    )}
-
-                    {approvedRegionCodes.length > 0 && (
-                      <div className="flex items-start gap-3 rounded-xl bg-emerald-50 p-4 border border-emerald-200">
+                    {vaptAccessStatus.vapt_approved ? (
+                      <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
                         <CheckCircle2 size={20} className="mt-0.5 shrink-0 text-emerald-600" />
                         <div>
                           <p className="text-sm font-semibold text-emerald-900">VAPT access approved</p>
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {approvedRegionCodes.map((code) => (
-                              <span key={code} className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-800">
-                                ✓ {code}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {pendingRegionCodes.length > 0 && (
-                      <div className="flex items-start gap-3 rounded-xl bg-amber-50 p-4 border border-amber-200">
-                        <Clock size={20} className="mt-0.5 shrink-0 text-amber-600" />
-                        <div>
-                          <p className="text-sm font-semibold text-amber-900">Request pending approval</p>
-                          <p className="mt-1 text-sm text-amber-800">You requested: <span className="font-bold">{pendingRegionCodes.join(", ")}</span></p>
-                          <p className="mt-2 text-xs text-amber-700">Your admin will review and approve or deny your request shortly.</p>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className={`${approvedRegionCodes.length > 0 || pendingRegionCodes.length > 0 ? "pt-4 border-t border-slate-200" : ""}`}>
-                        <p className="text-sm text-slate-600 dark:text-slate-300 mb-3">
-                          {approvedRegionCodes.length > 0 || pendingRegionCodes.length > 0
-                            ? "Request access to additional regions:"
-                            : "Request VAPT access:"}{" "}
-                          <span className="text-xs font-semibold text-slate-400">
-                            ({requestedRegionCount}/{MAX_VAPT_REGIONS} regions)
-                          </span>
-                        </p>
-                        {requestedRegionCount >= MAX_VAPT_REGIONS ? (
-                          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
-                            You've reached the maximum of {MAX_VAPT_REGIONS} VAPT regions for your
-                            organization. Contact your admin if you need more.
-                          </div>
-                        ) : (
-                        <div className="space-y-3">
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            <div>
-                              <label htmlFor="vapt-region-code" className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                                Region code
-                              </label>
-                              <input
-                                id="vapt-region-code"
-                                type="text"
-                                value={vaptAccessCode}
-                                onChange={(e) => setVaptAccessCode(e.target.value.toUpperCase())}
-                                placeholder="e.g. ACC-IND"
-                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 font-mono text-sm font-semibold uppercase tracking-wide text-slate-900 outline-none transition placeholder:font-sans placeholder:font-normal placeholder:normal-case placeholder:text-slate-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-                              />
-                            </div>
-                            <div>
-                              <label htmlFor="vapt-region-name" className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                                Region name
-                              </label>
-                              <input
-                                id="vapt-region-name"
-                                type="text"
-                                value={vaptRegionName}
-                                onChange={(e) => setVaptRegionName(e.target.value)}
-                                placeholder="e.g. Accenture India"
-                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-                              />
-                            </div>
-                          </div>
-                          <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">
-                            Code: <b className="text-slate-700 dark:text-slate-200">first 3 letters of your company</b> +{" "}
-                            <b className="text-slate-700 dark:text-slate-200">“-”</b> + <b className="text-slate-700 dark:text-slate-200">region</b>. You type both the code and
-                            the name yourself — nothing is preset. Example: <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-bold text-purple-700 dark:bg-slate-800 dark:text-purple-300">ACC-IND</code>{" "}
-                            / <b className="text-slate-700 dark:text-slate-200">Accenture India</b>.
+                          <p className="mt-1 text-sm text-emerald-700">
+                            Your administrator has enabled VAPT for this account. The VAPT section is available in the sidebar.
                           </p>
-                          <button
-                            type="button"                              onClick={async () => {
-                              const code = (vaptAccessCode || "").trim().toUpperCase();
-                              const name = (vaptRegionName || "").trim();
-                              if (!code || !name) {
-                                setToast({ text: "Please enter both the region code and region name (e.g. ACC-IND / Accenture India)", type: "error" });
-                                return;
-                              }
-                              setVaptRequestSubmitting(true);
-                              setVaptRequestMessage("");
-                              try {
-                                await requestVaptAccess([{ code, name }], token);
-                                const nextStatus = await getVaptAccessStatus(token);
-                                setVaptAccessStatus(nextStatus || { vapt_access_enabled: false, approved_regions: [], pending_regions: [], available_regions: [], requested_regions: [] });
-                              setVaptAccessCode("");
-                              setVaptRegionName("");
-                              setVaptRequestMessage("");
-                              setToast({ text: `VAPT request for ${code} (${name}) submitted. Waiting for admin approval.`, type: "success" });
-                              } catch (err) {
-                                setVaptRequestMessage(err?.message || "Unable to submit VAPT request.");
-                              } finally {
-                                setVaptRequestSubmitting(false);
-                              }
-                            }}
-                            disabled={vaptRequestSubmitting || vaptAccessLoading || !(vaptAccessCode || "").trim()}
-                            className="w-full inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:opacity-95 disabled:opacity-60"
-                          >
-                            {vaptRequestSubmitting ? "Submitting..." : "Request Access"}
-                          </button>
-                          {vaptRequestMessage && (
-                            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
-                              {vaptRequestMessage}
-                            </div>
-                          )}
                         </div>
-                        )}
                       </div>
+                    ) : (
+                      <p className="text-sm text-slate-600 dark:text-slate-300">
+                        VAPT is not enabled for this account. Ask your administrator to approve VAPT access.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -1040,30 +910,33 @@ function Profile() {
               </div>
 
               <div className="divide-y divide-slate-100">
-                {NOTIFICATION_CHANNELS.map((ch) => (
-                  <div key={ch.key} className="flex items-center justify-between px-6 py-4">
-                    <div>
-                      <span className="block text-sm font-bold text-slate-900">{ch.label}</span>
-                      <span className="block text-xs text-slate-500">{ch.description}</span>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={notifPrefs.channels[ch.key] !== false}
-                      onClick={() => handleToggleChannel(ch.key, notifPrefs.channels[ch.key] === false)}
-                      disabled={notifLoading}
-                      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-60 ${
-                        notifPrefs.channels[ch.key] !== false ? "bg-indigo-600" : "bg-slate-300"
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                          notifPrefs.channels[ch.key] !== false ? "translate-x-[22px]" : "translate-x-0.5"
+                {NOTIFICATION_CHANNELS.map((ch) => {
+                  const enabled = notifPrefs.channels[ch.key] !== false;
+
+                  return (
+                    <div key={ch.key} className="flex items-center justify-between gap-4 px-6 py-5">
+                      <div className="min-w-0 flex-1">
+                        <span className="block text-[15px] font-bold text-slate-900 md:text-base">{ch.label}</span>
+                        <span className="mt-1 block text-sm leading-relaxed text-slate-500">{ch.description}</span>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={enabled}
+                        onClick={() => handleToggleChannel(ch.key, !enabled)}
+                        disabled={notifLoading}
+                        className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full border transition-all duration-200 ease-in-out focus:outline-none focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:opacity-60 ${
+                          enabled ? "border-indigo-600 bg-indigo-600 shadow-[0_0_0_1px_rgba(79,70,229,0.08)]" : "border-slate-200 bg-slate-300"
                         }`}
-                      />
-                    </button>
-                  </div>
-                ))}
+                      >
+                        <span
+                          className="absolute top-1 h-6 w-6 rounded-full bg-white shadow-sm transition-transform duration-200 ease-in-out"
+                          style={{ transform: enabled ? "translateX(26px)" : "translateX(0px)" }}
+                        />
+                      </button>
+                    </div>
+                  );
+                })}
 
                 <div className="flex flex-col gap-4 px-6 py-5">
                   <div className="flex items-center gap-3">

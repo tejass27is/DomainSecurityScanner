@@ -146,6 +146,11 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
                 "service": finding.get("service") or "",
                 "plugin_id": finding.get("plugin_id") or "",
                 "plugin_family": finding.get("plugin_family") or "",
+                "vuln_id": finding.get("vuln_id") or "",
+                "result_id": finding.get("result_id") or "",
+                "confidence": finding.get("confidence"),
+                "last_seen": finding.get("last_seen") or "",
+                "target_id": finding.get("target_id") or "",
                 "description": finding.get("description") or "",
                 "synopsis": finding.get("synopsis") or "",
                 "solution": finding.get("solution") or "",
@@ -160,6 +165,13 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
                 "hostname": (finding.get("hostname") or "").strip(),
                 "operating_system": (finding.get("operating_system") or "").strip(),
                 "remarks": (finding.get("remarks") or "").strip(),
+                "affected_detail": finding.get("affected_detail") or "",
+                "http_request": finding.get("http_request") or "",
+                "http_response": finding.get("http_response") or "",
+                "request_headers": finding.get("request_headers") or "",
+                "response_headers": finding.get("response_headers") or "",
+                "request_body": finding.get("request_body") or "",
+                "response_body": finding.get("response_body") or "",
             }
             order.append(key)
 
@@ -193,6 +205,17 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
             entry["operating_system"] = (finding.get("operating_system") or "").strip()
         if not entry.get("remarks") and (finding.get("remarks") or "").strip():
             entry["remarks"] = (finding.get("remarks") or "").strip()
+        for field in ("affected_detail", "http_request", "http_response", "request_headers", "response_headers", "request_body", "response_body"):
+            if len(str(entry.get(field) or "")) < len(str(finding.get(field) or "")):
+                entry[field] = finding.get(field) or ""
+        for field in ("vuln_id", "result_id", "last_seen", "target_id"):
+            if not entry.get(field) and finding.get(field):
+                entry[field] = finding[field]
+        if entry.get("confidence") is None and finding.get("confidence") is not None:
+            entry["confidence"] = finding["confidence"]
+        for field in ("port", "protocol", "service"):
+            if not entry.get(field) and finding.get(field):
+                entry[field] = finding[field]
 
         # Prefer the most detailed description/solution we've seen.
         if len(entry["description"]) < len(finding.get("description") or ""):

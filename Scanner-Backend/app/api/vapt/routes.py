@@ -22,7 +22,7 @@ from app.api.vapt.parser import (
     parse_upload,
 )
 from app.api.vapt.normalizer import normalize_import
-from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
+from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_closure_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
 from app.api.vapt.schemas import (
     VaptFindingStatusUpdate,
     VaptImportDetail,
@@ -84,6 +84,44 @@ def _normalize_review_flags(raw) -> list[dict]:
             }
         )
     return flags
+
+
+def _clear_flagged_answers(answers, flags: list[dict]) -> dict:
+    """Clear values SOC marked for rework before the client sees the form."""
+    result = json.loads(json.dumps(answers or {}))
+    for flag in flags:
+        section = result.get(flag.get("section"))
+        if not isinstance(section, dict):
+            continue
+        entry = section.get(flag.get("question_id"))
+        if not isinstance(entry, dict):
+            continue
+        flag["previous_answer"] = entry.get("answer") or ""
+        flag["previous_na"] = bool(entry.get("na"))
+        attachment = entry.get("attachment")
+        flag["previous_attachment_id"] = str(attachment.get("id")) if isinstance(attachment, dict) and attachment.get("id") else ""
+        entry["answer"] = ""
+        entry["na"] = False
+        entry.pop("attachment", None)
+    return result
+
+
+def _flagged_answers_updated(answers, flags: list[dict]) -> bool:
+    """Ensure every flagged item is re-entered rather than resubmitted unchanged."""
+    for flag in flags:
+        entry = (answers.get(flag.get("section")) or {}).get(flag.get("question_id")) if isinstance(answers, dict) else None
+        entry = entry if isinstance(entry, dict) else {}
+        attachment = entry.get("attachment")
+        attachment_id = str(attachment.get("id")) if isinstance(attachment, dict) and attachment.get("id") else ""
+        current = (entry.get("answer") or "", bool(entry.get("na")), attachment_id)
+        previous = (
+            flag.get("previous_answer") or "",
+            bool(flag.get("previous_na")),
+            str(flag.get("previous_attachment_id") or ""),
+        )
+        if current == previous or (not current[0].strip() and not current[1] and not current[2]):
+            return False
+    return True
 
 
 def _checklist_review_email_note(status: str, note: str | None, flags: list[dict]) -> str:
@@ -247,6 +285,8 @@ def _missing_required_uploads(db: Session, org_id: str, answers) -> list:
         attachment = entry.get("attachment")
         attachment_id = str(attachment.get("id")) if isinstance(attachment, dict) and attachment.get("id") else ""
         if not attachment_id:
+            if question_id == "asset_list_upload" and isinstance(entry.get("rows"), list) and any(isinstance(row, dict) and any(str(value or "").strip() for value in row.values()) for row in entry["rows"]):
+                continue
             missing.append(rule["label"])
             continue
         # The metadata lives in client-supplied JSON, so confirm the row really
@@ -504,6 +544,217 @@ def download_checklist_attachment(
     )
 
 
+def _checklist_rows(checklist_data: dict) -> list[list[str]]:
+    """Flatten checklist answers for readable SOC exports."""
+    rows = [["Section", "Question", "Answer"]]
+    answers = checklist_data.get("checklist_answers") or {}
+    for section_id, section in answers.items():
+        if not isinstance(section, dict):
+            continue
+        for question_id, entry in section.items():
+            if not isinstance(entry, dict):
+                continue
+            answer = entry.get("answer") or ""
+            if isinstance(entry.get("rows"), list):
+                answer = "\n".join(
+                    ", ".join(f"{key}: {value}" for key, value in row.items() if str(value or "").strip())
+                    for row in entry["rows"] if isinstance(row, dict) and any(str(value or "").strip() for value in row.values())
+                )
+            if entry.get("attachment"):
+                answer = f"{answer}\nFile: {entry['attachment'].get('filename', '')}".strip()
+            if entry.get("na"):
+                answer = "N/A"
+            rows.append([section_id.replace("_", " "), entry.get("question") or question_id, str(answer)])
+    return rows
+
+
+def _generate_checklist_xlsx(checklist_data: dict) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Checklist"
+    sheet.append(["Field", "Value"])
+    metadata = [
+        ("Region", checklist_data.get("region_name") or checklist_data.get("region_code") or "Organization onboarding"),
+        ("Approved at", checklist_data.get("approved_at") or checklist_data.get("reviewed_at") or ""),
+        ("Testing timezone", checklist_data.get("testing_timezone") or ""),
+        ("Testing start", checklist_data.get("testing_start_at") or ""),
+        ("Testing end", checklist_data.get("testing_end_at") or ""),
+    ]
+    for key, value in metadata:
+        sheet.append([key, str(value)])
+    sheet.append([])
+    for row in _checklist_rows(checklist_data):
+        sheet.append(row)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="205A87")
+    for row in sheet.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+    sheet.column_dimensions["A"].width = 28
+    sheet.column_dimensions["B"].width = 48
+    sheet.column_dimensions["C"].width = 90
+    sheet.freeze_panes = "A2"
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def _generate_checklist_pdf(checklist_data: dict) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    output = io.BytesIO()
+    document = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=12 * mm, leftMargin=12 * mm, topMargin=12 * mm, bottomMargin=12 * mm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("ChecklistTitle", parent=styles["Title"], alignment=TA_CENTER, textColor=colors.HexColor("#205A87"), spaceAfter=8)
+    cell_style = ParagraphStyle("ChecklistCell", parent=styles["BodyText"], fontSize=7.5, leading=9)
+    header_style = ParagraphStyle("ChecklistHeader", parent=cell_style, textColor=colors.white, fontName="Helvetica-Bold")
+    region = checklist_data.get("region_name") or checklist_data.get("region_code") or "Organization onboarding"
+    story = [Paragraph("VAPT Client Checklist", title_style), Paragraph(f"Region: {region}", styles["Heading3"]), Spacer(1, 5)]
+    rows = _checklist_rows(checklist_data)
+    table_data = [[Paragraph(str(value).replace("&", "&amp;"), header_style if index == 0 else cell_style) for value in row] for index, row in enumerate(rows)]
+    table = Table(table_data, colWidths=[42 * mm, 92 * mm, 120 * mm], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#205A87")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F1F5F9")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(table)
+    document.build(story)
+    return output.getvalue()
+
+
+@router.get("/admin/onboarding/{org_id}/bundle")
+def download_approved_onboarding_bundle(
+    org_id: str,
+    region_code: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Download an approved org or region checklist and its submitted files."""
+    checklist = db.query(VaptOnboardingChecklist).filter(
+        VaptOnboardingChecklist.org_id == org_id,
+        VaptOnboardingChecklist.review_status == "approved",
+        VaptOnboardingChecklist.completed_at.isnot(None),
+    ).first()
+    region = None
+    if region_code:
+        region = db.query(Region).filter(Region.code == region_code.strip().upper()).first()
+        row = db.query(OrganizationRegion).filter(
+            OrganizationRegion.org_id == org_id,
+            OrganizationRegion.region_id == (region.region_id if region else -1),
+            OrganizationRegion.status == "approved",
+            OrganizationRegion.checklist_review_status == "approved",
+        ).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="An approved regional checklist was not found.")
+        if row.checklist_submission:
+            checklist_data = row.checklist_submission
+        elif checklist:
+            # The first approved region uses the organisation-level checklist.
+            checklist_data = _onboarding_to_dict(checklist)
+        else:
+            raise HTTPException(status_code=404, detail="An approved regional checklist was not found.")
+        checklist_data = {
+            **checklist_data,
+            "region_code": region.code,
+            "region_name": region.name,
+            "approved_at": row.reviewed_at or checklist_data.get("reviewed_at"),
+        }
+        answers = checklist_data.get("checklist_answers") or {}
+        package_name = f"{region.code}-{region.name}" if region else region_code
+    else:
+        if not checklist:
+            raise HTTPException(status_code=404, detail="An approved VAPT checklist was not found.")
+        checklist_data = _onboarding_to_dict(checklist)
+        answers = checklist.checklist_answers or {}
+        package_name = "organization"
+
+    attachment_ids = _attachment_ids_in(answers)
+    attachments = db.query(VaptChecklistAttachment).filter(
+        VaptChecklistAttachment.org_id == org_id,
+        VaptChecklistAttachment.id.in_(sorted(attachment_ids)),
+    ).all() if attachment_ids else []
+    attachments_by_id = {str(row.id): row for row in attachments}
+
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("checklist.pdf", _generate_checklist_pdf(checklist_data))
+        archive.writestr("checklist.xlsx", _generate_checklist_xlsx(checklist_data))
+        used_names = {"checklist.pdf", "checklist.xlsx"}
+        for attachment_id in sorted(attachment_ids):
+            row = attachments_by_id.get(attachment_id)
+            if not row:
+                continue
+            path = os.path.join(ATTACHMENT_DIR, row.stored_name)
+            if not os.path.isfile(path):
+                continue
+            filename = os.path.basename(row.original_filename).replace("\"", "") or f"attachment-{attachment_id}"
+            if filename in used_names:
+                stem, extension = os.path.splitext(filename)
+                filename = f"{stem}-{attachment_id[:8]}{extension}"
+            used_names.add(filename)
+            archive.write(path, filename)
+
+    bundle.seek(0)
+    safe_package_name = "".join(character if character.isalnum() or character in "-_" else "_" for character in package_name)
+    return StreamingResponse(
+        bundle,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="vapt-checklist-{safe_package_name[:64]}.zip"'},
+    )
+
+
+@router.get("/onboarding/asset-template")
+def download_asset_list_template(
+    current_user: User = Depends(protect),
+):
+    """Create the Excel asset-entry template used by client onboarding."""
+    from openpyxl import Workbook
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Asset Details"
+    columns = ["Employee Name", "Host Name", "IP Address", "Device", "OS/Version", "Device Type", "Environment", "Remarks"]
+    sheet.append(columns)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="205A87")
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = "A1:H101"
+    widths = [22, 24, 20, 18, 18, 18, 28, 32]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[chr(64 + index)].width = width
+    device_validation = DataValidation(type="list", formula1='"Laptop,Desktop"', allow_blank=True)
+    type_validation = DataValidation(type="list", formula1='"Personal,Office"', allow_blank=True)
+    sheet.add_data_validation(device_validation)
+    sheet.add_data_validation(type_validation)
+    device_validation.add("D2:D101")
+    type_validation.add("F2:F101")
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="vapt-asset-list-template.xlsx"'},
+    )
+
+
 @router.delete("/onboarding/attachment/{attachment_id}")
 def delete_checklist_attachment(
     attachment_id: str,
@@ -664,6 +915,8 @@ async def submit_onboarding_checklist(
     # and treating those as never-answered is what made a valid submission look
     # incomplete. Uploads are validated against the merged set below.
     record.checklist_answers = _build_submission_answers(record.checklist_answers, payload) or record.checklist_answers
+    if record.review_status == "changes_requested" and record.review_flags and not _flagged_answers_updated(record.checklist_answers, record.review_flags):
+        raise HTTPException(status_code=400, detail="Update every SOC-flagged checklist question before resubmitting.")
     if not _is_onboarding_complete(record):
         raise HTTPException(status_code=400, detail="The checklist is incomplete.")
 
@@ -762,7 +1015,9 @@ async def review_vapt_onboarding(
     checklist.reviewed_at = datetime.now(timezone.utc)
     checklist.review_note = note
     if status == "changes_requested":
-        # Keep completed_at so the submission (and every answer) survives.
+        # Keep the submission cycle, but clear flagged values so the client must
+        # provide fresh answers before this checklist can be resubmitted.
+        checklist.checklist_answers = _clear_flagged_answers(checklist.checklist_answers, flags)
         checklist.review_flags = flags
     elif status == "approved":
         checklist.review_flags = None
@@ -1034,6 +1289,10 @@ async def request_vapt_region(
         for key in submission_fields
         if payload.get(key) is not None
     }
+    if row.checklist_review_status == "changes_requested" and row.checklist_flags:
+        submitted_answers = submission.get("checklist_answers") or {}
+        if not _flagged_answers_updated(submitted_answers, row.checklist_flags):
+            raise HTTPException(status_code=400, detail="Update every SOC-flagged checklist question before resubmitting.")
     if submission.get("checklist_answers"):
         missing_uploads = _missing_required_uploads(db, current_user.org_id, submission.get("checklist_answers"))
         if missing_uploads:
@@ -1091,6 +1350,44 @@ def list_vapt_onboarding_reviews(
         VaptOnboardingChecklist.completed_at.isnot(None),
     ).order_by(VaptOnboardingChecklist.updated_at.desc()).all()
     return [_onboarding_to_dict(item) for item in checklists]
+
+
+@router.get("/admin/onboarding/approved")
+def list_approved_vapt_onboarding(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """List approved client checklists so SOC can download them after review."""
+    checklists = db.query(VaptOnboardingChecklist).filter(
+        VaptOnboardingChecklist.review_status == "approved",
+        VaptOnboardingChecklist.completed_at.isnot(None),
+    ).order_by(VaptOnboardingChecklist.reviewed_at.desc()).all()
+    result = []
+    for item in checklists:
+        approved_regions = (
+            db.query(OrganizationRegion, Region)
+            .join(Region, OrganizationRegion.region_id == Region.region_id)
+            .filter(
+                OrganizationRegion.org_id == item.org_id,
+                OrganizationRegion.status == "approved",
+            )
+            .order_by(OrganizationRegion.reviewed_at.desc())
+            .all()
+        )
+        if not approved_regions:
+            data = _onboarding_to_dict(item)
+            data["region_code"] = None
+            data["region_name"] = "Organization onboarding"
+            data["approved_at"] = item.reviewed_at
+            result.append(data)
+            continue
+        for org_region, region in approved_regions:
+            data = _onboarding_to_dict(item)
+            data["region_code"] = region.code
+            data["region_name"] = region.name
+            data["approved_at"] = org_region.reviewed_at or item.reviewed_at
+            result.append(data)
+    return result
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1367,6 +1664,12 @@ def request_vapt_access(
         db.commit()
         db.refresh(record)
 
+    combined_submission = {
+        key: payload.get(key)
+        for key in onboarding_fields
+        if key in payload and payload.get(key) is not None
+    } if any(key in payload for key in onboarding_fields) else None
+
     # A client org can have up to MAX_VAPT_REGIONS_PER_ORG requested/approved
     # regions. Approved + pending rows count toward the cap; re-requesting an
     # existing one is a no-op and never exceeds it.
@@ -1412,6 +1715,12 @@ def request_vapt_access(
             org_region.status = "pending"
             org_region.requested_at = datetime.now(timezone.utc)
 
+        if combined_submission is not None:
+            org_region.checklist_submission = combined_submission
+            org_region.checklist_review_status = "pending"
+            org_region.checklist_review_note = None
+            org_region.checklist_flags = None
+
     db.commit()
     _record_audit_log(db, current_user, "VAPT_ACCESS_REQUESTED", "organization_region", org_id, {"regions": [item["code"] for item in requested], "combined_onboarding": bool(onboarding_fields.intersection(payload.keys()))})
     recipients = {u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email}
@@ -1441,6 +1750,8 @@ def get_vapt_access_status(
 ):
     return {
         **_get_org_region_status(db, current_user.org_id, blocked=bool(getattr(current_user, "vapt_blocked", False))),
+        "vapt_access_enabled": bool(getattr(current_user, "vapt_approved", False)) and not bool(getattr(current_user, "vapt_blocked", False)),
+        "vapt_approved": bool(getattr(current_user, "vapt_approved", False)),
         "region": getattr(db.query(Organization).filter(Organization.org_id == current_user.org_id).first(), "region", None) if current_user.org_id else None,
     }
 
@@ -1491,6 +1802,15 @@ async def approve_vapt_access(
     # a checklist is decided through this plain approve/deny path.
     if org_region.checklist_submission is not None:
         org_region.checklist_review_status = "approved" if approved else "rejected"
+        onboarding = db.query(VaptOnboardingChecklist).filter(
+            VaptOnboardingChecklist.org_id == org_id,
+        ).first()
+        if onboarding:
+            onboarding.review_status = "approved" if approved else "rejected"
+            onboarding.reviewed_by = current_user.user_id
+            onboarding.reviewed_at = datetime.now(timezone.utc)
+            onboarding.review_note = reason
+            db.add(onboarding)
     db.commit()
     db.refresh(org_region)
     event = "region_access_approved" if approved else "region_access_rejected"
@@ -1572,6 +1892,13 @@ async def decide_region_checklist(
         row.schedule_status = "confirmed"
         row.rejection_reason = None
         row.checklist_flags = None
+    elif status == "changes_requested" and row.checklist_submission:
+        updated_submission = dict(row.checklist_submission)
+        updated_submission["checklist_answers"] = _clear_flagged_answers(
+            updated_submission.get("checklist_answers") or {},
+            flags,
+        )
+        row.checklist_submission = updated_submission
     elif status == "rejected":
         row.status = "rejected"
         row.schedule_status = "rejected"
@@ -1700,6 +2027,13 @@ def list_vapt_access_requests(
             },
         )
         result[org.org_id]["approved_regions"].append(region.code)
+        result[org.org_id].setdefault("approved_region_details", []).append(
+            {
+                "code": region.code,
+                "name": region.name,
+                "approved_at": org_region.reviewed_at,
+            }
+        )
 
     return list(result.values())
 
@@ -2166,42 +2500,14 @@ def download_vapt_closure_bundle(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_vapt_access),
 ):
-    """Download the first report, verification reports, exclusions, and closure summary."""
+    """Download the polished closure report with the initial and verification reports."""
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     if record.lifecycle_status != "closed":
         raise HTTPException(status_code=409, detail="The closure bundle is available after SOC closes the VAPT cycle.")
     schedules = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.import_id == record.import_id).order_by(VaptRescanSchedule.scheduled_at.asc()).all()
-    exclusions = [finding for finding in (record.findings or []) if (finding.get("status") or "") in {"ignore", "false_positive"}]
-    timeline = get_vapt_timeline(import_id, db, current_user)
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
-    closure_buffer = io.BytesIO()
-    pdf = canvas.Canvas(closure_buffer, pagesize=A4)
-    y = 800
-    pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawString(48, y, "VAPT Closure Report")
-    y -= 32
-    pdf.setFont("Helvetica", 10)
-    lines = [
-        f"Import: {record.file_name}",
-        f"Organization: {record.org_id}",
-        f"Region: {record.region or 'Not specified'}",
-        f"Lifecycle: {record.lifecycle_status}",
-        f"Findings: {len(record.findings or [])}",
-        f"Exclusions: {len(exclusions)}",
-        f"Verification scans: {len(schedules)}",
-        f"Next VAPT due: {record.next_vapt_due_at or 'Not set'}",
-    ]
-    for line in lines:
-        pdf.drawString(48, y, line)
-        y -= 18
-    pdf.save()
-    closure_buffer.seek(0)
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
-        bundle.writestr("closure-report.pdf", closure_buffer.getvalue())
-        bundle.writestr("exclusion-list.json", json.dumps(exclusions, default=str, indent=2))
-        bundle.writestr("timeline.json", json.dumps(timeline, default=str, indent=2))
+        bundle.writestr("closure-report.pdf", generate_vapt_closure_report_pdf(record))
         bundle.writestr("first-scan-report.pdf", generate_vapt_report_pdf(record))
         for schedule in schedules:
             bundle.writestr(f"verification-{str(schedule.id)[:8]}.pdf", generate_vapt_verification_report_pdf(schedule, record))

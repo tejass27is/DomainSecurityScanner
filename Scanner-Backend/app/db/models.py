@@ -89,7 +89,9 @@ class User(Base):
     pending_registration_domain = Column(Text, nullable=True)
     # Admin can revoke an individual user's VAPT access without touching the
     # org-level approvals in organization_regions (reversible via unblock).
+    vapt_approved            = Column(Boolean, nullable=False, server_default="false")
     vapt_blocked              = Column(Boolean, nullable=False, server_default="false")
+    webscan_approved          = Column(Boolean, nullable=False, server_default="false")
     is_active                 = Column(Boolean, nullable=False, server_default="true")
 
     # ── NEW: TOTP columns ─────────────────────────────────────────────────────
@@ -656,11 +658,27 @@ class WebScan(Base):
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     target_url = Column(Text, nullable=False)
     target_host = Column(String(255), nullable=False)
+    scan_type = Column(String(20), nullable=False, default="dynamic", server_default="'dynamic'")
     # Acunetix-side identifiers, stored so the worker can resume polling and the
     # UI can deep-link back into Acunetix if needed.
     acunetix_target_id = Column(String(64), nullable=True)
     acunetix_scan_id = Column(String(64), nullable=True)
     profile_id = Column(String(64), nullable=True)
+    scan_profile = Column(String(255), nullable=True)
+    criticality = Column(String(20), nullable=False, default="normal", server_default="'normal'")
+    authentication_required = Column(Boolean, nullable=False, default=False, server_default="false")
+    auth_method = Column(String(32), nullable=True)
+    login_url = Column(Text, nullable=True)
+    auth_username = Column(String(255), nullable=True)
+    auth_password = Column(Text, nullable=True)
+    auth_header_name = Column(String(255), nullable=True)
+    auth_token = Column(Text, nullable=True)
+    session_cookie_name = Column(String(255), nullable=True)
+    session_cookie_value = Column(Text, nullable=True)
+    auth_profile_id = Column(String(128), nullable=True)
+    mfa_instructions = Column(Text, nullable=True)
+    auth_details = Column(Text, nullable=True)
+    login_sequence = Column(Text, nullable=True)
     # pending → running → completed | failed | cancelled
     status = Column(String(32), nullable=False, default="pending", server_default="'pending'")
     progress = Column(Integer, nullable=False, default=0, server_default="0")

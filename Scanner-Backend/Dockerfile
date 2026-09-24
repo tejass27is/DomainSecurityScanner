@@ -4,6 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    git \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,6 +18,7 @@ RUN addgroup --system app && adduser --system --ingroup app app \
     && mkdir -p /app/storage/vapt-attachments \
     && chown -R app:app /app
 USER app
+ENV HOME=/tmp
 EXPOSE 8000
 
 CMD ["python", "app/main.py"]

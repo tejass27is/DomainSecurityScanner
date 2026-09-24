@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, blockVaptAccess, unblockVaptAccess, getScanSummaries, getTotalScans, createAdmin, deleteAdmin, createSocAnalyst, deleteSocAnalyst, setSocAnalystActive } from "../services/api";
+import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, approveVaptAccess, revokeVaptAccess, approveWebscanAccess, revokeWebscanAccess, getScanSummaries, getTotalScans, createAdmin, deleteAdmin, createSocAnalyst, deleteSocAnalyst, setSocAnalystActive } from "../services/api";
 
 const ROLE_LABEL = {
   owner: "Owner",
@@ -69,6 +69,7 @@ function AdminUsers() {
   const [blacklistLoading, setBlacklistLoading] = useState(false);
   const [blocking, setBlocking] = useState(false);
   const [vaptBlocking, setVaptBlocking] = useState(false);
+  const [accessActions, setAccessActions] = useState({});
   const [newAdminEmail, setNewAdminEmail] = useState("");
   const [creatingAdmin, setCreatingAdmin] = useState(false);
   const [newSocAnalystEmail, setNewSocAnalystEmail] = useState("");
@@ -158,13 +159,13 @@ function AdminUsers() {
     }
   };
 
-  const handleBlockVapt = async (userId) => {
+  const handleApproveVapt = async (userId) => {
     if (!userId) return;
     setVaptBlocking(true);
     try {
-      await blockVaptAccess(userId, localStorage.getItem("token"));
-      showNotification("VAPT access blocked for this user");
-      fetchUsers(); // Refresh users to update VAPT blocked status
+      await approveVaptAccess(userId, localStorage.getItem("token"));
+      showNotification("VAPT access approved for this user");
+      fetchUsers();
     } catch (err) {
       showNotification(err.message, "error");
     } finally {
@@ -172,18 +173,66 @@ function AdminUsers() {
     }
   };
 
-  const handleUnblockVapt = async (userId) => {
+  const handleRevokeVapt = async (userId) => {
     if (!userId) return;
     setVaptBlocking(true);
     try {
-      await unblockVaptAccess(userId, localStorage.getItem("token"));
-      showNotification("VAPT access restored for this user");
-      fetchUsers(); // Refresh users to update VAPT blocked status
+      await revokeVaptAccess(userId, localStorage.getItem("token"));
+      showNotification("VAPT access revoked for this user");
+      fetchUsers();
     } catch (err) {
       showNotification(err.message, "error");
     } finally {
       setVaptBlocking(false);
     }
+  };
+
+  const handleApproveWebscan = async (userId) => {
+    if (!userId) return;
+    setVaptBlocking(true);
+    try {
+      await approveWebscanAccess(userId, localStorage.getItem("token"));
+      showNotification("WebScan access approved for this user");
+      fetchUsers();
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setVaptBlocking(false);
+    }
+  };
+
+  const handleRevokeWebscan = async (userId) => {
+    if (!userId) return;
+    setVaptBlocking(true);
+    try {
+      await revokeWebscanAccess(userId, localStorage.getItem("token"));
+      showNotification("WebScan access revoked for this user");
+      fetchUsers();
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setVaptBlocking(false);
+    }
+  };
+
+  const handleApplyAccessAction = async (userId) => {
+    const action = accessActions[userId];
+    if (!userId || !action) return;
+    if (action === "vapt") {
+      if (usersData?.organizations?.flatMap((org) => org.users || []).find((user) => user.user_id === userId)?.vapt_approved) {
+        await handleRevokeVapt(userId);
+      } else {
+        await handleApproveVapt(userId);
+      }
+    }
+    if (action === "webscan") {
+      if (usersData?.organizations?.flatMap((org) => org.users || []).find((user) => user.user_id === userId)?.webscan_approved) {
+        await handleRevokeWebscan(userId);
+      } else {
+        await handleApproveWebscan(userId);
+      }
+    }
+    setAccessActions((current) => ({ ...current, [userId]: "" }));
   };
 
   const handleCreateAdmin = async (e) => {
@@ -402,13 +451,13 @@ function AdminUsers() {
             </Link>
             <button 
               onClick={() => setActiveTab("users")}
-              className={`rounded-xl px-5 py-2.5 text-sm font-semibold transition-all ${activeTab === "users" ? "bg-primary text-white shadow-lg" : "bg-surface-container text-on-surface hover:bg-surface-container-high"}`}
+              className={`rounded-xl px-5 py-2.5 text-sm font-semibold transition-all ${activeTab === "users" ? "bg-primary text-white shadow-lg" : "bg-primary/15 text-primary hover:bg-primary/25"}`}
             >
               Organizations
             </button>
             <button 
                onClick={() => setActiveTab("blacklist")}
-               className={`rounded-xl px-5 py-2.5 text-sm font-semibold transition-all ${activeTab === "blacklist" ? "bg-red-600 text-white shadow-lg" : "bg-surface-container text-on-surface hover:bg-surface-container-high"}`}
+               className={`rounded-xl px-5 py-2.5 text-sm font-semibold transition-all ${activeTab === "blacklist" ? "bg-red-600 text-white shadow-lg" : "bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-950/60"}`}
             >
               Blacklist
             </button>
@@ -890,10 +939,27 @@ function AdminUsers() {
                                           Active
                                         </span>
                                       )}
-                                      {u.vapt_blocked && (
-                                        <span className="px-2 py-0.5 bg-purple-100 text-purple-700 font-bold rounded-full uppercase">
-                                          VAPT Blocked
-                                        </span>
+                                      {u.org_id && (
+                                        <>
+                                          {u.vapt_approved ? (
+                                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 font-bold rounded-full uppercase">
+                                              VAPT Approved
+                                            </span>
+                                          ) : (
+                                            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 font-bold rounded-full uppercase">
+                                              VAPT Not Approved
+                                            </span>
+                                          )}
+                                          {u.webscan_approved ? (
+                                            <span className="px-2 py-0.5 bg-blue-100 text-blue-700 font-bold rounded-full uppercase">
+                                              WebScan Approved
+                                            </span>
+                                          ) : (
+                                            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 font-bold rounded-full uppercase">
+                                              WebScan Not Approved
+                                            </span>
+                                          )}
+                                        </>
                                       )}
                                     </div>
                                   </div>
@@ -919,18 +985,27 @@ function AdminUsers() {
                                       </button>
                                     )}
                                     {u.org_id && (
-                                      <button
-                                        type="button"
-                                        onClick={() => (u.vapt_blocked ? handleUnblockVapt(u.user_id) : handleBlockVapt(u.user_id))}
-                                        disabled={vaptBlocking}
-                                        className={`w-full rounded-lg px-4 py-2 text-sm font-semibold transition-all disabled:opacity-60 sm:w-auto ${
-                                          u.vapt_blocked
-                                            ? "border border-slate-200 bg-white text-slate-700 hover:border-purple-200 hover:bg-purple-50 hover:text-purple-700"
-                                            : "bg-purple-600 text-white shadow-sm hover:bg-purple-700"
-                                        }`}
-                                      >
-                                        {u.vapt_blocked ? "Unblock VAPT" : "Block VAPT"}
-                                      </button>
+                                      <div className="flex w-full gap-2 sm:w-auto">
+                                        <select
+                                          aria-label={`Access action for ${u.email}`}
+                                          value={accessActions[u.user_id] || ""}
+                                          onChange={(event) => setAccessActions((current) => ({ ...current, [u.user_id]: event.target.value }))}
+                                          disabled={vaptBlocking}
+                                          className="w-40 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 outline-none transition hover:border-indigo-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 disabled:opacity-60 sm:w-40"
+                                        >
+                                          <option value="">Access</option>
+                                          <option value="vapt">VAPT</option>
+                                          <option value="webscan">WebScan</option>
+                                        </select>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleApplyAccessAction(u.user_id)}
+                                          disabled={vaptBlocking || !accessActions[u.user_id]}
+                                          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          Apply
+                                        </button>
+                                      </div>
                                     )}
                                   </div>
                                 </li>

@@ -19,8 +19,6 @@ import {
   FileText, Link2, Globe, Zap, ShieldAlert, CheckCircle2, Bug, Download,
 } from "lucide-react";
 
-// ─── Domain helpers ───────────────────────────────────────────────────────────
-
 function normalizeDomain(domain) {
   return (domain || "").trim();
 }
@@ -496,6 +494,7 @@ function ScanDashboard() {
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   // "domain" = the existing domain security overview, "webscan" = Acunetix scans.
   const [activeTab, setActiveTab] = useState("domain");
+  const [webscanApproved, setWebscanApproved] = useState(false);
 
   // Load profile and default domain
   useEffect(() => {
@@ -505,14 +504,21 @@ function ScanDashboard() {
     getProfile(token).then((profile) => {
       const profileDomains = dedupeDomains(normalizeProfileDomains(profile?.domain));
       setKnownDomains(profileDomains);
+      setWebscanApproved(profile?.webscan_approved === true);
       if (!domainParam && profileDomains.length > 0) {
         setSearchParams({ domain: profileDomains[0] }, { replace: true });
       }
     }).catch(() => { });
   }, [domainParam, setSearchParams]);
 
-  // Load scan data, malware report, and assessment data without blocking the first render
   useEffect(() => {
+    if (!webscanApproved && activeTab === "webscan") {
+      setActiveTab("domain");
+    }
+  }, [activeTab, webscanApproved]);
+
+  useEffect(() => {
+  // Load scan data, malware report, and assessment data without blocking the first render
     const token = localStorage.getItem("token");
     const savedChecks = getInitialChecks();
     setSelections(savedChecks);
@@ -748,7 +754,7 @@ function ScanDashboard() {
         <div className="mb-8 inline-flex flex-wrap items-center gap-1 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-1.5">
           {[
             { id: "domain", label: "Domain Security", icon: "shield" },
-            { id: "webscan", label: "Web Scan (Acunetix)", icon: "travel_explore" },
+            ...(webscanApproved ? [{ id: "webscan", label: "Web Scan", icon: "travel_explore" }] : []),
           ].map((tab) => (
             <button
               key={tab.id}

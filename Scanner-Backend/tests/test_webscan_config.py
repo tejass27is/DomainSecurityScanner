@@ -281,3 +281,80 @@ def test_find_target_handles_empty_address(monkeypatch):
     client = _client_with_target_pages(monkeypatch, [{"targets": [], "pagination": {}}])
     assert client.find_target_by_address("   ") is None
     assert client._captured["params"] == []
+
+
+# ─── Authentication configuration (configure_authentication) ─────────────────
+
+
+def _capturing_client(monkeypatch):
+    """A client whose _request is stubbed, recording the last call."""
+    monkeypatch.setenv("ACUNETIX_URL", "https://acunetix.example.com:3443")
+    monkeypatch.setenv("ACUNETIX_API_KEY", "test-key")
+
+    client = AcunetixClient()
+    state: dict = {}
+
+    def fake_request(method, path, **kwargs):
+        state["method"] = method
+        state["path"] = path
+        state["body"] = kwargs.get("json")
+        return {}
+
+    client._request = fake_request
+    client._captured = state
+    return client
+
+
+def test_configure_authentication_basic_sends_credentials(monkeypatch):
+    client = _capturing_client(monkeypatch)
+
+    note = client.configure_authentication(
+        "t-1", method="basic", username="alice", password="s3cret"
+    )
+
+    assert note is None
+    assert client._captured["method"] == "PATCH"
+    assert client._captured["path"] == "/targets/t-1/configuration"
+    assert client._captured["body"] == {
+        "authentication": {
+            "enabled": True,
+            "username": "alice",
+            "password": "s3cret",
+        }
+    }
+
+
+def test_configure_authentication_api_token_sends_custom_header(monkeypatch):
+    client = _capturing_client(monkeypatch)
+
+    note = client.configure_authentication(
+        "t-1",
+        method="api_token",
+        token_header="X-Api-Key",
+        token_value="abc123",
+    )
+
+    assert note is None
+    assert client._captured["method"] == "PATCH"
+    assert client._captured["body"] == {"custom_headers": ["X-Api-Key: abc123"]}
+
+
+def test_configure_authentication_defaults_header_name_to_authorization(monkeypatch):
+    client = _capturing_client(monkeypatch)
+
+    client.configure_authentication(
+        "t-1", method="api_token", token_header="   ", token_value="Bearer xyz"
+    )
+
+    assert client._captured["body"] == {"custom_headers": ["Authorization: Bearer xyz"]}
+
+
+@pytest.mark.parametrize("method", ["username_password", "sso", "mfa", "other", ""])
+def test_configure_authentication_skips_unverified_methods(monkeypatch, method):
+    """Methods without a confirmed API shape must not hit the config endpoint."""
+    client = _capturing_client(monkeypatch)
+
+    note = client.configure_authentication("t-1", method=method, username="a", password="b")
+
+    assert note and "manual configuration in Acunetix" in note
+    assert client._captured == {}, "no request may be sent for unverified methods"
