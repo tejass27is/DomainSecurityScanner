@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import datetime, timezone
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
@@ -30,7 +31,9 @@ from app.api.vapt.routes import (
     decide_region_checklist,
     delete_checklist_attachment,
     download_checklist_attachment,
+    download_approved_onboarding_bundle,
     get_vapt_access_status,
+    list_approved_vapt_onboarding,
     list_vapt_access_requests,
     request_vapt_access,
     request_vapt_region,
@@ -888,4 +891,40 @@ def test_reopen_resets_only_findings_not_confirmed_fixed():
     assert reopened[0]["comment"] == "patched"
     assert reopened[1]["status"] == "pending"
     assert reopened[1]["comment"] == ""
+
+
+def test_approved_region_package_is_listed_and_org_checklist_can_download_for_region():
+    db = Session(bind=engine)
+    try:
+        user = User(user_id="pkg-user", org_id="org-pkg", email="pkg@example.com", password="hashed", role="owner")
+        soc = User(user_id="pkg-soc", org_id=None, email="pkg-soc@example.com", password="hashed", role="soc_analyst")
+        db.add_all([user, soc, Organization(org_id="org-pkg", user_id="pkg-user", max_domains=1)])
+        db.commit()
+
+        region = Region(code="PKG-R", name="Package Region", is_active=True)
+        db.add(region)
+        db.flush()
+        reviewed_at = datetime.now(timezone.utc)
+        db.add(OrganizationRegion(
+            org_id="org-pkg",
+            region_id=region.region_id,
+            status="approved",
+            reviewed_by="pkg-soc",
+            reviewed_at=reviewed_at,
+            checklist_review_status="approved",
+            checklist_submission={
+                "scope_ip_ranges": "10.2.0.0/16",
+                "checklist_answers": {"general_information": {"organization_name": {"answer": "Package Co"}}},
+            },
+        ))
+        db.commit()
+
+        packages = list_approved_vapt_onboarding(db=db, current_user=soc)
+        package = next(item for item in packages if item["region_code"] == "PKG-R")
+        assert package["checklist_answers"]["general_information"]["organization_name"]["answer"] == "Package Co"
+
+        response = download_approved_onboarding_bundle("org-pkg", region_code="PKG-R", db=db, current_user=soc)
+        assert response.media_type == "application/zip"
+    finally:
+        db.close()
 

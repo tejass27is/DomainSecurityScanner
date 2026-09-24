@@ -635,6 +635,14 @@ def _generate_checklist_pdf(checklist_data: dict) -> bytes:
     return output.getvalue()
 
 
+@router.get("/admin/onboarding/approved")
+def approved_vapt_onboarding_route(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    return list_approved_vapt_onboarding(db=db, current_user=current_user)
+
+
 @router.get("/admin/onboarding/{org_id}/bundle")
 def download_approved_onboarding_bundle(
     org_id: str,
@@ -655,14 +663,14 @@ def download_approved_onboarding_bundle(
             OrganizationRegion.org_id == org_id,
             OrganizationRegion.region_id == (region.region_id if region else -1),
             OrganizationRegion.status == "approved",
-            OrganizationRegion.checklist_review_status == "approved",
         ).first()
         if not row:
             raise HTTPException(status_code=404, detail="An approved regional checklist was not found.")
-        if row.checklist_submission:
+        if row.checklist_submission and row.checklist_review_status == "approved":
             checklist_data = row.checklist_submission
         elif checklist:
-            # The first approved region uses the organisation-level checklist.
+            # Use the approved organization checklist when SOC approved that
+            # checklist rather than the region's attached checklist.
             checklist_data = _onboarding_to_dict(checklist)
         else:
             raise HTTPException(status_code=404, detail="An approved regional checklist was not found.")
@@ -1352,7 +1360,6 @@ def list_vapt_onboarding_reviews(
     return [_onboarding_to_dict(item) for item in checklists]
 
 
-@router.get("/admin/onboarding/approved")
 def list_approved_vapt_onboarding(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_soc_analyst),
@@ -1363,7 +1370,9 @@ def list_approved_vapt_onboarding(
         VaptOnboardingChecklist.completed_at.isnot(None),
     ).order_by(VaptOnboardingChecklist.reviewed_at.desc()).all()
     result = []
+    approved_org_ids = set()
     for item in checklists:
+        approved_org_ids.add(item.org_id)
         approved_regions = (
             db.query(OrganizationRegion, Region)
             .join(Region, OrganizationRegion.region_id == Region.region_id)
@@ -1387,6 +1396,29 @@ def list_approved_vapt_onboarding(
             data["region_name"] = region.name
             data["approved_at"] = org_region.reviewed_at or item.reviewed_at
             result.append(data)
+
+    # Regional checklists are independent from the organization checklist and
+    # must remain downloadable when SOC approves a new region on its own.
+    regional_checklists = (
+        db.query(OrganizationRegion, Region)
+        .join(Region, OrganizationRegion.region_id == Region.region_id)
+        .filter(
+            OrganizationRegion.status == "approved",
+            OrganizationRegion.checklist_review_status == "approved",
+            OrganizationRegion.checklist_submission.isnot(None),
+        )
+        .order_by(OrganizationRegion.reviewed_at.desc())
+        .all()
+    )
+    for org_region, region in regional_checklists:
+        if org_region.org_id in approved_org_ids:
+            continue
+        data = dict(org_region.checklist_submission or {})
+        data["org_id"] = org_region.org_id
+        data["region_code"] = region.code
+        data["region_name"] = region.name
+        data["approved_at"] = org_region.reviewed_at
+        result.append(data)
     return result
 
 
