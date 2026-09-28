@@ -25,6 +25,7 @@ import {
   getWebSocketUrl,
 } from "../services/api";
 import { getClientVaptAccessState } from "../utils/vaptAccessGate";
+import { SOC_TIMEZONE, timezoneOptionsFor } from "../utils/timezone";
 import {
   SEVERITY_META,
   SEVERITY_ORDER,
@@ -642,7 +643,7 @@ export default function VaptUpload() {
     checklist_answers: buildEmptyChecklistAnswers(),
   }));
   const [onboarding, setOnboarding] = useState(() => emptyOnboarding);
-  const timezoneOptions = Array.from(new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, "UTC", "Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Australia/Sydney"].filter(Boolean)));
+  const timezoneOptions = timezoneOptionsFor();
   const [hasScans, setHasScans] = useState(true);
   const [accessCode, setAccessCode] = useState("");
   const [accessName, setAccessName] = useState("");
@@ -1319,7 +1320,10 @@ export default function VaptUpload() {
       tech_contact_email: onboarding.tech_contact_email || derivedPrimaryContact.email || "",
       tech_contact_phone: onboarding.tech_contact_phone,
       testing_window: onboarding.testing_window,
-      testing_start_at: new Date(onboarding.testing_start_at).toISOString(),
+      // Submitted as the wall clock the client actually picked, together with
+      // the zone they picked it in — the backend reads the two together, so the
+      // zone selector is meaningful instead of decorative.
+      testing_start_at: onboarding.testing_start_at,
       testing_timezone: onboarding.testing_timezone,
       out_of_scope_systems: onboarding.out_of_scope_systems,
       checklist_answers: normalizedAnswers,
@@ -2011,7 +2015,13 @@ export default function VaptUpload() {
           {onboarding.proposed_start_at && onboarding.proposed_end_at && (
             <div className="mt-5 rounded-xl border border-sky-200 bg-sky-50 p-4 text-left text-sm text-sky-900 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200">
               <p className="font-bold">SOC proposed a different testing window</p>
-              <p className="mt-1">{new Date(onboarding.proposed_start_at).toLocaleString()} to {new Date(onboarding.proposed_end_at).toLocaleString()} ({onboarding.proposed_timezone})</p>
+              <p className="mt-1">
+                {fmtDate(onboarding.proposed_start_at)} to {fmtDate(onboarding.proposed_end_at)}
+                <span className="mt-0.5 block text-xs text-sky-700/80 dark:text-sky-300/80">
+                  SOC clock: {fmtDate(onboarding.proposed_start_at, SOC_TIMEZONE)} IST
+                  {onboarding.proposed_timezone ? ` · proposed in ${onboarding.proposed_timezone}` : ""}
+                </span>
+              </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" onClick={async () => { await decideInitialVaptDate((vaptAccessStatus.pending_regions?.[0]?.code || ""), { decision: "accepted" }, localStorage.getItem("token")); }} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Accept date</button>
                 <button type="button" onClick={async () => { await decideInitialVaptDate((vaptAccessStatus.pending_regions?.[0]?.code || ""), { decision: "rejected", note: "Please propose another first-scan window." }, localStorage.getItem("token")); }} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">Reject date</button>
@@ -2092,7 +2102,7 @@ export default function VaptUpload() {
                     <option value="">Upload an initial report</option>
                     {verificationSchedules.map((schedule) => (
                       <option key={schedule.id} value={schedule.id}>
-                        Verification · {schedule.display_name || schedule.file_name || schedule.import_id} · {new Date(schedule.scheduled_at).toLocaleString()}
+                        Verification · {schedule.display_name || schedule.file_name || schedule.import_id} · {fmtDate(schedule.scheduled_at)}
                       </option>
                     ))}
                   </select>

@@ -4,6 +4,24 @@ import { Loader2, CheckCircle2, XCircle, Clock, ShieldCheck, BriefcaseBusiness, 
 import { getAdminVaptAccessRequests, approveVaptAccessRequest, getAdminVaptOnboardingReviews, getApprovedVaptOnboarding, reviewAdminVaptOnboarding, decideRegionChecklist, proposeInitialVaptDate, getWebSocketUrl, downloadVaptChecklistAttachment, downloadApprovedVaptOnboardingBundle } from "../services/api";
 import ConfirmModal from "../components/ConfirmModal";
 import { buildReviewQueue, getReviewQueueCounts, matchesReviewTab } from "../utils/vaptReviewQueue";
+import { fmtDate } from "../utils/vaptReport";
+import { SOC_TIMEZONE, istLabelForWallClock, timezoneOptionsFor } from "../utils/timezone";
+
+// The counter-propose form collects a zoneless wall clock plus its zone. Reading
+// the two together lets the analyst see the IST slot they are committing the SOC
+// to before sending it.
+function WallClockPreview({ start, end, timeZone }) {
+  const zone = timeZone || SOC_TIMEZONE;
+  const startLabel = istLabelForWallClock(start, zone);
+  const endLabel = istLabelForWallClock(end, zone);
+  if (!startLabel && !endLabel) return null;
+  return (
+    <p className="text-xs font-semibold text-sky-700 dark:text-sky-300 sm:col-span-2">
+      SOC clock: {startLabel ? `${startLabel} IST` : "—"}
+      {endLabel ? ` → ${endLabel} IST` : ""}
+    </p>
+  );
+}
 
 function ChecklistAnswersView({ answers, flags, onToggleFlag, onFlagNote, onDownload }) {
   const sections = Object.entries(answers || {});
@@ -90,6 +108,7 @@ export default function AdminVaptAccessRequests() {
   const [reviewFlags, setReviewFlags] = useState({});
   const [dateProposals, setDateProposals] = useState({});
   const [activeTab, setActiveTab] = useState("all");
+  const timezoneOptions = useMemo(() => timezoneOptionsFor(), []);
 
   const pendingReviewQueue = useMemo(() => buildReviewQueue(requests, checklists), [requests, checklists]);
 
@@ -298,9 +317,12 @@ export default function AdminVaptAccessRequests() {
     try {
       await proposeInitialVaptDate(entry.org_id, {
         region_code: typeof region === "string" ? region : region.code,
-        proposed_start_at: new Date(draft.start).toISOString(),
-        proposed_end_at: new Date(draft.end).toISOString(),
-        proposed_timezone: draft.timezone,
+        // Sent as the wall clock the analyst typed, together with the zone they
+        // typed it in. The backend reads the two together, so the selector
+        // actually decides the instant instead of decorating it.
+        proposed_start_at: draft.start,
+        proposed_end_at: draft.end,
+        proposed_timezone: draft.timezone || SOC_TIMEZONE,
         note: draft.note || "",
       }, localStorage.getItem("token"));
       setToast({ text: "Initial testing date proposed to the client", type: "success" });
@@ -626,8 +648,11 @@ export default function AdminVaptAccessRequests() {
                               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                                 <input aria-label="Proposed start" type="datetime-local" value={dateProposals[entry.org_id]?.start || ""} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], start: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
                                 <input aria-label="Proposed end" type="datetime-local" value={dateProposals[entry.org_id]?.end || ""} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], end: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
-                                <input aria-label="Proposed timezone" type="text" placeholder="Timezone, e.g. UTC" value={dateProposals[entry.org_id]?.timezone || "UTC"} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], timezone: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
+                                <select aria-label="Proposed timezone" value={dateProposals[entry.org_id]?.timezone || SOC_TIMEZONE} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], timezone: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100">
+                                  {timezoneOptions.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
+                                </select>
                                 <input aria-label="Date proposal note" type="text" placeholder="Optional note" value={dateProposals[entry.org_id]?.note || ""} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], note: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
+                                <WallClockPreview start={dateProposals[entry.org_id]?.start} end={dateProposals[entry.org_id]?.end} timeZone={dateProposals[entry.org_id]?.timezone} />
                                 <button type="button" onClick={() => proposeDate(entry)} className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white sm:col-span-2">Send proposed date</button>
                               </div>
                             )}
@@ -636,7 +661,14 @@ export default function AdminVaptAccessRequests() {
                         <div className="grid gap-3 sm:grid-cols-2">
                           <div className="space-y-1">
                             <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Preferred testing start</p>
-                            <p className="text-slate-700 dark:text-slate-200">{orgChecklist.testing_start_at ? new Date(orgChecklist.testing_start_at).toLocaleString() : "Not provided"}</p>
+                            <p className="text-slate-700 dark:text-slate-200">
+                              {orgChecklist.testing_start_at ? `${fmtDate(orgChecklist.testing_start_at, SOC_TIMEZONE)} IST` : "Not provided"}
+                              {orgChecklist.testing_start_at && orgChecklist.testing_timezone && (
+                                <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                                  Client clock: {fmtDate(orgChecklist.testing_start_at, orgChecklist.testing_timezone)}
+                                </span>
+                              )}
+                            </p>
                           </div>
                           <div className="space-y-1">
                             <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Client timezone</p>
@@ -771,8 +803,12 @@ export default function AdminVaptAccessRequests() {
                                     <div>
                                       <p className="font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Testing window</p>
                                       <p className="mt-1 text-slate-700 dark:text-slate-200">
-                                        {detail?.testing_start_at ? new Date(detail.testing_start_at).toLocaleString() : "Not provided"}
-                                        {detail?.testing_timezone ? ` (${detail.testing_timezone})` : ""}
+                                        {detail?.testing_start_at ? `${fmtDate(detail.testing_start_at, SOC_TIMEZONE)} IST` : "Not provided"}
+                                        {detail?.testing_start_at && detail?.testing_timezone && (
+                                          <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                                            Client clock: {fmtDate(detail.testing_start_at, detail.testing_timezone)}
+                                          </span>
+                                        )}
                                       </p>
                                     </div>
                                     <div>

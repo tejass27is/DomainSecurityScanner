@@ -910,104 +910,116 @@ function AdminUsers() {
                               No users found.
                             </div>
                           ) : (
-                            <ul className="divide-y divide-surface-container">
+                            <ul className="py-1">
                               {filteredUsers.map((u) => (
-                                <li key={`${u.user_id ?? u.email}-${u.org_id ?? "platform"}`} className="flex flex-col gap-4 px-4 py-4 sm:px-6 sm:flex-row sm:items-center sm:justify-between">
-                                  <div className="min-w-0">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-sm font-semibold text-on-surface truncate">
-                                        {u.email}
-                                      </span>
-                                      {u.is_platform_admin ? (
-                                        <span className="shrink-0 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-bold rounded-full uppercase">
-                                          Admin
+                                <li key={`${u.user_id ?? u.email}-${u.org_id ?? "platform"}`} className="px-4 py-3 sm:px-6">
+                                  <article className="rounded-xl border border-surface-container bg-white p-4 sm:p-5">
+                                    <div className="flex min-w-0 flex-col gap-4">
+                                      <div className="flex min-w-0 items-start gap-3">
+                                        <span className="material-symbols-outlined flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-600" aria-hidden="true">
+                                          person
                                         </span>
-                                      ) : (
-                                        <span className="shrink-0 px-2 py-0.5 bg-surface-container text-on-surface-variant text-[10px] font-bold rounded-full uppercase">
-                                          {roleLabel(u.role)}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-on-surface-variant">
-                                      {u.org_id && <span className="font-mono">Org: {u.org_id}</span>}
-                                      {u.is_blacklisted ? (
-                                        <span className="px-2 py-0.5 bg-red-100 text-red-700 font-bold rounded-full uppercase">
-                                          Blocked
-                                        </span>
-                                      ) : (
-                                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 font-bold rounded-full uppercase">
-                                          Active
-                                        </span>
-                                      )}
-                                      {u.org_id && (
-                                        <>
-                                          {u.vapt_approved ? (
-                                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 font-bold rounded-full uppercase">
-                                              VAPT Approved
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                            <span className="max-w-full truncate text-base font-semibold text-on-surface" title={u.email}>
+                                              {u.email}
                                             </span>
-                                          ) : (
-                                            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 font-bold rounded-full uppercase">
-                                              VAPT Not Approved
-                                            </span>
+                                            {u.is_platform_admin ? (
+                                              <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold uppercase text-indigo-700">
+                                                Admin
+                                              </span>
+                                            ) : (
+                                              <span className="shrink-0 rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-bold uppercase text-on-surface-variant">
+                                                {roleLabel(u.role)}
+                                              </span>
+                                            )}
+                                          </div>
+                                          {u.org_id && (
+                                            <p className="mt-1 flex min-w-0 text-xs text-on-surface-variant" title={u.org_id}>
+                                              <span className="mr-1 shrink-0 font-medium">Organization:</span>
+                                              <span className="truncate font-mono">{u.org_id}</span>
+                                            </p>
                                           )}
-                                          {u.webscan_approved ? (
-                                            <span className="px-2 py-0.5 bg-blue-100 text-blue-700 font-bold rounded-full uppercase">
-                                              WebScan Approved
-                                            </span>
-                                          ) : (
-                                            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 font-bold rounded-full uppercase">
-                                              WebScan Not Approved
-                                            </span>
-                                          )}
-                                        </>
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  <div className="flex w-full shrink-0 flex-wrap gap-2 sm:w-auto">
-                                    {u.is_blacklisted ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleUnblockEmail(u.email)}
-                                        className="w-full rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold transition-all hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-60 sm:w-auto"
-                                        disabled={blocking}
-                                      >
-                                        Unblock
-                                      </button>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleBlockUser(u.email)}
-                                        className="w-full rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:bg-red-700 disabled:opacity-60 sm:w-auto"
-                                        disabled={blocking}
-                                      >
-                                        Block
-                                      </button>
-                                    )}
-                                    {u.org_id && (
-                                      <div className="flex w-full gap-2 sm:w-auto">
-                                        <select
-                                          aria-label={`Access action for ${u.email}`}
-                                          value={accessActions[u.user_id] || ""}
-                                          onChange={(event) => setAccessActions((current) => ({ ...current, [u.user_id]: event.target.value }))}
-                                          disabled={vaptBlocking}
-                                          className="w-40 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 outline-none transition hover:border-indigo-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 disabled:opacity-60 sm:w-40"
-                                        >
-                                          <option value="">Access</option>
-                                          <option value="vapt">VAPT</option>
-                                          <option value="webscan">WebScan</option>
-                                        </select>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleApplyAccessAction(u.user_id)}
-                                          disabled={vaptBlocking || !accessActions[u.user_id]}
-                                          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                          Apply
-                                        </button>
+                                          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                                            {u.is_blacklisted ? (
+                                              <span className="rounded-full bg-red-100 px-2.5 py-1 font-semibold uppercase text-red-700">
+                                                Blocked
+                                              </span>
+                                            ) : (
+                                              <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-semibold uppercase text-emerald-700">
+                                                Active
+                                              </span>
+                                            )}
+                                            {u.org_id && (
+                                              <>
+                                                <span className={`rounded-full px-2.5 py-1 font-semibold uppercase ${u.vapt_approved ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}`}>
+                                                  VAPT {u.vapt_approved ? "Approved" : "Not Approved"}
+                                                </span>
+                                                <span className={`rounded-full px-2.5 py-1 font-semibold uppercase ${u.webscan_approved ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}`}>
+                                                  WebScan {u.webscan_approved ? "Approved" : "Not Approved"}
+                                                </span>
+                                              </>
+                                            )}
+                                          </div>
+                                        </div>
                                       </div>
-                                    )}
-                                  </div>
+
+                                      <div className="w-full border-t border-surface-container pt-4">
+                                        <p className="mb-2.5 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
+                                          User actions
+                                        </p>
+                                        <div className="flex w-full flex-col gap-2.5 sm:flex-row sm:items-center">
+                                          {u.org_id && (
+                                            <div className="flex h-11 min-w-0 flex-1 items-stretch overflow-hidden rounded-xl border border-surface-container bg-white focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
+                                              <select
+                                                aria-label={`Access action for ${u.email}`}
+                                                value={accessActions[u.user_id] || ""}
+                                                onChange={(event) => setAccessActions((current) => ({ ...current, [u.user_id]: event.target.value }))}
+                                                disabled={vaptBlocking}
+                                                className={`min-w-0 flex-1 cursor-pointer appearance-none bg-transparent px-4 text-sm font-semibold outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
+                                                  accessActions[u.user_id] ? "text-primary" : "text-on-surface-variant"
+                                                }`}
+                                              >
+                                                <option value="">Access action</option>
+                                                <option value="vapt">VAPT Access</option>
+                                                <option value="webscan">WebScan Access</option>
+                                              </select>
+                                              <span className="pointer-events-none flex items-center pr-3 text-on-surface-variant" aria-hidden="true">
+                                                <span className="material-symbols-outlined text-lg">expand_more</span>
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleApplyAccessAction(u.user_id)}
+                                                disabled={vaptBlocking || !accessActions[u.user_id]}
+                                                className="inline-flex shrink-0 items-center justify-center border-l border-surface-container bg-primary px-4 text-sm font-semibold text-white transition-colors hover:bg-primary-dim disabled:cursor-not-allowed disabled:border-transparent disabled:bg-surface-container-high disabled:text-on-surface-variant"
+                                              >
+                                                Apply
+                                              </button>
+                                            </div>
+                                          )}
+                                          {u.is_blacklisted ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleUnblockEmail(u.email)}
+                                              className="inline-flex h-11 shrink-0 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 px-5 text-sm font-semibold text-emerald-700 transition-colors hover:border-emerald-300 hover:bg-emerald-100 disabled:opacity-60"
+                                              disabled={blocking}
+                                            >
+                                              Unblock
+                                            </button>
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleBlockUser(u.email)}
+                                              className="inline-flex h-11 shrink-0 items-center justify-center rounded-xl bg-red-600 px-5 text-sm font-semibold text-white shadow-sm shadow-red-600/20 transition-colors hover:bg-red-700 disabled:opacity-60"
+                                              disabled={blocking}
+                                            >
+                                              Block
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </article>
                                 </li>
                               ))}
                             </ul>

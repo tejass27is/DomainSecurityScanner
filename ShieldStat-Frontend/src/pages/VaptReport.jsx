@@ -355,7 +355,7 @@ function RescanRequestsPanel({
               const isActionable = ["scheduled", "requested"].includes((s.status || "scheduled").toLowerCase());
               return (
                 <tr key={s.id} className="border-t border-slate-100 align-top dark:border-slate-800">
-                  <td className="px-4 py-3 font-mono text-[12px]">{fmtDate(s.scheduled_at || s.requested_date || s.proposed_date, s.scheduled_timezone)}</td>
+                  <td className="px-4 py-3 font-mono text-[12px]">{fmtDate(s.scheduled_at || s.requested_date || s.proposed_date)}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_BADGE[s.status] || STATUS_BADGE.pending}`}>
                       {STATUS_LABEL[s.status] || s.status || "Pending"}
@@ -1625,7 +1625,7 @@ export default function VaptReport() {
             )}
             {record.next_vapt_due_at && record.lifecycle_status === "closed" && (
               <p className="mt-2 text-sm text-emerald-700 dark:text-emerald-400">
-                Next VAPT assessment: <strong>{new Date(record.next_vapt_due_at).toLocaleString()}</strong>
+                Next VAPT assessment: <strong>{fmtDate(record.next_vapt_due_at)}</strong>
               </p>
             )}
             {!isPlatformView && record.lifecycle_status === "closure_pending_client_due_date" && (
@@ -1688,8 +1688,8 @@ export default function VaptReport() {
                   <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Next rescan</p>
                   <p className="mt-2 text-lg font-extrabold text-slate-900 dark:text-slate-100">
                     {record.lifecycle_status === "closed" && record.next_vapt_due_at
-                      ? new Date(record.next_vapt_due_at).toLocaleString()
-                      : rescanSchedules.length > 0 ? new Date(rescanSchedules[0].scheduled_at).toLocaleString() : "No rescan scheduled"}
+                      ? fmtDate(record.next_vapt_due_at)
+                      : rescanSchedules.length > 0 ? fmtDate(rescanSchedules[0].scheduled_at) : "No rescan scheduled"}
                   </p>
                   {record.lifecycle_status === "closed" && record.next_vapt_due_at ? (
                     <p className="mt-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">Next VAPT assessment date selected by the client</p>

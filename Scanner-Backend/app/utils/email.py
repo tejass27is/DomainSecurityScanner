@@ -2,9 +2,11 @@ import html
 import os
 import smtplib
 import ssl
+from datetime import datetime, timezone
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from zoneinfo import ZoneInfo
 
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 # Parse SMTP_PORT safely; default to 0 when not provided to avoid import-time errors.
@@ -22,6 +24,28 @@ SMTP_TIMEOUT_SECONDS = int(os.getenv("SMTP_TIMEOUT_SECONDS") or 20)
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME") or "Domain Scanner"
 # Lifetime of OTP codes (shown in OTP emails; must match the backend policy).
 OTP_EXPIRY_MINUTES = int(os.getenv("OTP_EXPIRY_MINUTES") or 10)
+
+# Scan slots are quoted in the SOC's working timezone so every recipient
+# (client in Africa, analyst in IST) reads the same wall-clock time.
+IST = ZoneInfo("Asia/Kolkata")
+IST_DATETIME_FORMAT = "%d %b %Y, %I:%M %p IST"
+
+
+def _ist_datetime_label(value) -> str:
+    """Render a timestamp as an IST label, e.g. ``26 Sep 2026, 06:00 PM IST``.
+
+    Accepts an ISO8601 string or a ``datetime``; naive values are treated as
+    UTC. Unparseable values fall back to their string form.
+    """
+    if not value:
+        return ""
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return str(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(IST).strftime(IST_DATETIME_FORMAT)
 
 
 def _smtp_send(msg: MIMEMultipart) -> None:
@@ -323,6 +347,7 @@ def send_vapt_rescan_schedule_email(
     if not SMTP_USER or not SMTP_PASSWORD:
         raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
     hosts_text = ", ".join(hosts) if hosts else "All hosts"
+    scheduled_time_label = _ist_datetime_label(scheduled_at_iso)
 
     subject = f"VAPT rescan scheduled for {file_name}"
     html_content = f"""
@@ -344,7 +369,7 @@ def send_vapt_rescan_schedule_email(
             <div class="body">
                 <p>Hello,</p>
                 <p>A verification rescan was scheduled by <strong>{scheduled_by_email}</strong> for the VAPT import <strong>{file_name}</strong>.</p>
-                <p><strong>Scheduled time:</strong> {scheduled_at_iso}</p>
+                <p><strong>Scheduled time:</strong> {scheduled_time_label}</p>
                 <p><strong>Hosts:</strong> {hosts_text}</p>
             </div>
             <div class="footer">&copy; Domain Scanner</div>
@@ -359,7 +384,7 @@ def send_vapt_rescan_schedule_email(
 
     plain_text = (
         f"A VAPT rescan was scheduled by {scheduled_by_email} for {file_name}. "
-        f"Scheduled at: {scheduled_at_iso}. Hosts: {hosts_text}."
+        f"Scheduled at: {scheduled_time_label}. Hosts: {hosts_text}."
     )
     part1 = MIMEText(plain_text, "plain")
     part2 = MIMEText(html_content, "html")
@@ -425,9 +450,15 @@ def send_vapt_access_event_email(
     }
     title = labels.get(event, "VAPT Update")
     subject = title
-    schedule = ""
-    if testing_start_at or testing_end_at:
-        schedule = f"\nTesting window: {testing_start_at} to {testing_end_at} ({testing_timezone or 'timezone not specified'})"
+    # Both the client and the SOC read these emails, so the window is quoted in
+    # IST (the SOC clock) with the zone it was requested in kept as context.
+    window = " to ".join(
+        label for label in (_ist_datetime_label(testing_start_at), _ist_datetime_label(testing_end_at)) if label
+    )
+    requested_in = ""
+    if testing_timezone and testing_timezone != "Asia/Kolkata":
+        requested_in = f" · requested in {testing_timezone}"
+    schedule = f"\nTesting window: {window}{requested_in}" if window else ""
     plain = f"{title}\n\nOrganization: {org_name}\nRegion: {region_code} ({region_name}){schedule}\n\nRegards,\n{EMAIL_FROM_NAME}"
     # Build detail rows
     detail_rows = ""
@@ -437,10 +468,9 @@ def send_vapt_access_event_email(
         region_display = f"{region_code} &middot; {region_name}" if region_code and region_name else (region_code or region_name)
         detail_rows += f'<tr><td style="padding:9px 0;color:#64748b;font-size:13px">Region</td><td style="padding:9px 0;font-weight:600;font-size:13px">{region_display}</td></tr>'
     if testing_start_at:
-        tz_display = testing_timezone or "UTC"
-        detail_rows += f'<tr><td style="padding:9px 0;color:#64748b;font-size:13px">Testing Start</td><td style="padding:9px 0;font-weight:600;font-size:13px">{testing_start_at} &nbsp;({tz_display})</td></tr>'
+        detail_rows += f'<tr><td style="padding:9px 0;color:#64748b;font-size:13px">Testing Start</td><td style="padding:9px 0;font-weight:600;font-size:13px">{_ist_datetime_label(testing_start_at)}{requested_in}</td></tr>'
     if testing_end_at:
-        detail_rows += f'<tr><td style="padding:9px 0;color:#64748b;font-size:13px">Testing End</td><td style="padding:9px 0;font-weight:600;font-size:13px">{testing_end_at}</td></tr>'
+        detail_rows += f'<tr><td style="padding:9px 0;color:#64748b;font-size:13px">Testing End</td><td style="padding:9px 0;font-weight:600;font-size:13px">{_ist_datetime_label(testing_end_at)}{requested_in}</td></tr>'
     details_table = f'<table style="width:100%;border-collapse:collapse;margin:16px 0 4px">{detail_rows}</table>' if detail_rows else ""
     note_block = ""
     if note and note.strip():
@@ -474,16 +504,17 @@ def send_vapt_rescan_reminder_email(
         raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
 
     subject = "Reminder: VAPT Verification Scan Tomorrow"
+    scheduled_time_label = _ist_datetime_label(scheduled_at_iso)
     plain_text = (
         f"This is a reminder that your verification scan for {file_name} "
-        f"is scheduled for tomorrow at {scheduled_at_iso}."
+        f"is scheduled for tomorrow at {scheduled_time_label}."
     )
     body_html = f"""
         <p style="font-size:14px;color:#334155;margin:0 0 16px">Hello,</p>
         <p style="font-size:14px;color:#334155;margin:0 0 20px">This is a reminder that your verification scan is scheduled for tomorrow.</p>
         <table style="width:100%;border-collapse:collapse;margin:16px 0">
             <tr><td style="padding:9px 0;color:#64748b;font-size:13px;width:140px">Report</td><td style="padding:9px 0;font-weight:600;font-size:13px">{file_name}</td></tr>
-            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Scheduled Time</td><td style="padding:9px 0;font-weight:600;font-size:13px">{scheduled_at_iso}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Scheduled Time</td><td style="padding:9px 0;font-weight:600;font-size:13px">{scheduled_time_label}</td></tr>
         </table>
         <p style="font-size:13px;color:#64748b;margin:24px 0 0">Regards,<br><strong>{EMAIL_FROM_NAME}</strong></p>
     """
@@ -502,14 +533,15 @@ def send_vapt_cycle_closed_email(to_email: str, file_name: str, next_vapt_due_at
     """Notify the client that SOC closed the cycle and set the next due date."""
     if not SMTP_USER or not SMTP_PASSWORD:
         raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
+    due_label = _ist_datetime_label(next_vapt_due_at)
     subject = f"VAPT Cycle Closed: {file_name}"
-    plain_text = f"SOC has closed the VAPT cycle for {file_name}. Your next VAPT assessment is due on {next_vapt_due_at}."
+    plain_text = f"SOC has closed the VAPT cycle for {file_name}. Your next VAPT assessment is due on {due_label}."
     body_html = f"""
         <p style="font-size:14px;color:#334155;margin:0 0 16px">Hello,</p>
         <p style="font-size:14px;color:#334155;margin:0 0 20px">SOC has reviewed and closed the VAPT cycle.</p>
         <table style="width:100%;border-collapse:collapse;margin:16px 0">
             <tr><td style="padding:9px 0;color:#64748b;font-size:13px;width:170px">Report</td><td style="padding:9px 0;font-weight:600;font-size:13px">{file_name}</td></tr>
-            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Next Assessment Due</td><td style="padding:9px 0;font-weight:600;font-size:13px">{next_vapt_due_at}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Next Assessment Due</td><td style="padding:9px 0;font-weight:600;font-size:13px">{due_label}</td></tr>
         </table>
         <p style="font-size:13px;color:#64748b;margin:24px 0 0">Regards,<br><strong>{EMAIL_FROM_NAME}</strong></p>
     """
@@ -536,10 +568,11 @@ def send_vapt_due_soon_email(
     if not FRONTEND_URL:
         raise ValueError("FRONTEND_URL must be configured.")
     start_link = f"{FRONTEND_URL.rstrip('/')}/vapt"
+    due_label = _ist_datetime_label(next_vapt_due_at)
     subject = f"Upcoming VAPT due in {days_left} day{'s' if days_left != 1 else ''}: {file_name}"
     plain_text = (
         f"Your next VAPT assessment for {file_name} (org: {org_domain or 'your organization'}) "
-        f"is due on {next_vapt_due_at} — {days_left} day(s) from now. "
+        f"is due on {due_label} — {days_left} day(s) from now. "
         f"Complete the checklist so the SOC team can schedule the new cycle.\n\nStart here: {start_link}"
     )
     body_html = f"""
@@ -548,7 +581,7 @@ def send_vapt_due_soon_email(
         <table style="width:100%;border-collapse:collapse;margin:16px 0">
             <tr><td style="padding:9px 0;color:#64748b;font-size:13px;width:170px">Report</td><td style="padding:9px 0;font-weight:600;font-size:13px">{file_name}</td></tr>
             <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Organization</td><td style="padding:9px 0;font-weight:600;font-size:13px">{org_domain or '—'}</td></tr>
-            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Due</td><td style="padding:9px 0;font-weight:600;font-size:13px">{next_vapt_due_at}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Due</td><td style="padding:9px 0;font-weight:600;font-size:13px">{due_label}</td></tr>
             <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Time remaining</td><td style="padding:9px 0;font-weight:600;font-size:13px">{days_left} day{'s' if days_left != 1 else ''}</td></tr>
         </table>
         <p style="font-size:13px;color:#334155;margin:16px 0">Complete the VAPT checklist so the SOC team can schedule the new assessment cycle on time.</p>
@@ -578,10 +611,11 @@ def send_vapt_overdue_email(
     if not FRONTEND_URL:
         raise ValueError("FRONTEND_URL must be configured.")
     start_link = f"{FRONTEND_URL.rstrip('/')}/vapt"
+    due_label = _ist_datetime_label(next_vapt_due_at)
     subject = f"VAPT overdue by {days_overdue} day{'s' if days_overdue != 1 else ''}: {file_name}"
     plain_text = (
         f"The next VAPT assessment for {file_name} (org: {org_domain or 'your organization'}) "
-        f"was due on {next_vapt_due_at} and is now {days_overdue} day(s) overdue. "
+        f"was due on {due_label} and is now {days_overdue} day(s) overdue. "
         f"No new assessment cycle has started yet.\n\nOpen VAPT: {start_link}"
     )
     body_html = f"""
@@ -590,7 +624,7 @@ def send_vapt_overdue_email(
         <table style="width:100%;border-collapse:collapse;margin:16px 0">
             <tr><td style="padding:9px 0;color:#64748b;font-size:13px;width:170px">Report</td><td style="padding:9px 0;font-weight:600;font-size:13px">{file_name}</td></tr>
             <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Organization</td><td style="padding:9px 0;font-weight:600;font-size:13px">{org_domain or '—'}</td></tr>
-            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Was due</td><td style="padding:9px 0;font-weight:600;font-size:13px">{next_vapt_due_at}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Was due</td><td style="padding:9px 0;font-weight:600;font-size:13px">{due_label}</td></tr>
             <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Overdue by</td><td style="padding:9px 0;font-weight:600;font-size:13px;color:#b91c1c">{days_overdue} day{'s' if days_overdue != 1 else ''}</td></tr>
         </table>
         <p style="font-size:13px;color:#334155;margin:16px 0">No new assessment cycle has started. Please complete the checklist (client) or upload the next report (SOC) to keep the assessment cadence on track.</p>
@@ -964,10 +998,11 @@ def send_remediation_followup_reminder_email(
         raise ValueError("FRONTEND_URL must be configured.")
 
     report_link = f"{FRONTEND_URL.rstrip('/')}/admin/vapt-reports/{import_id}"
+    since_label = _ist_datetime_label(since)
     subject = f"Follow-up overdue: remediation support for {file_name}"
     plain_text = (
         f"The VAPT report '{file_name}' (org: {org_domain or org_id}) has been "
-        f"in remediation_required since {since}. No support-offered action has "
+        f"in remediation_required since {since_label}. No support-offered action has "
         f"been logged. Please follow up with the client.\n\nView report: {report_link}"
     )
     html_content = f"""
@@ -990,7 +1025,7 @@ def send_remediation_followup_reminder_email(
                 <p>Hello,</p>
                 <p>The VAPT report <strong>{file_name}</strong> for organisation
                    <strong>{org_domain or org_id}</strong> has been in
-                   <strong>remediation_required</strong> since {since} with no
+                   <strong>remediation_required</strong> since {since_label} with no
                    logged support-contact.</p>
                 <div class="alert">
                     <p>Please follow up with the client by phone, email, or other

@@ -17,7 +17,7 @@ function blankEntry(orgId, email) {
   return {
     org_id: orgId,
     email: email || orgId,
-    approved_regions: [],
+     approved_regions: [],
     requested_regions: [],
     pending_region_details: [],
     checklist: null,

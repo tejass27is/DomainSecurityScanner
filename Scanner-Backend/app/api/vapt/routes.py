@@ -915,7 +915,7 @@ async def submit_onboarding_checklist(
         if key in payload and payload.get(key) is not None:
             value = payload.get(key)
             if key in datetime_fields and isinstance(value, str):
-                value = _parse_datetime(value, key)
+                value = _parse_datetime(value, key, _window_timezone(payload, key))
             setattr(record, key, value)
 
     # Trust the stored answers plus this payload. A question hidden by a
@@ -1075,7 +1075,23 @@ class InitialVaptDateProposal(BaseModel):
     note: str | None = None
 
 
-def _parse_datetime(value: str | datetime | None, field: str) -> datetime | None:
+def _window_timezone(payload: dict, key: str) -> str | None:
+    """The IANA zone that accompanies a testing/proposed window field.
+
+    A naive datetime carries no zone of its own, so the matching ``*_timezone``
+    value from the same payload is what makes it interpretable.
+    """
+    zone = payload.get("proposed_timezone") if str(key).startswith("proposed_") else payload.get("testing_timezone")
+    return (zone or "").strip() or None
+
+
+def _parse_datetime(value: str | datetime | None, field: str, tz_name: str | None = None) -> datetime | None:
+    """Parse an ISO8601 value into an aware UTC datetime.
+
+    Aware values are converted as-is. A naive value is a wall clock with no zone
+    attached, so it is read in ``tz_name`` — the zone submitted alongside it —
+    and falls back to UTC when the caller supplied none.
+    """
     if not value:
         return None
     if isinstance(value, datetime):
@@ -1084,7 +1100,14 @@ def _parse_datetime(value: str | datetime | None, field: str) -> datetime | None
         parsed = datetime.fromisoformat(value)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail=f"{field} must be an ISO8601 datetime")
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc)
+    if not tz_name:
+        return parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.replace(tzinfo=ZoneInfo(tz_name)).astimezone(timezone.utc)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field} was submitted with an unknown timezone: {tz_name}")
 
 
 @router.post("/admin/onboarding/{org_id}/decision")
@@ -1150,8 +1173,8 @@ async def propose_initial_vapt_date(
     current_user: User = Depends(require_admin_or_soc_analyst),
 ):
     code = payload.region_code.strip().upper()
-    start = _parse_datetime(payload.proposed_start_at, "proposed_start_at")
-    end = _parse_datetime(payload.proposed_end_at, "proposed_end_at")
+    start = _parse_datetime(payload.proposed_start_at, "proposed_start_at", payload.proposed_timezone)
+    end = _parse_datetime(payload.proposed_end_at, "proposed_end_at", payload.proposed_timezone)
     if not start or not end or end <= start:
         raise HTTPException(status_code=400, detail="The proposed testing window must have a valid start before its end.")
     region = db.query(Region).filter(Region.code == code, Region.is_active.is_(True)).first()
@@ -1275,7 +1298,7 @@ async def request_vapt_region(
     row.status = "pending"
     row.schedule_status = "pending"
     row.rejection_reason = None
-    row.testing_start_at = _parse_datetime(payload.get("testing_start_at"), "testing_start_at")
+    row.testing_start_at = _parse_datetime(payload.get("testing_start_at"), "testing_start_at", payload.get("testing_timezone"))
     row.testing_timezone = str(payload.get("testing_timezone") or "").strip() or None
     if not row.testing_start_at or not row.testing_timezone:
         raise HTTPException(status_code=400, detail="A testing start and timezone are required.")
@@ -1685,7 +1708,7 @@ def request_vapt_access(
             if key in payload and payload.get(key) is not None:
                 value = payload.get(key)
                 if key in {"testing_start_at", "testing_end_at", "proposed_start_at", "proposed_end_at"}:
-                    value = _parse_datetime(value, key) if isinstance(value, str) else value
+                    value = _parse_datetime(value, key, _window_timezone(payload, key)) if isinstance(value, str) else value
                 setattr(record, key, value)
         if _is_onboarding_complete(record) and not record.completed_at:
             record.completed_at = datetime.now(timezone.utc)
@@ -3415,7 +3438,9 @@ async def client_request_new_date(
         raise HTTPException(status_code=400, detail="proposed_at must be in the future")
 
     schedule.scheduled_at = proposed
-    schedule.scheduled_timezone = body.proposed_timezone
+    # The client's proposal arrives as an absolute UTC instant, so the stored
+    # provenance zone (from the original request) still describes the slot and
+    # is deliberately left untouched. Display timezones are derived per viewer.
     if body.note is not None:
         schedule.note = body.note.strip() or None
     schedule.status = "requested"

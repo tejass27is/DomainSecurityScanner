@@ -556,6 +556,10 @@ class VaptRescanSchedule(Base):
     created_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
     hosts = Column(JSON, nullable=True)  # list of host strings to rescan
     scheduled_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    # Provenance only — the IANA zone used to interpret the naive datetime a
+    # caller submitted. ``scheduled_at`` is always stored as UTC-aware and the
+    # display timezone is derived from the viewer (client = own zone, SOC/admin
+    # = IST), so this column must never be read back to format a timestamp.
     scheduled_timezone = Column(String(64), nullable=False, default="UTC", server_default="'UTC'")
     recurrence = Column(JSON, nullable=True)
     result_data = Column(JSON, nullable=True)

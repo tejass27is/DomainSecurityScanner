@@ -316,7 +316,7 @@ export default function SocAnalystVaptReports() {
               <p className="text-[10px] font-black uppercase tracking-[0.22em] text-sky-700 dark:text-sky-300">Next rescan</p>
               <p className="mt-1 truncate text-sm font-bold text-slate-900 dark:text-slate-100">{nextRescan.file_name || nextRescan.import_id}</p>
               <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">
-                Scheduled for <span className="font-semibold">{new Date(nextRescan.scheduled_at).toLocaleString()}</span>
+                Scheduled for <span className="font-semibold">{fmtDate(nextRescan.scheduled_at)}</span>
                 {nextRescan.note ? <span className="text-slate-500 dark:text-slate-400"> · {nextRescan.note}</span> : null}
               </p>
             </div>
