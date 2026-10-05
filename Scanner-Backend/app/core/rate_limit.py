@@ -39,5 +39,12 @@ async def enforce_websocket_rate_limit(websocket: WebSocket, scope: str, limit: 
 
 
 def allowed_websocket_origins() -> set[str]:
-    raw = os.getenv("CORS_ORIGINS", "")
-    return {origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()}
+    origins = {
+        origin.strip().rstrip("/")
+        for origin in os.getenv("CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    }
+    frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+    if frontend_url:
+        origins.add(frontend_url)
+    return origins
