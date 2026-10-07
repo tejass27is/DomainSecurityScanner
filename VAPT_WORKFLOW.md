@@ -316,6 +316,29 @@ findings**, **no `solved` findings** and no closure blockers. Goes straight to
 | Downloads | `/report`, `/report/excel`, verification report PDF/Excel, admin variants | |
 | Delete a cycle | `DELETE /vapt/imports/{id}` | SOC/admin only |
 
+### 5.10 End-to-end engagement runbook and handoffs
+
+The platform manages the engagement record and evidence; it does **not** execute the
+vulnerability scan. The SOC performs assessment and verification work with its approved
+off-platform tools, then uploads the exports here.
+
+| Phase | SOC / analyst responsibility | Client responsibility | Gate / handoff |
+|---|---|---|---|
+| 1. Authorize and scope | Confirm the organization, requested region, authorized assets, contacts, testing window, exclusions, and approval evidence. Do not test assets without written authorization. | Provide accurate in-scope IP ranges/assets, out-of-scope systems, technical contacts, testing window, and authorization evidence; correct incomplete or inaccurate details. | Do not begin testing until authorization, scope, and window are agreed. The checklist records these details; SOC retains operational responsibility for confirming permission. |
+| 2. Onboard | Review the submitted checklist and region. Approve, request specific changes, or reject with a reason; negotiate the testing window where needed. | Request access for a region, complete required questions/uploads, resubmit flagged answers, and accept or reject a proposed window. | The SOC must approve the checklist and region before publishing an assessment. A rejected checklist requires a fresh completion; `changes_requested` requires updates to all flagged answers. |
+| 3. Assess off-platform | Run the authorized assessment during the agreed window; document material scope deviations, outages, and test limitations. Stop and escalate if testing may affect availability or reaches an unauthorized asset. | Keep the named technical contact reachable, notify SOC about unexpected impact or changed scope, and avoid changing the agreed targets/window without coordination. | Assessment execution, stop-work decisions, and incident coordination are operational steps, not platform state transitions. |
+| 4. Validate and publish | Review the export for the correct organization, region, scope, and usable findings; upload a supported export. Resolve parser/input problems before treating the assessment as published. | Review the published report and confirm the assessed assets and findings are understood; raise discrepancies with SOC through the agreed support channel. | Successful upload creates the report and notifies the client. The prior cycle must be closed before a subsequent full report can be uploaded. |
+| 5. Remediate and submit | Review the client's triage. Approve it to enable verification, or reject it to return the cycle to remediation. Give actionable follow-up through the SOC support process. | For each finding, record `solved`, `ignore`, or `false_positive`; add a reason for `ignore`/`false_positive`; submit only after every finding is triaged. Remediate in the client's environment. | All findings must be triaged before submission. `solved` findings are candidates for verification; the client cannot schedule a verification until SOC approves the remediation review. |
+| 6. Agree and perform verification | Approve the requested slot or propose a new one. Run the manual retest against the agreed hosts/findings and upload its supported export. | Have an org owner/admin schedule the slot; accept a SOC-proposed date or coordinate another slot; make the systems available for retest. | Only one active schedule is allowed. The schedule must be approved before SOC can upload verification results. The app evaluates the export against findings marked solved; it does not initiate the scan. |
+| 7. Review verification and close | Review fixed/remaining findings and record `closed` or `reopened`. Reopen if further remediation is required; close only when closure blockers and client review requirements are satisfied. | Triage every finding still present in verification and submit the review; continue remediation if SOC reopens the cycle. | Unresolved Critical, High, or Medium findings block closure. A closed verification moves to the next-due-date handoff; reopening returns the cycle to remediation. |
+| 8. Plan the next cycle | Review and approve the client's proposed next assessment due date; monitor due/overdue alerts and prepare the next engagement. | Propose a future due date after SOC approves closure; use the timeline/report bundle to retain the evidence needed for audit and planning. | SOC approval sets the lifecycle to `closed`; only then can a new full report be uploaded for the next cycle. |
+
+**If something goes wrong:** pause testing and use the established SOC/client incident channel for
+scope, safety, or availability concerns; preserve timestamps, affected assets, and decisions. The
+platform does not provide an emergency stop, incident ticket, scope-change approval, or automated
+scan execution. Record consequential decisions in the engagement evidence/timeline through the
+available SOC process rather than treating a notification as authorization.
+
 ---
 
 ## 6. Scenario matrix
@@ -349,6 +372,21 @@ findings**, **no `solved` findings** and no closure blockers. Goes straight to
 | S25 | SOC support follow-up | 7 days in `remediation_required` | SOC emailed once; `log-support-offered` resets it |
 | S26 | 24 h rescan reminder | SOC opens the rescan queue | SOC emailed once per schedule |
 | S27 | Next cycle starts | SOC uploads again after `closed` | `cycle_number + 1`, new `report_published` |
+| S28 | Checklist needs targeted corrections | SOC selects `changes_requested` and flags items → client updates every flagged answer/document and resubmits | Checklist returns to `pending` SOC review |
+| S29 | Checklist is rejected | SOC rejects with a note/flags → client completes the checklist again | Existing completion is cleared; new submission is required |
+| S30 | Initial access is rejected | SOC rejects the first region/checklist decision with a reason | Region is `rejected`; client must coordinate a new access request with SOC |
+| S31 | Initial testing window is declined | Client rejects a SOC-proposed window with a note → SOC proposes another future window | Region remains pending; a new proposal can be reviewed |
+| S32 | Client submits an incomplete checklist | Required answer or attachment is absent | Submission is blocked; client supplies missing fields/files and retries |
+| S33 | Report upload has wrong prerequisites | Missing/unapproved region, unapproved checklist, unsupported file, or prior cycle not closed | Upload is rejected; SOC resolves the specific prerequisite and retries |
+| S34 | Invalid or past verification slot | Client submits malformed time/zone or a time not in the future | Request is rejected; client selects a valid future slot and timezone |
+| S35 | A second verification request is attempted | An active `scheduled`, `requested`, or `approved` schedule already exists | Request is rejected with `409`; SOC/client must resolve or reuse the active schedule |
+| S36 | Verification export cannot be parsed | SOC uploads an unsupported file or an export with no parseable findings | Upload is rejected; SOC validates/re-exports the verification file and retries |
+| S37 | Verification confirms no solved findings fixed | No previously solved finding is absent from the retest | Schedule is `failed`; SOC reviews evidence and reopens remediation |
+| S38 | Client has not reviewed surviving findings | Verification has remaining findings but client has not submitted their triage | SOC cannot close; client triages and submits, then SOC records a decision |
+| S39 | Closure blocked by severity | Critical, High, or Medium findings remain unresolved | Closure is rejected; return to remediation and verification as appropriate |
+| S40 | No finding requires verification | No findings are pending or solved, remediation review is approved, and no closure blockers remain | SOC can close without verification; client still has to propose the next due date |
+| S41 | Next due date is invalid or overdue | Client submits malformed or non-future `next_vapt_due_at` | Request is rejected; client submits a valid future ISO-8601 instant |
+| S42 | Rescan slot is missed or no longer workable | Client or SOC identifies the approved slot cannot be used | Coordinate a future replacement through the reschedule flow; do not treat an expired slot as completed verification |
 
 A separate, unrelated mechanism exists for **website findings**: `ReportedIssuesPanel` offers
 "Rescan this issue", which re-checks a single report-issue finding. That does not touch the VAPT
@@ -417,6 +455,19 @@ subscribe and refresh on these.
    email now quotes IST — the two can disagree by one day inside a 5.5-hour window.
 5. **Excel/PDF report stamps are raw UTC** — the Excel "Verification Date" cell prints
    `str(schedule.scheduled_at)`, and PDF cover dates use a UTC `strftime`.
+6. **A client cannot currently submit a replacement date after rejecting a SOC rescan proposal** —
+   rejection keeps the schedule in `requested`, while the client date-request endpoint rejects an
+   already-`requested` schedule. SOC must issue the replacement proposal; the client can then accept
+   it. The scenario matrix's "client proposes its own slot" applies when the schedule is not already
+   awaiting a decision.
+7. **Next due-date rejection/counter-proposal has no dedicated endpoint** — after the client
+   submits a due date, the cycle waits for SOC approval. If the date is unsuitable, SOC/client must
+   coordinate outside this decision endpoint before proceeding; the platform currently exposes
+   approval but not a reject/edit transition.
+8. **No automated client reminder covers every stalled handoff** — for example, an onboarding
+   review, client triage, or due-date approval can remain pending without a dedicated timeout
+   transition. SOC and client should track open work operationally; reminders listed in §7 are the
+   implemented set, not a complete engagement SLA.
 
 ---
 

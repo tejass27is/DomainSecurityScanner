@@ -78,6 +78,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
                 { to: "/admin/audit", label: "Audit & Security", icon: "shield" },
                 { to: "/admin/reports", label: "Reported Issues", icon: "flag" },
                 { to: "/admin/soc-dashboard", label: "SOC Console", icon: "monitoring" },
+                { to: "/admin/semgrep", label: "Semgrep Updates", icon: "system_update_alt" },
                 { to: "/admin/vapt-access-requests", label: "VAPT Access Requests", icon: "verified_user" },
                 { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
               ]

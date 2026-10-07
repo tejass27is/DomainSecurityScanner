@@ -1,6 +1,7 @@
 import json
 import os
 import logging
+import re
 import hmac
 import hashlib
 import uuid
@@ -18,7 +19,7 @@ from app.api.vapt.normalizer import normalize_import
 from app.core.redis_queue import RedisClient
 from sqlalchemy.orm import Session
 from app.db.base import get_db
-from app.db.models import ActiveScan, PortFixRequest, WebScan
+from app.db.models import ActiveScan, PortFixRequest, ScanSummary, WebScan
 
 # ✅ Import ws_manager LAST to avoid circular imports
 from app.core.websocket_manager import ws_manager
@@ -329,7 +330,7 @@ async def scanner_webhook(
         "subdomain_discovery_started": "subdomain_discovery",
         "subdomain_filter_started": "subdomain_filter",
         "subdomain_collection_started": "data_collection",
-        "scan_completed": "scan_complete",
+        "scan_completed": "scan_finalizing",
     }
 
     org_id = _resolve_org_id(request.scan_id, request.org_id)
@@ -409,8 +410,19 @@ async def scan_result_webhook(
         already_processed = await redis_client.redis.get(idempotency_key)
         
         if already_processed:
-            logger.info(f"Duplicate scan result webhook for scan_id={scan_id}, skipping (idempotency)")
-            return {"status": "ok", "message": "Result already processed"}
+            stored_result = db.query(ScanSummary).filter(
+                ScanSummary.domain == target.strip().lower(),
+                ScanSummary.org_id == org_id,
+            ).first()
+            if stored_result:
+                logger.info(f"Duplicate scan result webhook for scan_id={scan_id}, skipping (idempotency)")
+                return {"status": "ok", "message": "Result already processed"}
+
+            logger.warning(
+                "Stale scan-result idempotency marker for scan_id=%s without a stored summary; retrying persistence",
+                scan_id,
+            )
+            await redis_client.redis.delete(idempotency_key)
         
         # Mark as processed
         await redis_client.redis.set(idempotency_key, "1", ex=86400)  # 24h TTL
@@ -477,9 +489,24 @@ def _coerce_severity(value: Any) -> int:
 
 
 def _coerce_cvss(value: Any) -> float | None:
-    """Coerce a CVSS score to a float — the normalizer sorts on it, so a string
-    from a quirky Acunetix build must never reach it raw."""
+    """Coerce a CVSS score to a float before it reaches the normalizer."""
     if value is None or value == "":
+        return None
+    if isinstance(value, dict):
+        for key in ("cvss_score", "cvss3_score", "cvss2_score", "score", "base_score", "baseScore"):
+            if key in value:
+                score = _coerce_cvss(value[key])
+                if score is not None:
+                    return score
+        nested_keys = sorted(
+            key for key in value
+            if "cvss" in key.lower() or key.lower() in {"data", "vulnerability_type", "vulnerability"}
+        )
+        for key in nested_keys:
+            if key in value:
+                score = _coerce_cvss(value[key])
+                if score is not None:
+                    return score
         return None
     try:
         return float(value)
@@ -503,7 +530,7 @@ def _map_acunetix_vulnerabilities(vulnerabilities: list[dict], fallback_url: str
         vt_id = str(vuln.get("vt_id") or "").strip()
         affected_url = str(vuln.get("affects_url") or fallback_url or "").strip()
         affects_detail = str(vuln.get("affects_detail") or "").strip()
-        title = str(vuln.get("name") or "").strip() or f"Acunetix finding {vt_id or 'unknown'}"
+        title = str(vuln.get("name") or "").strip() or f"Dynamic scan finding {vt_id or 'unknown'}"
 
         references = vuln.get("references") or []
         if isinstance(references, str):
@@ -524,7 +551,7 @@ def _map_acunetix_vulnerabilities(vulnerabilities: list[dict], fallback_url: str
             "references": [str(ref) for ref in references if ref],
             "cves": [str(cve) for cve in cves if cve],
             "plugin_id": vt_id,
-            "plugin_family": "Acunetix",
+            "plugin_family": "Dynamic Web Scan",
             "host": affected_url,
             "port": vuln.get("port"),
             "protocol": str(vuln.get("protocol") or ""),
@@ -556,7 +583,7 @@ async def webscan_notification(
     db: Session = Depends(get_db),
     x_webhook_signature: str | None = Header(None),
 ):
-    """Progress ping from the Acunetix worker → update the row + notify the UI."""
+    """Progress ping from the scan worker → update the row + notify the UI."""
     payload_bytes = await raw_request.body()
     if not _verify_webhook_signature(payload_bytes, x_webhook_signature):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
@@ -574,9 +601,9 @@ async def webscan_notification(
         if request.progress is not None:
             record.progress = max(0, min(100, int(request.progress)))
         if request.stage:
-            record.current_stage = request.stage
+            record.current_stage = re.sub(r"(?i)acunetix", "iSecurify", request.stage)
         if request.message:
-            record.message = request.message
+            record.message = re.sub(r"(?i)acunetix", "iSecurify", request.message)
         if record.status == "running" and not record.started_at:
             record.started_at = datetime.now(timezone.utc)
         db.add(record)
@@ -605,7 +632,7 @@ async def webscan_result(
     db: Session = Depends(get_db),
     x_webhook_signature: str | None = Header(None),
 ):
-    """Final Acunetix result → normalize the findings and complete the scan."""
+    """Final dynamic scan result → normalize the findings and complete the scan."""
     payload_bytes = await raw_request.body()
     if not _verify_webhook_signature(payload_bytes, x_webhook_signature):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
@@ -626,8 +653,12 @@ async def webscan_result(
     try:
         if status in {"failed", "aborted", "error"}:
             record.status = "failed"
-            record.message = "Acunetix could not complete the scan"
-            record.error_message = request.error or "Acunetix reported the scan as failed"
+            record.message = "The scanning service could not complete the scan"
+            record.error_message = re.sub(
+                r"(?i)acunetix",
+                "iSecurify",
+                request.error or "The scanning service reported the scan as failed",
+            )
             record.finished_at = datetime.now(timezone.utc)
             db.add(record)
             db.commit()
@@ -655,7 +686,7 @@ async def webscan_result(
         )
         # normalize_import drops informational findings, merges duplicates and
         # computes the 0-100 risk index — the same pipeline VAPT imports use.
-        normalized = normalize_import(mapped, source_tool="acunetix")
+        normalized = normalize_import(mapped, source_tool="Dynamic Web Scan")
 
         # The normalizer's entry shape is shared with VAPT, so re-attach the
         # Acunetix-specific fields the UI branches on (source / CWE / affected URL).
@@ -674,7 +705,7 @@ async def webscan_result(
         for finding in findings:
             plugin_id = str(finding.get("plugin_id") or "")
             affected_hosts = finding.get("affected_hosts") or []
-            finding["source"] = "acunetix"
+            finding["source"] = "dynamic_web_scan"
             finding["vt_id"] = plugin_id
             finding["cwe"] = cwe_by_plugin.get(plugin_id)
             finding["affected_url"] = str(affected_hosts[0]) if affected_hosts else record.target_url

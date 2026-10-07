@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +50,7 @@ func RunWebScan(ctx context.Context, job *models.WebScanJob) (any, error) {
 	deadline := time.Now().Add(maxWait)
 	scanStartedAt := time.Now()
 
-	_ = notifyWebScan(job, "running", webScanProgressBase, "queued", "Waiting for Acunetix to start the scan")
+	_ = notifyWebScan(job, "running", webScanProgressBase, "queued", "Waiting for the scan to start")
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -93,7 +95,7 @@ func RunWebScan(ctx context.Context, job *models.WebScanJob) (any, error) {
 			return result, nil
 
 		case "failed", "aborted":
-			reason := fmt.Sprintf("Acunetix reported scan %s as %s", job.AcunetixScanID, status)
+			reason := fmt.Sprintf("The scanning service reported the scan as %s", status)
 			_ = sendWebScanFailure(job, reason)
 			return nil, fmt.Errorf("%s", reason)
 
@@ -152,7 +154,7 @@ func fetchAcunetixScanStatus(client *acunetixClient, scanID string, elapsed time
 		stage = "running"
 	}
 
-	message = fmt.Sprintf("Acunetix status: %s", firstNonEmpty(stringField(session, "current_stage"), rawStatus, "running"))
+	message = fmt.Sprintf("Status: %s", firstNonEmpty(stringField(session, "current_stage"), rawStatus, "running"))
 	return status, progress, stage, message, nil
 }
 
@@ -387,7 +389,7 @@ func extractCollection(payload map[string]any, keys ...string) any {
 	return []any{}
 }
 
-// buildWebScanFinding flattens an Acunetix vulnerability + its type metadata
+// buildWebScanFinding flattens a scanner vulnerability + its type metadata
 // into the payload the backend expects.
 func buildWebScanFinding(client *acunetixClient, job *models.WebScanJob, resultID string, vuln, vulnType map[string]any) map[string]any {
 	vulnType = unwrapVulnerabilityType(vulnType)
@@ -396,11 +398,27 @@ func buildWebScanFinding(client *acunetixClient, job *models.WebScanJob, resultI
 	affectsURL := stringField(vuln, "affects_url")
 	affectsDetail := stringField(vuln, "affects_detail")
 	evidence := stringField(vuln, "evidence")
+	cvssScore, cvssVector := extractCVSS(vulnType)
+	if fallbackScore, fallbackVector := extractCVSS(vuln); cvssScore == nil || cvssVector == "" {
+		if cvssScore == nil {
+			cvssScore = fallbackScore
+		}
+		if cvssVector == "" {
+			cvssVector = fallbackVector
+		}
+	}
+	cwe := extractCWE(vulnType)
+	if cwe == nil {
+		cwe = extractCWE(vuln)
+	}
+	confidence := confidenceValue(vuln, vulnType)
 
-	// The list endpoint omits the affected URL on some builds, so fall back to
-	// the per-vulnerability detail endpoint.
+	// The list endpoint may omit technical metadata, so enrich it from the
+	// per-vulnerability detail endpoint when available.
 	if vulnID := stringField(vuln, "vuln_id"); vulnID != "" {
-		if affectsURL == "" || (vuln["request"] == nil && vuln["http_request"] == nil && vuln["response"] == nil && vuln["http_response"] == nil) {
+		if affectsURL == "" ||
+			(vuln["request"] == nil && vuln["http_request"] == nil && vuln["response"] == nil && vuln["http_response"] == nil) ||
+			cvssScore == nil || cwe == nil || confidence == nil {
 			if detail, err := client.getVulnerability(job.AcunetixScanID, resultID, vulnID); err == nil {
 				affectsURL = stringField(detail, "affects_url")
 				if affectsDetail == "" {
@@ -409,10 +427,30 @@ func buildWebScanFinding(client *acunetixClient, job *models.WebScanJob, resultI
 				if evidence == "" {
 					evidence = stringField(detail, "evidence")
 				}
-				for _, key := range []string{"request", "response", "http_request", "http_response", "request_headers", "response_headers", "request_body", "response_body"} {
-					if value, ok := detail[key]; ok && value != nil {
+				for _, key := range []string{
+					"request", "response", "http_request", "http_response",
+					"request_headers", "response_headers", "request_body", "response_body",
+					"cvss", "cvss_score", "cvss3", "cvss2", "cvss3_score", "cvss2_score",
+					"cvss_vector", "cvss3_vector", "cvss2_vector", "cwe", "cwe_id", "cwe_ids",
+					"confidence", "port", "protocol", "service", "status", "last_seen", "target_id",
+				} {
+					if value, ok := detail[key]; ok && value != nil && vuln[key] == nil {
 						vuln[key] = value
 					}
+				}
+				if fallbackScore, fallbackVector := extractCVSS(vuln); cvssScore == nil || cvssVector == "" {
+					if cvssScore == nil {
+						cvssScore = fallbackScore
+					}
+					if cvssVector == "" {
+						cvssVector = fallbackVector
+					}
+				}
+				if cwe == nil {
+					cwe = extractCWE(vuln)
+				}
+				if confidence == nil {
+					confidence = confidenceValue(vuln)
 				}
 			}
 		}
@@ -420,8 +458,16 @@ func buildWebScanFinding(client *acunetixClient, job *models.WebScanJob, resultI
 	if affectsURL == "" {
 		affectsURL = job.TargetURL
 	}
+	if cvssScore == nil || cwe == nil {
+		log.Printf(
+			"Web scan metadata incomplete: scan_id=%s vulnerability_type_id=%s cvss_present=%t cwe_present=%t",
+			job.ScanID,
+			vtID,
+			cvssScore != nil,
+			cwe != nil,
+		)
+	}
 
-	cvssScore, cvssVector := extractCVSS(vulnType)
 	vulnerabilityID := stringField(vuln, "vuln_id")
 	references := stringSlice(vulnType["references"])
 	if len(references) == 0 {
@@ -438,14 +484,14 @@ func buildWebScanFinding(client *acunetixClient, job *models.WebScanJob, resultI
 		"result_id":        resultID,
 		"name":             firstNonEmpty(stringField(vulnType, "name"), stringField(vuln, "name"), vtID),
 		"severity":         severityValue(vuln, vulnType),
-		"confidence":       intField(vuln, "confidence"),
+		"confidence":       confidence,
 		"affects_url":      affectsURL,
 		"affects_detail":   affectsDetail,
 		"description":      firstNonEmpty(stringField(vulnType, "description"), stringField(vulnType, "long_description"), stringField(vulnType, "summary"), stringField(vuln, "description")),
 		"recommendation":   firstNonEmpty(stringField(vulnType, "recommendation"), stringField(vulnType, "remediation"), stringField(vulnType, "remediation_guidance"), stringField(vulnType, "solution"), stringField(vuln, "recommendation"), stringField(vuln, "solution")),
 		"cvss_score":       cvssScore,
 		"cvss_vector":      cvssVector,
-		"cwe":              extractCWE(vulnType),
+		"cwe":              cwe,
 		"references":       references,
 		"cves":             cves,
 		"evidence":         firstNonEmpty(evidence, stringField(vuln, "proof"), stringField(vuln, "output"), stringField(vulnType, "evidence")),
@@ -468,10 +514,18 @@ func unwrapVulnerabilityType(payload map[string]any) map[string]any {
 	if payload == nil {
 		return map[string]any{}
 	}
-	for _, key := range []string{"vulnerability_type", "vulnerabilityType", "data"} {
-		if nested, ok := payload[key].(map[string]any); ok {
-			return nested
+	for depth := 0; depth < 5; depth++ {
+		var nestedPayload map[string]any
+		for _, key := range []string{"vulnerability_type", "vulnerabilityType", "data", "vulnerability"} {
+			if nested, ok := payload[key].(map[string]any); ok {
+				nestedPayload = nested
+				break
+			}
 		}
+		if nestedPayload == nil {
+			break
+		}
+		payload = nestedPayload
 	}
 	return payload
 }
@@ -536,59 +590,207 @@ func severityFromName(name string) int {
 // extractCVSS pulls the CVSS score/vector from a vulnerability type, covering
 // both the flat fields and the nested cvss3/cvss2 descriptors.
 func extractCVSS(vulnType map[string]any) (any, string) {
-	if vulnType == nil {
-		return nil, ""
-	}
-
 	var score any
-	if value, ok := vulnType["cvss_score"]; ok && value != nil {
-		score = value
+	var vector string
+	for _, key := range []string{"cvss_score", "cvss3_score", "cvss2_score", "cvss"} {
+		if value, ok := vulnType[key]; ok && isCVSSScalar(value) {
+			score = value
+			break
+		}
 	}
-	if score == nil {
-		for _, key := range []string{"cvss", "cvss3_score", "cvss2_score"} {
-			if value, ok := vulnType[key]; ok && value != nil {
-				score = value
+	for _, key := range []string{"cvss_vector", "cvss3_vector", "cvss2_vector", "vector"} {
+		if value, ok := vulnType[key]; ok {
+			vector = scalarText(value)
+			if vector != "" {
 				break
 			}
 		}
 	}
-	vector := stringField(vulnType, "cvss_vector")
-	if vector == "" {
-		vector = firstNonEmpty(stringField(vulnType, "cvss3_vector"), stringField(vulnType, "cvss2_vector"))
-	}
-
-	for _, key := range []string{"cvss3", "cvss2"} {
-		nested, ok := vulnType[key].(map[string]any)
-		if !ok {
-			continue
-		}
-		if score == nil {
-			if value, ok := nested["score"]; ok && value != nil {
-				score = value
+	var visit func(any, bool)
+	visit = func(value any, insideCVSS bool) {
+		switch typed := value.(type) {
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				child := typed[key]
+				normalized := normalizeMetadataKey(key)
+				cvssContext := insideCVSS || strings.HasPrefix(normalized, "cvss")
+				switch {
+				case isCVSSScoreKey(normalized) && score == nil && isCVSSScalar(child):
+					score = child
+				case insideCVSS && isCVSSBaseScoreKey(normalized) && score == nil && isCVSSScalar(child):
+					score = child
+				case isCVSSVectorKey(normalized) && vector == "":
+					vector = scalarText(child)
+				case insideCVSS && isVectorKey(normalized) && vector == "":
+					vector = scalarText(child)
+				}
+				visit(child, cvssContext)
+			}
+		case []any:
+			for _, child := range typed {
+				visit(child, insideCVSS)
 			}
 		}
-		if vector == "" {
-			vector = stringField(nested, "vector")
-		}
 	}
-
+	visit(vulnType, false)
 	return score, vector
 }
 
+func normalizeMetadataKey(key string) string {
+	return strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(key))
+}
+
+func isCVSSScoreKey(key string) bool {
+	return key == "cvss" ||
+		key == "cvssscore" ||
+		key == "cvss2score" ||
+		key == "cvss3score" ||
+		key == "cvssv2score" ||
+		key == "cvssv3score"
+}
+
+func isCVSSBaseScoreKey(key string) bool {
+	return key == "score" || key == "basescore" || key == "basecvssscore"
+}
+
+func isCVSSVectorKey(key string) bool {
+	return key == "cvssvector" ||
+		key == "cvss2vector" ||
+		key == "cvss3vector" ||
+		key == "cvssv2vector" ||
+		key == "cvssv3vector"
+}
+
+func isVectorKey(key string) bool {
+	return key == "vector" || key == "vectorstring" || key == "vectorstr"
+}
+
+func scalarText(value any) string {
+	if value == nil {
+		return ""
+	}
+	switch value.(type) {
+	case map[string]any, []any:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+}
+
+func isCVSSScalar(value any) bool {
+	switch value.(type) {
+	case float32, float64, int, int64, uint, uint64:
+		return true
+	case string:
+		_, err := strconv.ParseFloat(strings.TrimSpace(value.(string)), 64)
+		return err == nil
+	default:
+		return false
+	}
+}
+
 func extractCWE(vulnType map[string]any) any {
-	if vulnType == nil {
+	var result any
+	var visit func(any)
+	visit = func(value any) {
+		if result != nil {
+			return
+		}
+		switch typed := value.(type) {
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				child := typed[key]
+				switch normalizeMetadataKey(key) {
+				case "cwe", "cweid", "cweids", "weaknessid", "weaknessids":
+					result = cweValue(child)
+				}
+				visit(child)
+				if result != nil {
+					return
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				visit(child)
+			}
+		}
+	}
+	visit(vulnType)
+	return result
+}
+
+func cweValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"id", "cwe_id", "cweid", "value", "name"} {
+			if id := typed[key]; id != nil {
+				return cweValue(id)
+			}
+		}
+		return nil
+	case []any:
+		ids := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if id := cweValue(item); id != nil {
+				ids = append(ids, fmt.Sprint(id))
+			}
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		return strings.Join(ids, ", ")
+	case []string:
+		if len(typed) == 0 {
+			return nil
+		}
+		return strings.Join(typed, ", ")
+	default:
+		if scalarText(value) != "" {
+			return value
+		}
 		return nil
 	}
-	if value, ok := vulnType["cwe"]; ok && value != nil {
-		return value
-	}
-	if value, ok := vulnType["cwe_id"]; ok && value != nil {
-		return value
-	}
-	if ids := stringSlice(vulnType["cwe_ids"]); len(ids) > 0 {
-		return strings.Join(ids, ", ")
+}
+
+func confidenceValue(payloads ...map[string]any) any {
+	for _, payload := range payloads {
+		if payload == nil {
+			continue
+		}
+		for _, key := range []string{"confidence", "confidence_level"} {
+			if value, ok := payload[key]; ok {
+				if confidence, valid := normalizeConfidence(value); valid {
+					return confidence
+				}
+			}
+		}
 	}
 	return nil
+}
+
+func normalizeConfidence(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if typed > 0 && typed <= 1 {
+			return int(typed * 100), true
+		}
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err == nil && parsed > 0 && parsed <= 1 {
+			return int(parsed * 100), true
+		}
+	}
+	return toInt(value)
 }
 
 // ─── Backend reporting ────────────────────────────────────────────────────────

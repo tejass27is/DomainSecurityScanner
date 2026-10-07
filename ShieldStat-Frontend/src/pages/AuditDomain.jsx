@@ -7,6 +7,7 @@ const EVENT_PROGRESS_MAP = {
   subdomain_discovery: 33,
   subdomain_filter: 55,
   data_collection: 78,
+  scan_finalizing: 99,
   scan_complete: 100,
 };
 
@@ -15,6 +16,7 @@ const STAGE_LABELS = {
   subdomain_discovery: "Discovering subdomains",
   subdomain_filter: "Filtering discovered assets",
   data_collection: "Collecting scan evidence",
+  scan_finalizing: "Saving scan results",
   scan_complete: "Finalizing report",
 };
 
@@ -24,6 +26,10 @@ function normalizeProgress(value) {
 }
 
 function getProgressFromMessage(msg) {
+  if (msg?.event === "scan_finalizing") {
+    const progress = normalizeProgress(msg.progress);
+    return progress === null ? 99 : Math.min(progress, 99);
+  }
   if (msg?.progress != null) {
     return normalizeProgress(msg.progress);
   }
@@ -207,6 +213,7 @@ async function startGlobalScan(domainStr) {
     if (activeWs) activeWs.close();
     const ws = new WebSocket(wsUrl);
     activeWs = ws;
+    let scanStartFailed = false;
 
     ws.onmessage = (event) => {
       try {
@@ -247,26 +254,27 @@ async function startGlobalScan(domainStr) {
     };
 
     ws.onerror = () => {
-      setGlobalError("WebSocket connection failed. Scan may still run in the background.");
+      if (!scanStartFailed) {
+        setGlobalError("Live updates are unavailable. The scan will continue, and status will refresh periodically.");
+      }
     };
 
-    ws.onopen = async () => {
-      try {
-        const result = await registerScanTask(domainStr, token);
-        if (result?.domain_validation === false) {
-          setGlobalError(result?.detail || "Domain validation failed.");
-          setGlobalIsScanRunning(false);
-          ws.close();
-          activeWs = null;
-          return;
-        }
-      } catch (e) {
-        setGlobalError(e.message || "Failed to start scan");
+    try {
+      const result = await registerScanTask(domainStr, token);
+      if (result?.domain_validation === false) {
+        scanStartFailed = true;
+        setGlobalError(result?.detail || "Domain validation failed.");
         setGlobalIsScanRunning(false);
         ws.close();
         activeWs = null;
       }
-    };
+    } catch (e) {
+      scanStartFailed = true;
+      setGlobalError(e.message || "Failed to start scan");
+      setGlobalIsScanRunning(false);
+      ws.close();
+      activeWs = null;
+    }
 
   } catch (err) {
     setGlobalError(err.message || "Failed to initialize scan");
@@ -460,7 +468,20 @@ function NewScan() {
         const token = localStorage.getItem("token");
         if (!token || !orgId) return;
         const activeStatus = await getActiveScan(trimmedDomain, orgId, token);
-        if (activeStatus?.status === "scan complete") {
+        const progress = normalizeProgress(Number(activeStatus?.progress));
+        if (progress !== null) {
+          setGlobalScanProgress(progress);
+          setGlobalTargetProgress(progress);
+        }
+        if (typeof activeStatus?.stage === "string" && activeStatus.stage) {
+          setGlobalScanStage(
+            STAGE_LABELS[activeStatus.stage] || activeStatus.stage.replace(/_/g, " "),
+          );
+        }
+        if (typeof activeStatus?.message === "string" && activeStatus.message) {
+          setGlobalScanMessage(activeStatus.message);
+        }
+        if (["completed", "complete", "scan complete"].includes(activeStatus?.status?.toLowerCase())) {
           setGlobalScanProgress(100);
           setGlobalTargetProgress(100);
         }

@@ -8,9 +8,11 @@ from app.core.websocket_manager import ws_manager
 from sqlalchemy.orm import Session
 from app.db.base import get_db
 import json
+import logging
 from app.db.models import User, ActiveScan
 
 redis_client = RedisClient()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/scanner', tags=["scanner"])
 
@@ -153,15 +155,39 @@ async def get_active_scan(
             ActiveScan.org_id == org_id,
         ).first()
     except Exception as e:
-        logger = __import__('logging').getLogger(__name__)
         logger.error(f"Error querying active scan: {str(e)}", exc_info=True)
         active_scan = None
 
+    progress_key = f"scan_progress:{org_id}:{domain}"
+    try:
+        raw_progress = await redis_client.redis.get(progress_key)
+        if raw_progress:
+            progress = json.loads(raw_progress)
+            if isinstance(progress, dict):
+                progress_value = progress.get("progress", 0)
+                try:
+                    progress_value = max(0, min(100, int(progress_value)))
+                except (TypeError, ValueError):
+                    progress_value = 0
+                return {
+                    "domain": domain,
+                    "org_id": org_id,
+                    "status": str(progress.get("status") or getattr(active_scan, "status", "running")),
+                    "progress": progress_value,
+                    "stage": str(progress.get("stage") or "queued"),
+                    "message": str(progress.get("message") or "Scan in progress"),
+                }
+    except Exception:
+        logger.warning("Failed reading scan progress for domain=%s org_id=%s", domain, org_id, exc_info=True)
+
     if not active_scan:
-        return {"status": "scan complete"}
+        return {"domain": domain, "org_id": org_id, "status": "scan complete", "progress": 100}
 
     return {
         "domain": getattr(active_scan, "domain", domain),
         "org_id": getattr(active_scan, "org_id", org_id),
         "status": getattr(active_scan, "status", "pending"),
+        "progress": 0,
+        "stage": "queued",
+        "message": "Scan queued; waiting for worker updates",
     }

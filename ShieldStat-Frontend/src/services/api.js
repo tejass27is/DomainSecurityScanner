@@ -1,5 +1,6 @@
 const configuredApiBase = import.meta.env.VITE_BACKEND_URL?.trim();
-const API_BASE = configuredApiBase || (import.meta.env.DEV ? window.location.origin : "");
+const configuredApiUrl = configuredApiBase || (import.meta.env.DEV ? window.location.origin : "");
+const API_BASE = configuredApiUrl.replace(/\/+$/, "");
 if (!API_BASE) {
   throw new Error(
     "VITE_BACKEND_URL is not set. " +
@@ -10,7 +11,7 @@ const requestCache = new Map();
 const CACHE_TTL_MS = 30000;
 
 function buildUrl(endpoint) {
-  return `${API_BASE}${endpoint}`;
+  return `${API_BASE}/${endpoint.replace(/^\/+/, "")}`;
 }
 
 
@@ -41,11 +42,12 @@ async function request(endpoint, { method = "GET", body, token, signal, publicIp
     }
   }
 
-  const res = await fetch(`${API_BASE}${endpoint}`, {
+  const res = await fetch(buildUrl(endpoint), {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
     signal,
+    cache: skipCache ? "no-store" : "default",
   });
 
   const contentType = res.headers.get("content-type") || "";
@@ -243,10 +245,13 @@ export function registerScanTask(domain, token) {
 }
 
 export function getActiveScan(domain, orgId, token) {
-  return request(`/scanner/active?domain=${encodeURIComponent(domain)}&org_id=${orgId}`, { token });
+  return request(`/scanner/active?domain=${encodeURIComponent(domain)}&org_id=${orgId}`, {
+    token,
+    skipCache: true,
+  });
 }
 
-// ─── Web Scan (Acunetix + Semgrep static mode) ──────────────────────────────
+// ─── Web Scan (dynamic + Semgrep static mode) ──────────────────────────────
 
 export function createWebScan({
   url,
@@ -355,7 +360,7 @@ export function cancelWebScan(scanId, token) {
   });
 }
 
-// Verifies the configured Acunetix URL/key without starting a scan.
+// Verifies the configured dynamic scanning service without starting a scan.
 export function getWebScanDiagnostics(token) {
   return request("/webscan/diagnostics", { token, skipCache: true });
 }
@@ -405,7 +410,9 @@ export function scanPublicDomain(domain) {
 }
 
 export async function getPublicScanStatus(domain) {
-  const response = await request(`/public/scan-status?domain=${encodeURIComponent(domain)}`);
+  const response = await request(`/public/scan-status?domain=${encodeURIComponent(domain)}`, {
+    skipCache: true,
+  });
   if (response && response.progress != null) {
     response.progress = Number(response.progress);
   }
@@ -413,13 +420,15 @@ export async function getPublicScanStatus(domain) {
 }
 
 export function getPublicDomainOverview(domain) {
-  return request(`/public/domain-overview?domain=${encodeURIComponent(domain)}`);
+  return request(`/public/domain-overview?domain=${encodeURIComponent(domain)}`, {
+    skipCache: true,
+  });
 }
 
-export function sendPublicScanReport(domain, firstName, lastName, email) {
+export function sendPublicScanReport(domain, email) {
   return request("/public/send-report", {
     method: "POST",
-    body: { domain, first_name: firstName, last_name: lastName, email },
+    body: { domain, email },
   });
 }
 
@@ -508,6 +517,10 @@ export async function assignPromoCodeToUser(promoCode, email, token) {
 
 export function getSubscriptionPlans(token) {
   return request("/admin/subscription/plans", { token });
+}
+
+export function getSemgrepVersionStatus(token) {
+  return request("/admin/tools/semgrep", { token, skipCache: true });
 }
 
 export function setSocAnalystActive(email, active, token) {

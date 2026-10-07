@@ -19,6 +19,7 @@ import zipfile
 from io import BytesIO
 from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit, urlunsplit
+from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
@@ -33,7 +34,7 @@ from sqlalchemy.orm import Session
 from app.api.scanner.service import _normalize_domain_for_match
 from app.api.webscan.acunetix import AcunetixClient, AcunetixError, resolve_base_url
 from app.api.webscan.schemas import WebScanCreateRequest, WebScanDetail, WebScanListItem
-from app.core.middleware import require_webscan_access, require_webscan_owner
+from app.core.middleware import require_webscan_access
 from app.core.redis_queue import RedisClient
 from app.core.websocket_manager import ws_manager
 from app.db.base import get_db
@@ -126,6 +127,20 @@ def _host_belongs_to_org(host: str, raw_org_domains) -> bool:
 
 # ─── Serialization ────────────────────────────────────────────────────────────
 
+def _brand_neutral_text(value):
+    return re.sub(r"(?i)acunetix", "iSecurify", str(value))
+
+
+def _brand_neutral_data(value):
+    if isinstance(value, dict):
+        return {key: _brand_neutral_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_brand_neutral_data(item) for item in value]
+    if isinstance(value, str):
+        return _brand_neutral_text(value)
+    return value
+
+
 def _to_list_item(record: WebScan) -> dict:
     return {
         "scan_id": str(record.scan_id),
@@ -135,7 +150,7 @@ def _to_list_item(record: WebScan) -> dict:
         "status": record.status,
         "progress": record.progress or 0,
         "current_stage": record.current_stage,
-        "message": record.message,
+        "message": _brand_neutral_text(record.message) if record.message else record.message,
         "total_findings": record.total_findings or 0,
         "unique_urls": record.unique_urls or 0,
         "risk_score": record.risk_score or 0,
@@ -149,10 +164,10 @@ def _to_list_item(record: WebScan) -> dict:
         "auth_username": record.auth_username,
         "auth_profile_id": record.auth_profile_id,
         "mfa_instructions": record.mfa_instructions,
-        "auth_details": record.auth_details,
+        "auth_details": _brand_neutral_text(record.auth_details) if record.auth_details else record.auth_details,
         "login_sequence": record.login_sequence,
         "acunetix_scan_id": record.acunetix_scan_id,
-        "error_message": record.error_message,
+        "error_message": _brand_neutral_text(record.error_message) if record.error_message else record.error_message,
         "started_at": record.started_at,
         "finished_at": record.finished_at,
         "created_at": record.created_at,
@@ -162,8 +177,8 @@ def _to_list_item(record: WebScan) -> dict:
 def _to_detail(record: WebScan) -> dict:
     return {
         **_to_list_item(record),
-        "findings": record.findings or [],
-        "summary": record.summary or {},
+        "findings": _brand_neutral_data(record.findings or []),
+        "summary": _brand_neutral_data(record.summary or {}),
     }
 
 
@@ -548,12 +563,52 @@ def _report_logo():
     return Image(logo_path, width=42 * mm, height=11 * mm, kind="proportional")
 
 
-def _report_value(value, fallback="Not provided by Acunetix"):
+def _draw_dynamic_webscan_footer(canvas, document):
+    canvas.saveState()
+    canvas.setStrokeColor(colors.HexColor("#e2e8f0"))
+    canvas.setLineWidth(0.6)
+    canvas.line(14 * mm, 13 * mm, A4[0] - 14 * mm, 13 * mm)
+    canvas.setFont("Helvetica", 7.5)
+    canvas.setFillColor(colors.HexColor("#64748b"))
+    canvas.drawString(14 * mm, 8 * mm, "iSecurify  |  Web Application Security Report")
+    canvas.drawRightString(A4[0] - 14 * mm, 8 * mm, f"Page {document.page}")
+    canvas.restoreState()
+
+
+def _report_value(value, fallback="Not available"):
     if value is None or value == "" or value == [] or value == {}:
         return fallback
     if isinstance(value, (dict, list)):
-        return json.dumps(value, indent=2, default=str)
-    return str(value)
+        value = json.dumps(value, indent=2, default=str)
+    return _brand_neutral_text(value)
+
+
+def _report_markup(value, fallback="Not available"):
+    return escape(_report_value(value, fallback))
+
+
+def _report_cwe(value):
+    if value is None or value == "":
+        return "Not available"
+    if isinstance(value, dict):
+        for key in ("id", "cwe_id", "cweid", "value", "name"):
+            if value.get(key) is not None:
+                return _report_cwe(value[key])
+        return "Not available"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(
+            entry
+            for entry in (_report_cwe(item) for item in value)
+            if entry != "Not available"
+        ) or "Not available"
+    text = _brand_neutral_text(value).strip()
+    if not text:
+        return "Not available"
+    return ", ".join(
+        item.upper() if item.lower().startswith("cwe-") else f"CWE-{item}"
+        for item in (part.strip() for part in text.split(","))
+        if item
+    )
 
 
 def _suggested_action(finding):
@@ -573,11 +628,15 @@ def _build_dynamic_webscan_pdf(record: WebScan, report_type: str) -> bytes:
     report_type = report_type if report_type in _DYNAMIC_REPORT_TYPES else "developer"
     buffer = BytesIO()
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("DynamicTitle", parent=styles["Title"], textColor=colors.HexColor("#53154d"), spaceAfter=6)
-    heading_style = ParagraphStyle("DynamicHeading", parent=styles["Heading2"], textColor=colors.HexColor("#53154d"), spaceBefore=10, spaceAfter=6)
-    small_style = ParagraphStyle("DynamicSmall", parent=styles["BodyText"], fontSize=8, leading=10)
-    body_style = ParagraphStyle("DynamicBody", parent=styles["BodyText"], fontSize=9, leading=12)
-    document = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=14 * mm, leftMargin=14 * mm, topMargin=14 * mm, bottomMargin=14 * mm)
+    title_style = ParagraphStyle("DynamicTitle", parent=styles["Title"], fontSize=21, leading=25, textColor=colors.HexColor("#53154d"), alignment=0, spaceAfter=4)
+    heading_style = ParagraphStyle("DynamicHeading", parent=styles["Heading2"], fontSize=13, leading=16, textColor=colors.HexColor("#53154d"), spaceBefore=12, spaceAfter=7)
+    small_style = ParagraphStyle("DynamicSmall", parent=styles["BodyText"], fontSize=8, leading=11, textColor=colors.HexColor("#334155"))
+    body_style = ParagraphStyle("DynamicBody", parent=styles["BodyText"], fontSize=9, leading=13, textColor=colors.HexColor("#1e293b"))
+    metric_label_style = ParagraphStyle("DynamicMetricLabel", parent=small_style, fontSize=7, leading=9, textColor=colors.HexColor("#64748b"), alignment=TA_CENTER)
+    metric_value_style = ParagraphStyle("DynamicMetricValue", parent=styles["BodyText"], fontSize=11, leading=14, textColor=colors.HexColor("#1f2937"), alignment=TA_CENTER)
+    detail_heading_style = ParagraphStyle("DynamicDetailHeading", parent=styles["Heading3"], fontSize=10, leading=13, textColor=colors.HexColor("#53154d"), spaceBefore=8, spaceAfter=4)
+    code_style = ParagraphStyle("DynamicCode", parent=styles["BodyText"], fontName="Courier", fontSize=7, leading=9, textColor=colors.HexColor("#334155"))
+    document = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=14 * mm, leftMargin=14 * mm, topMargin=13 * mm, bottomMargin=19 * mm)
     distribution = record.severity_distribution or {}
     findings = record.findings or []
     summary = record.summary or {}
@@ -587,28 +646,56 @@ def _build_dynamic_webscan_pdf(record: WebScan, report_type: str) -> bytes:
         scan_metadata["duration"] = str(record.finished_at - record.started_at)
     story = [
         _report_logo(),
-        Paragraph(_DYNAMIC_REPORT_TYPES[report_type], title_style),
-        Paragraph(f"<b>Target:</b> {record.target_url}", body_style),
-        Paragraph(f"<b>Status:</b> {record.status.title()} &nbsp;&nbsp; <b>Generated:</b> {datetime.now(timezone.utc).strftime('%d %b %Y, %H:%M UTC')}", small_style),
+        Spacer(1, 4),
+        Paragraph("Web Application Security Report", title_style),
+        Paragraph(_DYNAMIC_REPORT_TYPES[report_type], small_style),
+        Spacer(1, 6),
+        Paragraph(f"<b>Target</b><br/>{_report_markup(record.target_url)}", body_style),
+        Paragraph(
+            f"<b>Status:</b> {_report_markup(record.status.title())} &nbsp;&nbsp; "
+            f"<b>Generated:</b> {datetime.now(timezone.utc).strftime('%d %b %Y, %H:%M UTC')}",
+            small_style,
+        ),
         Spacer(1, 10),
     ]
 
     summary_rows = [
-        ["Findings", "Critical", "High", "Medium", "Low", "Risk score"],
+        ["TOTAL FINDINGS", "CRITICAL", "HIGH", "MEDIUM", "LOW", "RISK SCORE"],
         [str(record.total_findings or 0), str(distribution.get("critical", 0)), str(distribution.get("high", 0)), str(distribution.get("medium", 0)), str(distribution.get("low", 0)), str(record.risk_score or 0)],
     ]
-    summary_table = Table(summary_rows, colWidths=[31 * mm] * 6)
+    summary_table = Table(summary_rows, colWidths=[30.3 * mm] * 6)
     summary_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8eaf3")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#53154d")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#53154d")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#f8f5fa")),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#b8c9d8")),
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#ddd5e3")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#e5e7eb")),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
+        ("FONTSIZE", (0, 1), (-1, 1), 13),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.extend([summary_table, Spacer(1, 10)])
+
+    metadata_rows = [
+        [Paragraph("<b>Scan started</b>", small_style), Paragraph(_report_markup(scan_metadata.get("start_time") or scan_metadata.get("start_date") or record.started_at), small_style), Paragraph("<b>Duration</b>", small_style), Paragraph(_report_markup(scan_metadata.get("duration"), "-"), small_style)],
+        [Paragraph("<b>Scan profile</b>", small_style), Paragraph(_report_markup(scan_metadata.get("profile_name") or record.scan_profile, "-"), small_style), Paragraph("<b>Requests</b>", small_style), Paragraph(_report_markup(scan_metadata.get("total_requests") or scan_metadata.get("requests_count"), "-"), small_style)],
+    ]
+    metadata_table = Table(metadata_rows, colWidths=[26 * mm, 65 * mm, 25 * mm, 65 * mm])
+    metadata_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#e2e8f0")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
-    story.extend([summary_table, Spacer(1, 10)])
+    story.extend([metadata_table, Spacer(1, 8)])
 
     if report_type == "executive":
         story.extend([
@@ -637,8 +724,8 @@ def _build_dynamic_webscan_pdf(record: WebScan, report_type: str) -> bytes:
         for finding in findings:
             action_rows.append([
                 str(finding.get("severity_label") or finding.get("severity") or "Info").upper(),
-                str(finding.get("title") or "Finding"),
-                str(finding.get("affected_url") or "-"),
+                _report_value(finding.get("title") or "Finding"),
+                _report_value(finding.get("affected_url"), "-"),
                 _suggested_action(finding),
             ])
         story.append(Table(action_rows, colWidths=[25 * mm, 55 * mm, 70 * mm, 30 * mm], repeatRows=1, style=TableStyle([
@@ -664,9 +751,9 @@ def _build_dynamic_webscan_pdf(record: WebScan, report_type: str) -> bytes:
         for finding in findings:
             rows.append([
                 Paragraph(str(finding.get("severity_label") or finding.get("severity") or "Info").upper(), small_style),
-                Paragraph(str(finding.get("title") or "Finding"), small_style),
-                Paragraph(str(finding.get("affected_url") or (finding.get("affected_hosts") or ["-"])[0]), small_style),
-                Paragraph(str(finding.get("affected_detail") or finding.get("evidence") or "-"), small_style),
+                Paragraph(_report_value(finding.get("title") or "Finding"), small_style),
+                Paragraph(_report_value(finding.get("affected_url") or (finding.get("affected_hosts") or ["-"])[0], "-"), small_style),
+                Paragraph(_report_value(finding.get("affected_detail") or finding.get("evidence"), "-"), small_style),
             ])
         story.append(Table(rows, colWidths=[24 * mm, 48 * mm, 70 * mm, 38 * mm], repeatRows=1, style=TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8eaf3")),
@@ -677,47 +764,124 @@ def _build_dynamic_webscan_pdf(record: WebScan, report_type: str) -> bytes:
             ("FONTSIZE", (0, 0), (-1, -1), 8),
         ])))
     else:
-        story.append(Paragraph("Technical Findings", heading_style))
-        rows = [["Severity", "Finding", "Affected URL", "Description", "Recommendation"]]
-        for finding in findings:
-            rows.append([
-                Paragraph(str(finding.get("severity_label") or finding.get("severity") or "Info").upper(), small_style),
-                Paragraph(str(finding.get("title") or "Finding"), small_style),
-                Paragraph(str(finding.get("affected_url") or (finding.get("affected_hosts") or ["-"])[0]), small_style),
-                Paragraph(str(finding.get("description") or "-"), small_style),
-                Paragraph(str(finding.get("solution") or "Review and remediate the affected component."), small_style),
-            ])
-        story.append(Table(rows, colWidths=[20 * mm, 38 * mm, 43 * mm, 47 * mm, 32 * mm], repeatRows=1, style=TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8eaf3")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#53154d")),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#b8c9d8")),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("FONTSIZE", (0, 0), (-1, -1), 7.2),
-        ])))
+        story.append(Paragraph("Detailed Findings", heading_style))
+        metric_label_style = ParagraphStyle(
+            "DynamicMetricLabel", parent=small_style, fontSize=7,
+            leading=9, textColor=colors.HexColor("#64748b"), alignment=TA_CENTER,
+        )
+        metric_value_style = ParagraphStyle(
+            "DynamicMetricValue", parent=styles["BodyText"], fontSize=11,
+            leading=14, textColor=colors.HexColor("#1f2937"), alignment=TA_CENTER,
+        )
+        detail_heading_style = ParagraphStyle(
+            "DynamicDetailHeading", parent=styles["Heading3"], fontSize=10,
+            leading=13, textColor=colors.HexColor("#53154d"), spaceBefore=8, spaceAfter=4,
+        )
+        code_style = ParagraphStyle(
+            "DynamicCode", parent=styles["BodyText"], fontName="Courier",
+            fontSize=7, leading=9, textColor=colors.HexColor("#334155"),
+        )
+        severity_colors = {
+            "CRITICAL": colors.HexColor("#991b1b"),
+            "HIGH": colors.HexColor("#c2410c"),
+            "MEDIUM": colors.HexColor("#a16207"),
+            "LOW": colors.HexColor("#1d4ed8"),
+        }
+
         for index, finding in enumerate(findings, start=1):
+            confidence = _report_value(finding.get("confidence"))
+            if confidence != "Not available" and re.fullmatch(r"\d+(?:\.\d+)?", confidence):
+                confidence = f"{confidence}%"
+            severity_label = str(finding.get("severity_label") or finding.get("severity") or "Info").upper()
+            finding_title_style = ParagraphStyle(
+                f"FindingTitle{index}", parent=styles["Heading3"], fontSize=11,
+                leading=14, textColor=colors.white, spaceAfter=0,
+            )
+            finding_header = Table(
+                [[
+                    Paragraph(f"F{index:03d}  {_report_markup(finding.get('title') or 'Finding')}", finding_title_style),
+                    Paragraph(
+                        escape(severity_label),
+                        ParagraphStyle(
+                            f"FindingSeverity{index}", parent=small_style,
+                            fontName="Helvetica-Bold", textColor=colors.white, alignment=TA_CENTER,
+                        ),
+                    ),
+                ]],
+                colWidths=[140 * mm, 42 * mm],
+            )
+            finding_header.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#53154d")),
+                ("BACKGROUND", (1, 0), (1, 0), severity_colors.get(severity_label, colors.HexColor("#475569"))),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]))
+            metrics = Table(
+                [[
+                    Paragraph("CWE", metric_label_style),
+                    Paragraph("CVSS SCORE", metric_label_style),
+                    Paragraph("CONFIDENCE", metric_label_style),
+                    Paragraph("STATUS", metric_label_style),
+                ], [
+                    Paragraph(_report_markup(_report_cwe(finding.get("cwe"))), metric_value_style),
+                    Paragraph(_report_markup(finding.get("cvss_score")), metric_value_style),
+                    Paragraph(_report_markup(confidence), metric_value_style),
+                    Paragraph(_report_markup(finding.get("status")), metric_value_style),
+                ]],
+                colWidths=[45.5 * mm] * 4,
+            )
+            metrics.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#e2e8f0")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            affected_url = finding.get("affected_url") or (finding.get("affected_hosts") or ["-"])[0]
+            identifiers = Table(
+                [[
+                    Paragraph("<b>Vulnerability ID</b>", small_style),
+                    Paragraph("<b>Result ID</b>", small_style),
+                    Paragraph("<b>Target ID</b>", small_style),
+                ], [
+                    Paragraph(_report_markup(finding.get("vuln_id")), small_style),
+                    Paragraph(_report_markup(finding.get("result_id")), small_style),
+                    Paragraph(_report_markup(finding.get("target_id")), small_style),
+                ], [
+                    Paragraph("<b>Last seen</b>", small_style),
+                    Paragraph("<b>Port / Protocol</b>", small_style),
+                    Paragraph("<b>Service</b>", small_style),
+                ], [
+                    Paragraph(_report_markup(finding.get("last_seen")), small_style),
+                    Paragraph(_report_markup(" / ".join(
+                        str(value) for value in (finding.get("port"), finding.get("protocol")) if value
+                    ) or None), small_style),
+                    Paragraph(_report_markup(finding.get("service")), small_style),
+                ]],
+                colWidths=[60.6 * mm] * 3,
+            )
+            identifiers.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#e2e8f0")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
             story.extend([
-                Paragraph(f"{index}. {finding.get('title') or 'Finding'}", heading_style),
-                Paragraph(
-                    f"<b>Severity:</b> {str(finding.get('severity_label') or finding.get('severity') or 'Info').upper()} "
-                    f"&nbsp;&nbsp; <b>CWE:</b> {finding.get('cwe') or '-'} "
-                    f"&nbsp;&nbsp; <b>CVSS:</b> {finding.get('cvss_score') or '-'} "
-                    f"&nbsp;&nbsp; <b>Confidence:</b> {finding.get('confidence') or '-'}%",
-                    small_style,
-                ),
-                Paragraph(f"<b>Affected URL:</b> {finding.get('affected_url') or '-'}", small_style),
-                Paragraph(
-                    f"<b>Acunetix vulnerability ID:</b> {_report_value(finding.get('vuln_id'))} &nbsp;&nbsp; "
-                    f"<b>Result ID:</b> {_report_value(finding.get('result_id'))}<br/>"
-                    f"<b>Target ID:</b> {_report_value(finding.get('target_id'))} &nbsp;&nbsp; "
-                    f"<b>Status:</b> {_report_value(finding.get('status'))}<br/>"
-                    f"<b>Last seen:</b> {_report_value(finding.get('last_seen'))} &nbsp;&nbsp; "
-                    f"<b>Port:</b> {_report_value(finding.get('port'))} &nbsp;&nbsp; "
-                    f"<b>Protocol:</b> {_report_value(finding.get('protocol'))} &nbsp;&nbsp; "
-                    f"<b>Service:</b> {_report_value(finding.get('service'))}",
-                    small_style,
-                ),
-                Paragraph(f"<b>Description:</b> {finding.get('description') or '-'}", body_style),
+                finding_header,
+                metrics,
+                Spacer(1, 5),
+                Paragraph(f"<b>Affected URL</b>  {_report_markup(affected_url, '-')}", small_style),
+                identifiers,
+                Paragraph("Description", detail_heading_style),
+                Paragraph(_report_markup(finding.get("description"), "No description was supplied."), body_style),
             ])
             for label, key in (
                 ("HTTP Request", "http_request"),
@@ -728,20 +892,48 @@ def _build_dynamic_webscan_pdf(record: WebScan, report_type: str) -> bytes:
                 ("Response Body", "response_body"),
                 ("Evidence", "evidence"),
             ):
-                value = str(finding.get(key) or "").strip()
+                value = _report_value(finding.get(key), "").strip()
                 if key == "evidence" and value and finding.get("affected_detail"):
-                    value = f"Affected parameter/detail: {finding.get('affected_detail')}\nEvidence: {value}"
+                    value = f"Affected parameter/detail: {_report_value(finding.get('affected_detail'))}\nEvidence: {value}"
                 if value:
-                    story.extend([
-                        Paragraph(f"<b>{label}</b>", small_style),
-                        Preformatted(value, small_style),
-                        Spacer(1, 4),
-                    ])
-            story.append(Paragraph(f"<b>Recommendation:</b> {finding.get('solution') or 'Review and remediate the affected component.'}", body_style))
+                    code_markup = "<br/>".join(escape(line) for line in value.splitlines())
+                    code_panel = Table([[Paragraph(code_markup, code_style)]], colWidths=[182 * mm])
+                    code_panel.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                        ("BOX", (0, 0), (-1, -1), 0.45, colors.HexColor("#e2e8f0")),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                        ("TOPPADDING", (0, 0), (-1, -1), 7),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                    ]))
+                    story.extend([Paragraph(label, detail_heading_style), code_panel])
+
+            recommendation_panel = Table(
+                [[Paragraph(
+                    f"<b>Recommended action</b><br/>{_report_markup(finding.get('solution') or 'Review and remediate the affected component.')}",
+                    body_style,
+                )]],
+                colWidths=[182 * mm],
+            )
+            recommendation_panel.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f5f3ff")),
+                ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#ddd6fe")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]))
             story.extend([
-                Paragraph(f"<b>CVSS vector:</b> {_report_value(finding.get('cvss_vector'))}", small_style),
-                Paragraph(f"<b>CVEs:</b> {_report_value(finding.get('cves'))}", small_style),
-                Paragraph(f"<b>References:</b> {_report_value(finding.get('references'))}", small_style),
+                Spacer(1, 7),
+                recommendation_panel,
+                Spacer(1, 5),
+                Paragraph(
+                    f"<b>CVSS vector:</b> {_report_markup(finding.get('cvss_vector'))} &nbsp;&nbsp; "
+                    f"<b>CVEs:</b> {_report_markup(finding.get('cves'))}<br/>"
+                    f"<b>References:</b> {_report_markup(finding.get('references'))}",
+                    small_style,
+                ),
+                Spacer(1, 12),
             ])
         story.append(Paragraph("Reconnaissance", heading_style))
         for label, key in (
@@ -761,7 +953,7 @@ def _build_dynamic_webscan_pdf(record: WebScan, report_type: str) -> bytes:
             Paragraph(_report_value(summary.get("best_practices")), body_style),
         ])
 
-    document.build(story)
+    document.build(story, onFirstPage=_draw_dynamic_webscan_footer, onLaterPages=_draw_dynamic_webscan_footer)
     return buffer.getvalue()
 
 
@@ -771,7 +963,7 @@ def _build_dynamic_webscan_pdf(record: WebScan, report_type: str) -> bytes:
 async def create_web_scan(
     request: WebScanCreateRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_webscan_owner),
+    user: User = Depends(require_webscan_access),
 ):
     """Create an Acunetix scan for ``url`` and queue the polling worker."""
     if not user.org_id:
@@ -850,7 +1042,7 @@ async def create_web_scan(
         status="pending",
         progress=0,
         current_stage="queued",
-        message="Submitting scan to Acunetix" if scan_mode == "dynamic" else "Submitting static repository scan",
+        message="Submitting dynamic security scan" if scan_mode == "dynamic" else "Submitting static repository scan",
         profile_id=(request.profile_id if scan_mode == "dynamic" else None),
         scan_profile=request.scan_profile.strip() if request.scan_profile else None,
         criticality=("medium" if request.criticality == "normal" else request.criticality),
@@ -931,21 +1123,24 @@ async def create_web_scan(
                         exc_info=True,
                     )
                     auth_note = (
-                        "ShieldStat could not configure this authentication method on "
-                        "Acunetix automatically; configure it manually in Acunetix."
+                        "ShieldStat could not configure this authentication method "
+                        "automatically; configure it manually in the scanning service."
                     )
 
             acunetix_scan_id = client.start_scan(acunetix_target_id, profile_id)
     except AcunetixError as exc:
         record.status = "failed"
-        record.message = "Could not start the Acunetix scan"
-        record.error_message = str(exc)
+        record.message = "Could not start the dynamic security scan"
+        record.error_message = _brand_neutral_text(exc)
         record.finished_at = datetime.now(timezone.utc)
         db.add(record)
         db.commit()
         db.refresh(record)
         logger.error("Acunetix scan could not be started for %s: %s", target_url, exc)
-        raise HTTPException(status_code=502, detail=f"Acunetix rejected the scan: {exc}") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Dynamic scan request was rejected: {_brand_neutral_text(exc)}",
+        ) from exc
 
     if auth_note:
         record.auth_details = " ".join(
@@ -958,7 +1153,7 @@ async def create_web_scan(
     record.status = "running"
     record.progress = 1
     record.current_stage = "queued"
-    record.message = "Scan accepted by Acunetix — waiting for the worker"
+    record.message = "Scan accepted — waiting for the worker"
     record.started_at = datetime.now(timezone.utc)
     db.add(record)
     db.commit()
@@ -1027,7 +1222,7 @@ async def create_web_scan(
 async def create_static_upload_scan(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    user: User = Depends(require_webscan_owner),
+    user: User = Depends(require_webscan_access),
 ):
     """Scan an uploaded ZIP snapshot of a codebase with Semgrep (static mode).
 
@@ -1132,7 +1327,7 @@ async def download_web_scan_report(
 async def cancel_web_scan(
     scan_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_webscan_owner),
+    user: User = Depends(require_webscan_access),
 ):
     """Stop a running scan: signal the worker and abort it in Acunetix."""
     record = _get_org_scan_or_404(db, scan_id, user.org_id)
@@ -1179,8 +1374,8 @@ async def cancel_web_scan(
 
 
 @router.get("/diagnostics")
-async def webscan_diagnostics(user: User = Depends(require_webscan_owner)):
-    """Check the Acunetix connection without starting a scan.
+async def webscan_diagnostics(user: User = Depends(require_webscan_access)):
+    """Check the configured scanning service without starting a scan.
 
     Confirms the configured URL/key work and reports the available scanning
     profiles, so a misconfiguration can be spotted before a scan fails. The API
@@ -1198,8 +1393,8 @@ async def webscan_diagnostics(user: User = Depends(require_webscan_owner)):
 
     if not result["base_url"]:
         result["error"] = (
-            "ACUNETIX_URL is not set. Point it at your Acunetix console, "
-            "e.g. https://acunetix.example.com:3443"
+            "The dynamic scanning service URL is not configured. Set its base URL "
+            "in the backend environment."
         )
         return result
 
@@ -1224,6 +1419,6 @@ async def webscan_diagnostics(user: User = Depends(require_webscan_owner)):
         result["error"] = str(exc)
     except Exception as exc:  # network/DNS failures surface as a readable message
         logger.warning("Acunetix diagnostics failed", exc_info=True)
-        result["error"] = f"Could not reach Acunetix: {exc}"
+        result["error"] = f"Could not reach the scanning service: {_brand_neutral_text(exc)}"
 
     return result

@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from app.api.webscan.routes import _authenticated_clone_url, _compute_risk_score, _safe_extract_zip
 from app.api.webscan.schemas import WebScanCreateRequest
+from app.core.middleware import require_webscan_access
 
 
 def test_webscan_create_request_supports_static_and_dynamic_modes():
@@ -52,6 +53,21 @@ def test_static_request_defaults_to_public_visibility():
 
     assert request.repo_visibility is None
     assert request.repo_token is None
+
+
+def test_approved_member_can_use_webscan():
+    member = type("Member", (), {"role": "member", "webscan_approved": True})()
+
+    assert require_webscan_access(member) is member
+
+
+def test_unapproved_member_cannot_use_webscan():
+    member = type("Member", (), {"role": "member", "webscan_approved": False})()
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_webscan_access(member)
+
+    assert exc_info.value.status_code == 403
 
 
 # ─── Private-repo clone URL ───────────────────────────────────────────────────

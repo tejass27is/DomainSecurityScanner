@@ -42,7 +42,7 @@ PyYAML==6.0.3
 redis==7.1.0
 reportlab==4.4.9
 requests==2.34.2
-semgrep==1.177.0
+semgrep==1.179.0
 rich==14.2.0
 rich-toolkit==0.17.1
 rsa==4.9.1

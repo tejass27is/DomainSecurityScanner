@@ -136,8 +136,3 @@ def require_webscan_access(current_user: User = Depends(protect)):
     return current_user
 
 
-def require_webscan_owner(current_user: User = Depends(require_webscan_access)):
-    if current_user.role != "owner":
-        raise HTTPException(status_code=403, detail="Only the organization owner can use WebScan.")
-    return current_user
-

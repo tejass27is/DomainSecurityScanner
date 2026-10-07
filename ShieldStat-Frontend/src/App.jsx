@@ -30,6 +30,7 @@ const SocAnalystVaptReports = lazy(() => import("./pages/SocAnalystVaptReports")
 const AdminRescanRequests = lazy(() => import("./pages/AdminRescanRequests"));
 const AdminVaptAccessRequests = lazy(() => import("./pages/AdminVaptAccessRequests"));
 const SocDashboard = lazy(() => import("./pages/SocDashboard"));
+const AdminSemgrep = lazy(() => import("./pages/AdminSemgrep"));
 
 function App() {
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -86,6 +87,7 @@ function App() {
         }
       >
         <Route path="scan-dashboard" element={<ScanDashboard />} />
+        <Route path="webscan" element={<ScanDashboard />} />
         <Route path="scan-details" element={<ScanDetails />} />
         <Route path="scan" element={<Scan />} />
         <Route path="history" element={<ScanHistory />} />
@@ -121,6 +123,7 @@ function App() {
         <Route path="vapt-access-requests" element={<AdminVaptAccessRequests />} />
         <Route path="rescan-requests" element={<AdminRescanRequests />} />
         <Route path="soc-dashboard" element={<SocDashboard />} />
+        <Route path="semgrep" element={<AdminSemgrep />} />
         <Route path="profile" element={<Profile />} />
       </Route>
       </Routes>

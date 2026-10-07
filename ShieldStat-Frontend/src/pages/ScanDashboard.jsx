@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import {
   getMetricColor,
   getMetricTextColor,
@@ -481,6 +481,7 @@ function BreachSusceptibilityPanel({ score, totalFindings, allCategories, domain
 
 function ScanDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const [knownDomains, setKnownDomains] = useState([]);
 
   const domainParam = searchParams.get("domain");
@@ -492,7 +493,7 @@ function ScanDashboard() {
   const [selections, setSelections] = useState({});
   const [loading, setLoading] = useState(true);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
-  // "domain" = the existing domain security overview, "webscan" = Acunetix scans.
+  // "domain" = the existing domain security overview, "webscan" = dynamic scans.
   const [activeTab, setActiveTab] = useState("domain");
   const [webscanApproved, setWebscanApproved] = useState(false);
 
@@ -516,6 +517,12 @@ function ScanDashboard() {
       setActiveTab("domain");
     }
   }, [activeTab, webscanApproved]);
+
+  useEffect(() => {
+    if (location.pathname === "/webscan" && webscanApproved) {
+      setActiveTab("webscan");
+    }
+  }, [location.pathname, webscanApproved]);
 
   useEffect(() => {
   // Load scan data, malware report, and assessment data without blocking the first render
@@ -771,7 +778,7 @@ function ScanDashboard() {
           ))}
         </div>
 
-        {/* Web Scan (Acunetix) renders in place of the domain overview. */}
+        {/* Web Scan renders in place of the domain overview. */}
         {activeTab === "webscan" ? (
           <WebScanTab />
         ) : (

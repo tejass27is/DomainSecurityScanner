@@ -113,6 +113,7 @@ async def create_scan_task_to_queue(db: Session, domain: str, org_id: str, sched
         queue_status = "queued"
         warning_message = None
         try:
+            await redis_client.redis.delete(f"scan_progress:{org_id}:{domain}")
             await redis_client.PushToQueue(data=scan_job)
         except Exception as queue_error:
             queue_status = "deferred"

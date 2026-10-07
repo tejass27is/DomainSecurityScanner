@@ -2,6 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import Text, cast
 from sqlalchemy.orm import Session
 
 from app.api.admin.schemas import (
@@ -51,6 +52,7 @@ from app.api.admin.service import (
     update_security_alert_status,
     update_subscription_plan,
 )
+from app.api.admin.semgrep_status import SemgrepVersionCheckError, get_semgrep_version_status
 from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
 from app.api.vapt.routes import _region_display_name, _to_detail, _to_list_item, _uploader_email_map, _verification_download_filename
 from app.api.vapt import schedule_service
@@ -68,6 +70,16 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.get("/tools/semgrep")
+def semgrep_version_status(
+    _current_admin: User = Depends(require_admin),
+):
+    try:
+        return get_semgrep_version_status()
+    except SemgrepVersionCheckError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def get_request_ip(request: Request) -> str | None:
@@ -535,7 +547,7 @@ def list_vapt_organizations(
     _current_user: User = Depends(require_admin_or_soc_analyst),
 ):
     """Organizations a SOC analyst can publish an uploaded report to."""
-    orgs = db.query(Organization).order_by(Organization.domain.asc()).all()
+    orgs = db.query(Organization).order_by(cast(Organization.domain, Text).asc()).all()
     result = []
     for org in orgs:
         value = org.domain
@@ -781,5 +793,3 @@ def soc_check_escalations(
 ):
     """Manually run the escalation rules (critical/high findings aging)."""
     return {"escalated": check_escalation_rules(db, current_user)}
-
-

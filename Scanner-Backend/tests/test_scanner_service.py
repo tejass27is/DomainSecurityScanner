@@ -54,6 +54,11 @@ def test_create_scan_task_to_queue_returns_success_when_queue_fails(monkeypatch)
     db = FakeDB(org_result=type("Org", (), {"domain": ["example.com"]})())
 
     monkeypatch.setattr(scanner_service, "_validate_domain_dns", lambda domain: (True, "ok"))
+    monkeypatch.setattr(scanner_service.redis_client, "redis", type(
+        "FakeRedis",
+        (),
+        {"delete": staticmethod(_async_noop)},
+    )())
 
     async def fail_queue(*args, **kwargs):
         raise RuntimeError("redis unavailable")
@@ -93,6 +98,11 @@ def test_create_scan_task_normalizes_registered_domain_variants(monkeypatch):
         return None
 
     monkeypatch.setattr(scanner_service.redis_client, "PushToQueue", ok_queue)
+    monkeypatch.setattr(scanner_service.redis_client, "redis", type(
+        "FakeRedis",
+        (),
+        {"delete": staticmethod(_async_noop)},
+    )())
 
     for variant in ["WWW.Example.com", "https://example.com/", "Example.com"]:
         result = asyncio.run(
@@ -110,6 +120,11 @@ def test_create_scan_task_accepts_string_org_domain(monkeypatch):
         return None
 
     monkeypatch.setattr(scanner_service.redis_client, "PushToQueue", ok_queue)
+    monkeypatch.setattr(scanner_service.redis_client, "redis", type(
+        "FakeRedis",
+        (),
+        {"delete": staticmethod(_async_noop)},
+    )())
 
     result = asyncio.run(
         scanner_service.create_scan_task_to_queue(db, "example.com", "org-1")
@@ -141,3 +156,7 @@ def test_cancel_active_scans_for_org_sets_cancel_signal(monkeypatch):
     assert fake_redis.values["scan_cancel:org-1:example.com"] == ("1", 1800)
     assert fake_redis.values["scan_cancel:org-1:example.com:example.com"] == ("1", 1800)
     assert "scan_progress:org-1:example.com" in fake_redis.deleted
+
+
+async def _async_noop(*_args, **_kwargs):
+    return None

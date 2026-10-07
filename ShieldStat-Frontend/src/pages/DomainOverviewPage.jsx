@@ -65,7 +65,7 @@ function DomainOverviewPage() {
         const status = await getPublicScanStatus(domain);
         console.log(`[DomainOverviewPage] Scan status for ${domain}:`, status);
         setScanStatus(status);
-        if (status.status === "complete") {
+        if (["complete", "completed"].includes(status.status?.toLowerCase())) {
           console.log(`[DomainOverviewPage] Scan complete for ${domain}, fetching overview...`);
           const data = await getPublicDomainOverview(domain);
           setOverview(data);
@@ -300,7 +300,7 @@ function DomainOverviewPage() {
                         disabled={reportSending || !email.trim()}
                         className="inline-flex items-center justify-center rounded-full bg-[#800080] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#800080] disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {reportSending ? "Sending..." : "Email me the report"}
+                        {reportSending ? "Sending..." : "Email the report"}
                       </button>
                     </div>
                     {reportMessage && (

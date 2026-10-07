@@ -1,6 +1,10 @@
 package worker
 
-import "testing"
+import (
+	"testing"
+
+	"scanner-platform/internal/models"
+)
 
 func TestNormalizeAcunetixStatus(t *testing.T) {
 	cases := map[string]string{
@@ -169,6 +173,44 @@ func TestExtractCVSSPrefersFlatFields(t *testing.T) {
 	}
 }
 
+func TestExtractCVSSSupportsNestedGenericDescriptor(t *testing.T) {
+	score, vector := extractCVSS(map[string]any{
+		"cvss": map[string]any{
+			"base_score":    "9.8",
+			"vector_string": "CVSS:3.1/AV:N/AC:L",
+		},
+	})
+
+	if score != "9.8" {
+		t.Fatalf("expected nested CVSS score 9.8, got %v", score)
+	}
+	if vector != "CVSS:3.1/AV:N/AC:L" {
+		t.Fatalf("unexpected nested CVSS vector: %q", vector)
+	}
+}
+
+func TestUnwrapVulnerabilityTypeAndExtractAlternateMetadataKeys(t *testing.T) {
+	vulnType := unwrapVulnerabilityType(map[string]any{
+		"data": map[string]any{
+			"vulnerability_type": map[string]any{
+				"cvssV3": map[string]any{
+					"baseScore":    "7.4",
+					"vectorString": "CVSS:3.1/AV:N/AC:H",
+				},
+				"cweId": map[string]any{"value": "CWE-538"},
+			},
+		},
+	})
+	score, vector := extractCVSS(vulnType)
+
+	if score != "7.4" || vector != "CVSS:3.1/AV:N/AC:H" {
+		t.Fatalf("unexpected CVSS metadata: score=%v vector=%q", score, vector)
+	}
+	if cwe := extractCWE(vulnType); cwe != "CWE-538" {
+		t.Fatalf("expected CWE-538, got %v", cwe)
+	}
+}
+
 func TestExtractCWEHandlesFlatAndListForms(t *testing.T) {
 	if got := extractCWE(map[string]any{"cwe": 89}); got != 89 {
 		t.Fatalf("expected cwe 89, got %v", got)
@@ -181,6 +223,49 @@ func TestExtractCWEHandlesFlatAndListForms(t *testing.T) {
 
 	if got := extractCWE(nil); got != nil {
 		t.Fatalf("expected nil for a missing type, got %v", got)
+	}
+
+	if got := extractCWE(map[string]any{"cwe": map[string]any{"id": 89}}); got != 89 {
+		t.Fatalf("expected CWE id 89 from a descriptor, got %v", got)
+	}
+}
+
+func TestBuildWebScanFindingKeepsMetadataFromVulnerability(t *testing.T) {
+	finding := buildWebScanFinding(
+		nil,
+		&models.WebScanJob{TargetURL: "https://example.com"},
+		"result-1",
+		map[string]any{
+			"vuln_id":     "vuln-1",
+			"vt_id":       "type-1",
+			"affects_url": "https://example.com/login",
+			"request":     "GET /login",
+			"response":    "HTTP/1.1 200 OK",
+			"confidence":  "85",
+			"cvss":        map[string]any{"score": 8.1, "vector": "CVSS:3.1/AV:N"},
+			"cwe":         map[string]any{"id": 89},
+			"port":        443,
+			"protocol":    "https",
+			"service":     "https",
+		},
+		nil,
+	)
+
+	if finding["cvss_score"] != 8.1 {
+		t.Fatalf("expected CVSS score 8.1, got %v", finding["cvss_score"])
+	}
+	if finding["cvss_vector"] != "CVSS:3.1/AV:N" {
+		t.Fatalf("unexpected CVSS vector: %v", finding["cvss_vector"])
+	}
+	if finding["cwe"] != 89 {
+		t.Fatalf("expected CWE 89, got %v", finding["cwe"])
+	}
+	if finding["confidence"] != 85 {
+		t.Fatalf("expected confidence 85, got %v", finding["confidence"])
+	}
+
+	if confidence := confidenceValue(map[string]any{"confidence": 0.85}); confidence != 85 {
+		t.Fatalf("expected fractional confidence to normalize to 85%%, got %v", confidence)
 	}
 }
 

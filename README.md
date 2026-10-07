@@ -94,6 +94,21 @@ cd ShieldStat-Frontend && npm install && npm run dev
 
 Open `http://localhost:5173` and log in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` (created via `scripts/create_admin.py` or `docker compose exec backend python scripts/create_admin.py`).
 
+### Running domain scans locally
+
+The backend only places domain scan jobs on Redis; it does not execute them.
+When running the backend and Redis with Docker Compose, start the main scanner
+worker in a second terminal so queued scans can progress:
+
+```bash
+cd scanner-platform
+docker compose up --build worker-main
+```
+
+The worker and backend must use the same Redis instance and Docker network, and
+the worker's `BACKEND_URL` must resolve to the backend container. Without the
+worker, the UI can show a scan as queued at 0% indefinitely.
+
 ---
 
 ## Backend (Scanner-Backend)
@@ -198,6 +213,8 @@ API docs: `http://localhost:8000/docs` (Swagger).
 | POST | `/public/scan` · GET `/public/scan-status` · `/public/domain-overview` · POST `/public/send-report` · GET `/public/download-report` | Public scans |
 | POST | `/report-issue` | Report an issue |
 
+Admins can check the backend's installed Semgrep version and the latest PyPI release at `GET /admin/tools/semgrep` (Admin → Semgrep Updates). The backend must be able to reach `pypi.org`; this check reports update availability but does not install or deploy an update.
+
 ### Environment Variables
 
 Copy `Scanner-Backend/.env.example` → `.env`. All config is env-driven — nothing hardcoded.
@@ -292,6 +309,17 @@ Copy `ShieldStat-Frontend/.env.example` → `.env`:
 ## Scanner Engine (scanner-platform)
 
 Go-based distributed scanner that performs the actual domain scans: subdomain discovery (subfinder, CRT/Certspotter, brute-force), DNS collection, TLS analysis, HTTP details, mail security and port detection. It consumes scan jobs from Redis, executes them, and emits results via webhooks back to the backend. See `scanner-platform/README.md`.
+
+For local domain scans, start the backend/Redis stack first, then start the main
+scanner worker from a second terminal:
+
+```bash
+cd scanner-platform
+docker compose up --build worker-main
+```
+
+The worker must use the same Redis instance and Docker network as the backend.
+Without a running worker, accepted scans remain queued at 0%.
 
 ---
 

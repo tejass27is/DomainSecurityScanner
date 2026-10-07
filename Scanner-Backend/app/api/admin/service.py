@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
+from sqlalchemy import Text, cast
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -437,7 +438,7 @@ def assign_promo_code_to_user(
 
 
 def get_users_by_org(db: Session) -> dict:
-    organizations = db.query(Organization).order_by(Organization.domain.asc()).all()
+    organizations = db.query(Organization).order_by(cast(Organization.domain, Text).asc()).all()
     users = (
         db.query(User)
         .filter(User.email_verified.is_(True))

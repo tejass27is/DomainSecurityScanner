@@ -17,6 +17,7 @@ below are appended to.
 
 import os
 import logging
+import json
 
 import httpx
 
@@ -96,6 +97,18 @@ def _error_detail(response: httpx.Response) -> str:
         return (response.text or "").strip()[:500] or response.reason_phrase
 
     if isinstance(payload, dict):
+        message = next(
+            (
+                str(payload[key])
+                for key in ("message", "error", "detail", "Message")
+                if payload.get(key)
+            ),
+            "",
+        )
+        if message.lower() in {"validation errors", "validation error"}:
+            details = json.dumps(payload, sort_keys=True, default=str)
+            if details != json.dumps(message):
+                return f"{message}: {details[:500]}"
         for key in ("message", "error", "detail", "Message"):
             value = payload.get(key)
             if value:

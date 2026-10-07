@@ -45,12 +45,12 @@ function statusStyle(status) {
 }
 
 /**
- * Acunetix findings are URL-based, VAPT ones are file/line-based. The backend
- * tags every Acunetix finding with `source: "acunetix"`; that flag (or the
+ * Dynamic scan findings are URL-based, VAPT ones are file/line-based. The backend
+ * tags dynamic findings with a source flag; that flag (or the
  * presence of an `affected_url`) decides which column layout to render.
  */
 function isUrlBasedFinding(finding) {
-  return finding?.source === "acunetix" || Boolean(finding?.affected_url);
+  return Boolean(finding?.affected_url) || finding?.source === "dynamic_web_scan";
 }
 
 function formatTimestamp(value) {
@@ -136,7 +136,7 @@ function FindingRow({ finding }) {
         <td className="px-4 py-3 align-top text-sm font-semibold text-slate-700 dark:text-slate-200">
           {formatCvss(finding.cvss_score)}
         </td>
-        {/* Affected URL / Parameter replaces File / Line for source=acunetix. */}
+        {/* Affected URL / Parameter replaces File / Line for URL-based findings. */}
         <td className="px-4 py-3 align-top">
           {urlBased ? (
             <div className="max-w-md">
@@ -336,7 +336,7 @@ function WebScanTab() {
     loadList();
   }, [loadList]);
 
-  // Poll the tracked scan until it reaches a terminal state. (Acunetix scans run
+  // Poll the tracked scan until it reaches a terminal state. Dynamic scans run
   // for minutes to hours, so the create request must never block on the result.)
   useEffect(() => {
     if (!activeId) return undefined;
@@ -451,8 +451,8 @@ function WebScanTab() {
     }
   };
 
-  // Confirms the Acunetix URL/key in the backend env actually work, without
-  // waiting for a scan to fail. Useful right after configuring the deployment.
+  // Confirms the scanning service configured in the backend is reachable,
+  // without waiting for a scan to fail.
   const handleTestConnection = async () => {
     setFormError("");
     setDiagLoading(true);
@@ -528,7 +528,7 @@ function WebScanTab() {
           <div>
             <h3 className="text-2xl font-extrabold text-slate-900 dark:text-white">Web Application Scan</h3>
             <p className="text-sm text-slate-600 dark:text-slate-300 mt-1">
-              Powered by Acunetix. Enter a URL belonging to one of your registered domains — the crawl and
+              Powered by iSecurify. Enter a URL belonging to one of your registered domains — the crawl and
               exploitation checks run continuously, so the scan reports back here as it progresses.
             </p>
           </div>
@@ -536,7 +536,7 @@ function WebScanTab() {
 
         <div className="mb-4 flex flex-wrap gap-2">
           {[
-            { id: "dynamic", label: "Dynamic", description: "Acunetix website scan" },
+            { id: "dynamic", label: "Dynamic", description: "Dynamic website security scan" },
             { id: "static", label: "Static", description: "Semgrep repo scan" },
           ].map((option) => (
             <button
@@ -825,14 +825,14 @@ function WebScanTab() {
                   {authMethod === "mfa" && (
                     <div className="md:col-span-2">
                       <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">MFA instructions</label>
-                      <textarea value={mfaInstructions} onChange={(event) => setMfaInstructions(event.target.value)} rows={2} placeholder="Notes for the operator configuring the session in Acunetix" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      <textarea value={mfaInstructions} onChange={(event) => setMfaInstructions(event.target.value)} rows={2} placeholder="Notes for the operator configuring the scan session" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
                     </div>
                   )}
 
                   {authMethod === "other" && (
                     <div className="md:col-span-2">
-                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Acunetix Authentication Profile ID</label>
-                      <input type="text" value={authProfileId} onChange={(event) => setAuthProfileId(event.target.value)} placeholder="Profile ID configured in Acunetix" autoComplete="off" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Authentication Profile ID</label>
+                      <input type="text" value={authProfileId} onChange={(event) => setAuthProfileId(event.target.value)} placeholder="Profile ID configured for the scanning service" autoComplete="off" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
                     </div>
                   )}
                 </>
@@ -846,7 +846,7 @@ function WebScanTab() {
             ? isStaticUpload
               ? "Static mode extracts the uploaded ZIP archive and runs a Semgrep code scan on it."
               : `Static mode clones the ${repoVisibility} repository and runs a Semgrep scan on the ${repoBranch || "main"} branch.`
-            : "Dynamic mode scans a live app URL through Acunetix."}
+            : "Dynamic mode scans a live application URL for security issues."}
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -861,7 +861,7 @@ function WebScanTab() {
             ) : (
               <span className="material-symbols-outlined text-base">cable</span>
             )}
-            Test Acunetix connection
+            Test scanning service connection
           </button>
 
           {diagnostics && (
@@ -877,15 +877,15 @@ function WebScanTab() {
               </span>
               {diagnostics.reachable ? (
                 <span>
-                  Connected to {diagnostics.base_url} — {diagnostics.profiles.length} scanning profile
+                  Scanning service is reachable — {diagnostics.profiles.length} profile
                   {diagnostics.profiles.length === 1 ? "" : "s"} available
                   {diagnostics.profile_name
                     ? `, using “${diagnostics.profile_name}”.`
-                    : ", using the Acunetix default profile."}
+                    : ", using the default profile."}
                 </span>
               ) : (
                 <span>
-                  {diagnostics.error || "Acunetix is not reachable with the configured URL/key."}
+                  {diagnostics.error || "The scanning service is not reachable with the configured settings."}
                 </span>
               )}
             </div>
@@ -908,7 +908,7 @@ function WebScanTab() {
                 {activeScan.target_url}
               </h3>
               <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                {activeScan.message || "Acunetix is crawling the target…"}
+                {activeScan.message || "The security scanner is checking the target…"}
               </p>
             </div>
             <button
@@ -931,7 +931,7 @@ function WebScanTab() {
             />
           </div>
           <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">
-            Acunetix scans typically take minutes to hours. You can leave this page — the scan keeps running and
+            Scans typically take minutes to hours. You can leave this page — the scan keeps running and
             the results appear here when it finishes.
           </p>
         </div>

@@ -1,15 +1,26 @@
 import os
+from io import BytesIO
+from types import SimpleNamespace
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 import pytest
+from pypdf import PdfReader
 
 from app.api.webscan.acunetix import (
     AcunetixClient,
     AcunetixError,
+    _error_detail,
     _env_bool,
     _env_float,
     resolve_base_url,
+)
+from app.api.webscan.routes import (
+    _brand_neutral_data,
+    _brand_neutral_text,
+    _build_dynamic_webscan_pdf,
+    _report_cwe,
+    _report_value,
 )
 
 
@@ -18,6 +29,70 @@ def _clear_env(monkeypatch):
     monkeypatch.delenv("ACUNETIX_URL", raising=False)
     monkeypatch.delenv("ACUNETIX_BASE_URL", raising=False)
     monkeypatch.delenv("ACUNETIX_PROFILE_ID", raising=False)
+
+
+def test_report_missing_values_use_vendor_neutral_text():
+    assert _report_value(None) == "Not available"
+    assert _report_value("Not provided by Acunetix") == "Not provided by iSecurify"
+    assert _brand_neutral_text("ACUNETIX") == "iSecurify"
+    assert _brand_neutral_data({"message": "Acunetix scan"}) == {"message": "iSecurify scan"}
+
+
+def test_report_cwe_is_normalized_for_display():
+    assert _report_cwe(89) == "CWE-89"
+    assert _report_cwe("CWE-79, 89") == "CWE-79, CWE-89"
+    assert _report_cwe({"id": "CWE-538"}) == "CWE-538"
+    assert _report_cwe(None) == "Not available"
+
+
+def test_developer_report_is_branded_and_includes_scan_metadata():
+    record = SimpleNamespace(
+        severity_distribution={"critical": 1},
+        findings=[
+            {
+                "title": "SQL Injection",
+                "severity": 4,
+                "severity_label": "critical",
+                "cwe": 89,
+                "cvss_score": 9.8,
+                "confidence": 85,
+                "vuln_id": "vuln-1",
+                "result_id": "result-1",
+                "target_id": "target-1",
+                "status": "pending",
+                "last_seen": "2026-10-07",
+                "port": 443,
+                "protocol": "https",
+                "service": "https",
+                "http_request": "GET /login",
+                "http_response": "HTTP/1.1 200 OK",
+                "cves": ["CVE-2026-1234"],
+                "description": "Acunetix branding must be removed",
+                "solution": "Use parameterized queries",
+                "affected_url": "https://example.com/login",
+            }
+        ],
+        summary={},
+        total_findings=1,
+        unique_urls=1,
+        risk_score=90,
+        status="completed",
+        target_url="https://example.com",
+        started_at=None,
+        finished_at=None,
+    )
+
+    pdf = _build_dynamic_webscan_pdf(record, "developer")
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages)
+
+    assert "Acunetix" not in text
+    assert "CWE-89" in text
+    assert "9.8" in text
+    assert "85%" in text
+    assert "Vulnerability ID: vuln-1" in text
+    assert "GET /login" in text
+    assert "CVE-2026-1234" in text
+    assert "iSecurify" in text
 
 
 @pytest.mark.parametrize(
@@ -79,6 +154,22 @@ def test_resolve_base_url_returns_empty_when_nothing_is_set():
 
 def test_resolve_base_url_accepts_explicit_override():
     assert resolve_base_url("acunetix.example.com:3443/") == "https://acunetix.example.com:3443/api/v1"
+
+
+def test_error_detail_keeps_acunetix_validation_field_details():
+    class ValidationResponse:
+        @staticmethod
+        def json():
+            return {
+                "message": "Validation errors",
+                "errors": [{"field": "address", "message": "Invalid target"}],
+            }
+
+    detail = _error_detail(ValidationResponse())
+
+    assert "Validation errors" in detail
+    assert '"field": "address"' in detail
+    assert "Invalid target" in detail
 
 
 # ─── Settings read from the environment ───────────────────────────────────────
