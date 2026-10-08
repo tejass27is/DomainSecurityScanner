@@ -462,6 +462,11 @@ export default function SocAnalystVaptReports() {
                               <p className="text-xs text-slate-500 dark:text-slate-400">
                                 VAPT Cycle {item.cycle_number || 1} · {LIFECYCLE_LABEL[item.lifecycle_status] || "In progress"}
                               </p>
+                              {item.lifecycle_status === "closure_pending_soc_due_date" && item.next_vapt_due_at && (
+                                <p className="mt-1 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                                  Client-proposed next VAPT: {fmtDate(item.next_vapt_due_at, "Asia/Kolkata")} IST · awaiting approval
+                                </p>
+                              )}
                             </div>
                           </div>
                         </td>

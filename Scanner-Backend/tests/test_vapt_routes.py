@@ -1,10 +1,11 @@
 import asyncio
+import io
 import os
 from datetime import datetime, timezone
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.db.base import Base, engine
@@ -18,13 +19,17 @@ from app.db.models import (
     VaptOnboardingChecklist,
 )
 from app.api.vapt.routes import (
+    REGION_CHECKLIST_REQUIRED_QUESTIONS,
     VERIFICATION_DISPLAY_NAME_MAX,
     _clean_verification_display_name,
     _closure_blockers,
+    _closure_block_message,
     _evaluate_manual_verification,
+    _get_onboarding_or_create,
     _missing_required_uploads,
     _normalize_finding_status,
     _reopen_unresolved_findings,
+    _validate_rescan_prerequisites,
     _verification_display_name,
     _verification_download_filename,
     approve_vapt_access,
@@ -40,12 +45,78 @@ from app.api.vapt.routes import (
     review_vapt_onboarding,
     submit_onboarding_checklist,
     upload_checklist_attachment,
+    upload_vapt_report,
 )
+from app.api.vapt.schemas import VaptImportDetail, VaptImportListItem
+
+
+def _complete_region_checklist_answers():
+    answers = {
+        section: {
+            question_id: {"answer": "Provided", "na": False}
+            for question_id in question_ids
+        }
+        for section, question_ids in REGION_CHECKLIST_REQUIRED_QUESTIONS.items()
+    }
+    answers["computers_servers"]["asset_list_upload"] = {
+        "rows": [{"asset": "test-host"}],
+        "na": False,
+    }
+    answers["general_information"] = {
+        "network_diagram_available": {"answer": "Available", "na": False},
+    }
+    return answers
+
+
+def test_closed_vapt_cycle_cannot_schedule_verification():
+    record = VaptImport(
+        org_id="org-closed-rescan",
+        file_name="closed-report.xml",
+        file_format="xml",
+        source_tool="nessus",
+        status="client_completed",
+        lifecycle_status="closed",
+        remediation_review_status="approved",
+        next_vapt_due_at=datetime(2027, 1, 15, 10, tzinfo=timezone.utc),
+        findings=[{"id": "finding-1", "status": "solved"}],
+    )
+
+    try:
+        _validate_rescan_prerequisites(record)
+        raise AssertionError("expected closed VAPT cycles to reject verification scheduling")
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "cycle is closed" in exc.detail
 
 
 def setup_module():
     Base.metadata.drop_all(bind=engine, checkfirst=True)
     Base.metadata.create_all(bind=engine)
+
+
+def test_import_response_schemas_preserve_approved_next_vapt_date():
+    due_date = datetime(2026, 12, 17, 9, 30, tzinfo=timezone.utc)
+    base_item = {
+        "import_id": "import-1",
+        "file_name": "report.xml",
+        "file_format": "xml",
+        "source_tool": "nessus",
+        "total_findings": 1,
+        "unique_hosts": 1,
+        "risk_score": 5,
+        "severity": "low",
+        "severity_distribution": {},
+        "lifecycle_status": "closed",
+        "next_vapt_due_at": due_date,
+    }
+
+    assert VaptImportListItem(**base_item).next_vapt_due_at == due_date
+    assert VaptImportDetail(
+        **base_item,
+        category_distribution={},
+        summary={},
+        findings=[],
+    ).next_vapt_due_at == due_date
 
 
 def test_checklist_attachment_upload_is_validated_and_org_scoped():
@@ -363,7 +434,7 @@ def test_manual_verification_marks_no_confirmed_fix_as_failed():
     assert remaining == original
 
 
-def test_severity_gated_closure_blocks_unresolved_medium_and_above():
+def test_severity_gated_closure_allows_ignored_items_but_blocks_pending_and_redetected():
     db = Session(bind=engine)
     try:
         record = VaptImport(
@@ -371,13 +442,14 @@ def test_severity_gated_closure_blocks_unresolved_medium_and_above():
             file_name="test.nessus",
             file_format="xml",
             source_tool="nessus",
-            total_findings=3,
+            total_findings=4,
             unique_hosts=1,
             risk_score=70,
             severity="high",
             findings=[
                 {"id": "critical", "title": "Critical issue", "severity_label": "critical", "status": "ignore"},
                 {"id": "medium", "title": "Medium issue", "severity_label": "medium", "status": "pending"},
+                {"id": "false-positive", "title": "Accepted medium issue", "severity_label": "medium", "status": "false_positive"},
                 {"id": "low", "title": "Low issue", "severity_label": "low", "status": "ignore"},
             ],
         )
@@ -385,7 +457,20 @@ def test_severity_gated_closure_blocks_unresolved_medium_and_above():
         db.commit()
         db.refresh(record)
         blockers = _closure_blockers(record)
-        assert {finding["id"] for finding in blockers} == {"critical", "medium"}
+        assert {finding["id"] for finding in blockers} == {"medium"}
+        message = _closure_block_message(blockers)
+        assert "Medium issue (pending)" in message
+        assert "Critical issue" not in message
+
+        # Ignored / false-positive dispositions are accepted after triage.
+        assert _closure_blockers(record, []) == []
+
+        # A medium finding the client marked solved still blocks closure if
+        # the SOC verification scan detects it again.
+        medium = next(finding for finding in record.findings if finding["id"] == "medium")
+        medium["status"] = "solved"
+        redetected = {**medium, "status": "pending"}
+        assert _closure_blockers(record, [redetected]) == [medium]
     finally:
         db.close()
 
@@ -450,9 +535,181 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_region_approval_gates_checklist_submission():
-    """Two-stage flow: request region -> SOC approves it -> submit checklist ->
-    SOC reviews the checklist."""
+def test_vapt_report_cycles_are_scoped_to_region():
+    """An open report in one region does not block uploads in another."""
+    import app.api.vapt.routes as vapt_routes
+
+    db = Session(bind=engine)
+    original_parse_upload = vapt_routes.parse_upload
+    original_normalize_import = vapt_routes.normalize_import
+    try:
+        client = User(
+            user_id="region-cycle-client",
+            org_id="org-region-cycle",
+            email="region-cycle-client@example.com",
+            password="test-password",
+            role="owner",
+        )
+        soc = User(
+            user_id="region-cycle-soc",
+            org_id=None,
+            email="region-cycle-soc@example.com",
+            password="test-password",
+            role="soc_analyst",
+        )
+        db.add_all([client, soc])
+        db.add(Organization(org_id="org-region-cycle", user_id=client.user_id))
+        region_a = Region(code="CYCLE-A", name="Region A", is_active=True)
+        region_b = Region(code="CYCLE-B", name="Region B", is_active=True)
+        db.add_all([region_a, region_b])
+        db.flush()
+        db.add_all([
+            OrganizationRegion(
+                org_id="org-region-cycle",
+                region_id=region_a.region_id,
+                status="approved",
+                testing_start_at=datetime(2026, 10, 15, 10, tzinfo=timezone.utc),
+                testing_timezone="UTC",
+                checklist_review_status="approved",
+                checklist_submission={
+                    "checklist_answers": _complete_region_checklist_answers()
+                },
+            ),
+            OrganizationRegion(
+                org_id="org-region-cycle",
+                region_id=region_b.region_id,
+                status="approved",
+                testing_start_at=datetime(2026, 10, 15, 10, tzinfo=timezone.utc),
+                testing_timezone="UTC",
+                checklist_review_status="pending",
+                checklist_submission={
+                    "checklist_answers": _complete_region_checklist_answers()
+                },
+            ),
+            VaptOnboardingChecklist(
+                org_id="org-region-cycle",
+                testing_start_at=datetime(2026, 10, 15, 10, tzinfo=timezone.utc),
+                testing_timezone="UTC",
+                checklist_answers={"general_information": {"organization_name": {"answer": "Acme"}}},
+                completed_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+                review_status="approved",
+            ),
+            VaptImport(
+                org_id="org-region-cycle",
+                region="CYCLE-A",
+                file_name="region-a.csv",
+                file_format="csv",
+                source_tool="generic",
+                lifecycle_status="report_published",
+                cycle_number=1,
+            ),
+        ])
+        db.commit()
+
+        vapt_routes.parse_upload = lambda content, filename: ([{"finding": "sample"}], "generic", "csv")
+        vapt_routes.normalize_import = lambda findings, source_tool: {
+            "total_findings": 1,
+            "unique_hosts": 1,
+            "risk_score": 10,
+            "severity": "low",
+            "severity_distribution": {"low": 1},
+            "category_distribution": {},
+            "summary": {},
+            "findings": [{"id": "sample-finding"}],
+        }
+
+        try:
+            _run(upload_vapt_report(
+                file=UploadFile(file=io.BytesIO(b"sample"), filename="region-b-unreviewed.csv"),
+                org_id="org-region-cycle",
+                region="CYCLE-B",
+                db=db,
+                current_user=soc,
+            ))
+            raise AssertionError("expected upload to require approval of the selected region checklist")
+        except HTTPException as exc:
+            assert exc.status_code == 403
+
+        region_b_checklist = db.query(OrganizationRegion).filter_by(
+            org_id="org-region-cycle",
+            region_id=region_b.region_id,
+        ).one()
+        region_b_checklist.checklist_submission = None
+        db.add(region_b_checklist)
+        db.commit()
+        try:
+            _run(upload_vapt_report(
+                file=UploadFile(file=io.BytesIO(b"sample"), filename="region-b-missing-checklist.csv"),
+                org_id="org-region-cycle",
+                region="CYCLE-B",
+                db=db,
+                current_user=soc,
+            ))
+            raise AssertionError("expected upload to require a region checklist")
+        except HTTPException as exc:
+            assert exc.status_code == 403
+
+        region_b_checklist.checklist_submission = {
+            "checklist_answers": _complete_region_checklist_answers()
+        }
+        region_b_checklist.checklist_review_status = "approved"
+        db.add(region_b_checklist)
+        db.commit()
+        uploaded = _run(upload_vapt_report(
+            file=UploadFile(file=io.BytesIO(b"sample"), filename="region-b.csv"),
+            org_id="org-region-cycle",
+            region="CYCLE-B",
+            db=db,
+            current_user=soc,
+        ))
+        assert uploaded["region"] == "CYCLE-B"
+        assert uploaded["cycle_number"] == 1
+
+        try:
+            _run(upload_vapt_report(
+                file=UploadFile(file=io.BytesIO(b"sample"), filename="region-b-again.csv"),
+                org_id="org-region-cycle",
+                region="CYCLE-B",
+                db=db,
+                current_user=soc,
+            ))
+            raise AssertionError("expected 409 while the same region's report cycle is open")
+        except HTTPException as exc:
+            assert exc.status_code == 409
+
+        checklist = _get_onboarding_or_create(db, "org-region-cycle")
+        assert checklist.cycle_number == 1
+
+        region_b_import = db.query(VaptImport).filter_by(
+            org_id="org-region-cycle",
+            region="CYCLE-B",
+        ).one()
+        region_b_import.lifecycle_status = "closed"
+        db.add(region_b_import)
+        db.commit()
+
+        # Closing only one region must not roll the shared organization
+        # checklist forward while another region still has an open cycle.
+        checklist = _get_onboarding_or_create(db, "org-region-cycle")
+        assert checklist.cycle_number == 1
+
+        region_a_import = db.query(VaptImport).filter_by(
+            org_id="org-region-cycle",
+            region="CYCLE-A",
+        ).one()
+        region_a_import.lifecycle_status = "closed"
+        db.add(region_a_import)
+        db.commit()
+        checklist = _get_onboarding_or_create(db, "org-region-cycle")
+        assert checklist.cycle_number == 2
+    finally:
+        vapt_routes.parse_upload = original_parse_upload
+        vapt_routes.normalize_import = original_normalize_import
+        db.close()
+
+
+def test_region_approval_requires_its_completed_checklist():
+    """A region-only request cannot be approved without its own checklist."""
     db = Session(bind=engine)
     try:
         client = User(
@@ -491,11 +748,7 @@ def test_region_approval_gates_checklist_submission():
                     payload={
                         "testing_start_at": "2026-09-15T10:00:00+00:00",
                         "testing_timezone": "UTC",
-                        "checklist_answers": {
-                            "general_information": {
-                                "organization_name": {"answer": "Acme", "na": False},
-                            }
-                        },
+                        "checklist_answers": _complete_region_checklist_answers(),
                     },
                     db=db,
                     current_user=client,
@@ -505,7 +758,33 @@ def test_region_approval_gates_checklist_submission():
         except HTTPException as exc:
             assert exc.status_code == 403
 
-        # 3. SOC approves the region.
+        # A plain region approval is blocked until that region has a completed
+        # checklist attached.
+        try:
+            _run(
+                approve_vapt_access(
+                    payload={"org_id": "org-flow", "region": "FLW-IND", "approved": True},
+                    db=db,
+                    current_user=soc,
+                )
+            )
+            raise AssertionError("expected approval to require a region checklist")
+        except HTTPException as exc:
+            assert exc.status_code == 400
+
+        # Client submits the organization and region checklists together.
+        request_vapt_access(
+            payload={
+                "regions": [{"code": "FLW-IND", "name": "Flow India"}],
+                "scope_ip_ranges": "10.0.0.0/8",
+                "authorization_confirmed": True,
+                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_timezone": "UTC",
+                "checklist_answers": _complete_region_checklist_answers(),
+            },
+            db=db,
+            current_user=client,
+        )
         _run(
             approve_vapt_access(
                 payload={"org_id": "org-flow", "region": "FLW-IND", "approved": True},
@@ -516,7 +795,7 @@ def test_region_approval_gates_checklist_submission():
         db.expire_all()
         assert db.query(OrganizationRegion).filter_by(org_id="org-flow").first().status == "approved"
 
-        # 4. The client submits the checklist for SOC review.
+        # The organization checklist can be resubmitted for its own review path.
         response = _run(
             submit_onboarding_checklist(
                 payload={
@@ -572,7 +851,12 @@ def test_additional_region_request_carries_its_checklist_to_admin():
 
         # The client already has one approved region, so it may request another.
         request_vapt_access(
-            payload={"regions": [{"code": "RC-A", "name": "Region A"}]},
+            payload={
+                "regions": [{"code": "RC-A", "name": "Region A"}],
+                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_timezone": "UTC",
+                "checklist_answers": _complete_region_checklist_answers(),
+            },
             db=db,
             current_user=client,
         )
@@ -592,11 +876,7 @@ def test_additional_region_request_carries_its_checklist_to_admin():
                     "testing_start_at": "2026-10-01T10:00:00+00:00",
                     "testing_timezone": "UTC",
                     "scope_ip_ranges": "10.1.0.0/16",
-                    "checklist_answers": {
-                        "general_information": {
-                            "organization_name": {"answer": "Acme", "na": False},
-                        }
-                    },
+                    "checklist_answers": _complete_region_checklist_answers(),
                 },
                 db=db,
                 current_user=client,
@@ -624,6 +904,187 @@ def test_additional_region_request_carries_its_checklist_to_admin():
         db.close()
 
 
+def test_additional_region_request_rejects_missing_or_incomplete_checklist():
+    db = Session(bind=engine)
+    try:
+        client = User(
+            user_id="missing-region-checklist-client",
+            org_id="org-missing-region-checklist",
+            email="missing-region-checklist@example.com",
+            password="test-password",
+            role="owner",
+        )
+        organization = Organization(org_id="org-missing-region-checklist", user_id=client.user_id)
+        approved_region = Region(code="MRC-APPROVED", name="Approved", is_active=True)
+        requested_region = Region(code="MRC-NEW", name="New", is_active=True)
+        db.add_all([client, organization, approved_region, requested_region])
+        db.flush()
+        db.add(
+            OrganizationRegion(
+                org_id=organization.org_id,
+                region_id=approved_region.region_id,
+                status="approved",
+            )
+        )
+        db.commit()
+
+        partial_answers = _complete_region_checklist_answers()
+        del partial_answers["company_details"]["primary_contact"]
+        for answers in (
+            None,
+            {},
+            {"general_information": {"organization_name": {"answer": ""}}},
+            partial_answers,
+        ):
+            try:
+                _run(
+                    request_vapt_region(
+                        payload={
+                            "region_code": "MRC-NEW",
+                            "region_name": "New",
+                            "testing_start_at": "2026-10-15T10:00:00+00:00",
+                            "testing_timezone": "UTC",
+                            "checklist_answers": answers,
+                        },
+                        db=db,
+                        current_user=client,
+                    )
+                )
+                raise AssertionError("expected incomplete region checklist to be rejected")
+            except HTTPException as exc:
+                assert exc.status_code == 400
+                assert "checklist" in exc.detail.lower()
+            db.rollback()
+
+        assert (
+            db.query(OrganizationRegion)
+            .filter_by(org_id=organization.org_id, region_id=requested_region.region_id)
+            .first()
+            is None
+        )
+    finally:
+        db.close()
+
+
+def test_region_checklist_decision_cannot_approve_incomplete_submission():
+    db = Session(bind=engine)
+    try:
+        owner = User(
+            user_id="incomplete-approval-owner",
+            org_id="org-incomplete-approval",
+            email="incomplete-approval-owner@example.com",
+            password="test-password",
+            role="owner",
+        )
+        soc = User(
+            user_id="incomplete-approval-soc",
+            org_id=None,
+            email="incomplete-approval-soc@example.com",
+            password="test-password",
+            role="soc_analyst",
+        )
+        organization = Organization(
+            org_id="org-incomplete-approval",
+            user_id=owner.user_id,
+        )
+        region = Region(code="INCOMPLETE-APPROVAL", name="Incomplete", is_active=True)
+        db.add_all([owner, soc, organization, region])
+        db.flush()
+        row = OrganizationRegion(
+            org_id=organization.org_id,
+            region_id=region.region_id,
+            status="pending",
+            testing_start_at=datetime(2026, 10, 15, 10, tzinfo=timezone.utc),
+            testing_timezone="UTC",
+            checklist_submission={
+                "checklist_answers": {
+                    "company_details": {
+                        "organization_name": {"answer": "Acme", "na": False},
+                    }
+                }
+            },
+        )
+        db.add(row)
+        db.commit()
+
+        try:
+            _run(
+                decide_region_checklist(
+                    payload={
+                        "org_id": organization.org_id,
+                        "region_code": region.code,
+                        "status": "approved",
+                    },
+                    db=db,
+                    current_user=soc,
+                )
+            )
+            raise AssertionError("expected approval to reject an incomplete region checklist")
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert "completed checklist" in exc.detail.lower()
+        db.refresh(row)
+        assert row.status == "pending"
+        assert row.checklist_review_status == "pending"
+    finally:
+        db.close()
+
+
+def test_admin_approved_client_can_submit_first_region_checklist():
+    """Admin-granted VAPT access allows the client to request the first region."""
+    import app.api.vapt.routes as vapt_routes
+
+    db = Session(bind=engine)
+    original_email_sender = vapt_routes.send_vapt_access_event_email
+    original_ws_send = vapt_routes.ws_manager.send
+
+    async def noop_send(*args, **kwargs):
+        return None
+
+    try:
+        client = User(
+            user_id="first-region-client",
+            org_id="org-first-region",
+            email="first-region-client@example.com",
+            password="test-password",
+            role="owner",
+            vapt_approved=True,
+        )
+        db.add(client)
+        db.commit()
+        vapt_routes.send_vapt_access_event_email = lambda *args, **kwargs: None
+        vapt_routes.ws_manager.send = noop_send
+
+        response = _run(
+            request_vapt_region(
+                payload={
+                    "region_code": "FIRST-IND",
+                    "region_name": "First Region",
+                    "testing_start_at": "2026-10-15T10:00:00+00:00",
+                    "testing_timezone": "UTC",
+                    "scope_ip_ranges": "10.2.0.0/16",
+                    "checklist_answers": _complete_region_checklist_answers(),
+                },
+                db=db,
+                current_user=client,
+            )
+        )
+
+        assert response["success"] is True
+        region = db.query(Region).filter_by(code="FIRST-IND").one()
+        region_request = (
+            db.query(OrganizationRegion)
+            .filter_by(org_id="org-first-region", region_id=region.region_id)
+            .one()
+        )
+        assert region_request.status == "pending"
+        assert region_request.checklist_submission["scope_ip_ranges"] == "10.2.0.0/16"
+    finally:
+        vapt_routes.send_vapt_access_event_email = original_email_sender
+        vapt_routes.ws_manager.send = original_ws_send
+        db.close()
+
+
 def test_region_checklist_changes_requested_then_approved():
     """A region checklist with a few wrong answers must not reject the whole
     region request — SOC asks for more information and the region stays pending."""
@@ -645,10 +1106,27 @@ def test_region_checklist_changes_requested_then_approved():
         )
         db.add_all([client, soc])
         db.add(Organization(org_id="org-rd", user_id="rd-client", max_domains=1))
+        db.add(
+            VaptOnboardingChecklist(
+                org_id="org-rd",
+                checklist_answers={
+                    "general_information": {
+                        "network_diagram_available": {"answer": "Yes", "na": False},
+                    }
+                },
+                completed_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+                review_status="pending",
+            )
+        )
         db.commit()
 
         request_vapt_access(
-            payload={"regions": [{"code": "RD-A", "name": "Region A"}]},
+            payload={
+                "regions": [{"code": "RD-A", "name": "Region A"}],
+                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_timezone": "UTC",
+                "checklist_answers": _complete_region_checklist_answers(),
+            },
             db=db,
             current_user=client,
         )
@@ -666,11 +1144,7 @@ def test_region_checklist_changes_requested_then_approved():
                     "region_name": "Region B",
                     "testing_start_at": "2026-10-01T10:00:00+00:00",
                     "testing_timezone": "UTC",
-                    "checklist_answers": {
-                        "general_information": {
-                            "network_diagram_available": {"answer": "Yes", "na": False},
-                        }
-                    },
+                    "checklist_answers": _complete_region_checklist_answers(),
                 },
                 db=db,
                 current_user=client,
@@ -699,6 +1173,11 @@ def test_region_checklist_changes_requested_then_approved():
         )
         assert reviewed["checklist_review_status"] == "changes_requested"
         assert reviewed["status"] == "pending"  # the region was NOT rejected
+        onboarding = db.query(VaptOnboardingChecklist).filter_by(org_id="org-rd").one()
+        assert onboarding.review_status == "changes_requested"
+        assert onboarding.review_flags[0]["question_id"] == "network_diagram_available"
+        assert onboarding.checklist_answers["general_information"]["network_diagram_available"]["answer"] == ""
+        assert onboarding.completed_at is not None
 
         # The client can see the remarks and flagged items.
         status = get_vapt_access_status(db=db, current_user=client)
@@ -706,7 +1185,30 @@ def test_region_checklist_changes_requested_then_approved():
         assert pending["checklist_review_status"] == "changes_requested"
         assert pending["checklist_flags"][0]["question_id"] == "network_diagram_available"
 
-        # Re-submitting clears the request for changes.
+        incomplete_answers = _complete_region_checklist_answers()
+        incomplete_answers["general_information"]["network_diagram_available"]["answer"] = ""
+        try:
+            _run(
+                request_vapt_region(
+                    payload={
+                        "region_code": "RD-B",
+                        "region_name": "Region B",
+                        "testing_start_at": "2026-10-01T10:00:00+00:00",
+                        "testing_timezone": "UTC",
+                        "checklist_answers": incomplete_answers,
+                    },
+                    db=db,
+                    current_user=client,
+                )
+            )
+            raise AssertionError("expected 400 when the flagged answer is still empty")
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        db.rollback()
+
+        # Re-entering the flagged answer is valid even when the corrected
+        # answer is textually the same as before; the client explicitly
+        # re-entered it after SOC cleared it for review.
         _run(
             request_vapt_region(
                 payload={
@@ -714,11 +1216,7 @@ def test_region_checklist_changes_requested_then_approved():
                     "region_name": "Region B",
                     "testing_start_at": "2026-10-01T10:00:00+00:00",
                     "testing_timezone": "UTC",
-                    "checklist_answers": {
-                        "general_information": {
-                            "network_diagram_available": {"answer": "Emailed", "na": False},
-                        }
-                    },
+                    "checklist_answers": _complete_region_checklist_answers(),
                 },
                 db=db,
                 current_user=client,
@@ -744,6 +1242,87 @@ def test_region_checklist_changes_requested_then_approved():
         )
         assert approved["status"] == "approved"
         assert approved["checklist_review_status"] == "approved"
+        db.expire_all()
+        onboarding = db.query(VaptOnboardingChecklist).filter_by(org_id="org-rd").one()
+        assert onboarding.review_status == "approved"
+        assert onboarding.review_flags is None
+        assert onboarding.completed_at is not None
+    finally:
+        db.close()
+
+
+def test_rejected_region_checklist_syncs_onboarding_and_can_be_resubmitted():
+    db = Session(bind=engine)
+    try:
+        client = User(
+            user_id="reject-sync-client",
+            org_id="org-reject-sync",
+            email="reject-sync-client@example.com",
+            password="test-password",
+            role="owner",
+        )
+        soc = User(
+            user_id="reject-sync-soc",
+            org_id=None,
+            email="reject-sync-soc@example.com",
+            password="test-password",
+            role="soc_analyst",
+        )
+        region = Region(code="REJECT-SYNC", name="Reject Sync", is_active=True)
+        db.add_all([client, soc, Organization(org_id="org-reject-sync", user_id=client.user_id), region])
+        db.flush()
+        row = OrganizationRegion(
+            org_id="org-reject-sync",
+            region_id=region.region_id,
+            status="pending",
+            checklist_submission={"checklist_answers": {}},
+        )
+        db.add_all(
+            [
+                row,
+                VaptOnboardingChecklist(
+                    org_id="org-reject-sync",
+                    checklist_answers={"general_information": {"organization_name": {"answer": "Acme"}}},
+                    completed_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+                    review_status="pending",
+                ),
+            ]
+        )
+        db.commit()
+        row_id = row.id
+
+        _run(
+            decide_region_checklist(
+                payload={
+                    "org_id": "org-reject-sync",
+                    "region_code": "REJECT-SYNC",
+                    "status": "rejected",
+                    "note": "The requested scope is not authorized.",
+                },
+                db=db,
+                current_user=soc,
+            )
+        )
+        db.expire_all()
+        row = db.query(OrganizationRegion).filter_by(id=row_id).one()
+        onboarding = db.query(VaptOnboardingChecklist).filter_by(org_id="org-reject-sync").one()
+        assert row.status == "rejected"
+        assert row.checklist_review_status == "rejected"
+        assert row.checklist_flags is None
+        assert onboarding.review_status == "rejected"
+        assert onboarding.completed_at is None
+        assert onboarding.review_flags is None
+
+        request_vapt_access(
+            payload={"regions": [{"code": "REJECT-SYNC", "name": "Reject Sync"}]},
+            db=db,
+            current_user=client,
+        )
+        db.expire_all()
+        resubmitted = db.query(OrganizationRegion).filter_by(id=row_id).one()
+        assert resubmitted.status == "pending"
+        assert resubmitted.checklist_review_status == "pending"
+        assert db.query(OrganizationRegion).filter_by(org_id="org-reject-sync").count() == 1
     finally:
         db.close()
 
@@ -770,7 +1349,12 @@ def test_changes_requested_clears_and_requires_flagged_items():
         db.commit()
 
         request_vapt_access(
-            payload={"regions": [{"code": "CR-IND", "name": "CR India"}]},
+            payload={
+                "regions": [{"code": "CR-IND", "name": "CR India"}],
+                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_timezone": "UTC",
+                "checklist_answers": _complete_region_checklist_answers(),
+            },
             db=db,
             current_user=client,
         )
@@ -894,6 +1478,15 @@ def test_reopen_resets_only_findings_not_confirmed_fixed():
 
 
 def test_approved_region_package_is_listed_and_org_checklist_can_download_for_region():
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    from openpyxl import load_workbook
+    from pypdf import PdfReader
+
+    async def response_bytes(response):
+        return b"".join([chunk async for chunk in response.body_iterator])
+
     db = Session(bind=engine)
     try:
         user = User(user_id="pkg-user", org_id="org-pkg", email="pkg@example.com", password="hashed", role="owner")
@@ -911,6 +1504,8 @@ def test_approved_region_package_is_listed_and_org_checklist_can_download_for_re
             status="approved",
             reviewed_by="pkg-soc",
             reviewed_at=reviewed_at,
+            testing_start_at=datetime(2026, 10, 8, 6, 34, tzinfo=timezone.utc),
+            testing_timezone="America/Los_Angeles",
             checklist_review_status="approved",
             checklist_submission={
                 "scope_ip_ranges": "10.2.0.0/16",
@@ -922,9 +1517,21 @@ def test_approved_region_package_is_listed_and_org_checklist_can_download_for_re
         packages = list_approved_vapt_onboarding(db=db, current_user=soc)
         package = next(item for item in packages if item["region_code"] == "PKG-R")
         assert package["checklist_answers"]["general_information"]["organization_name"]["answer"] == "Package Co"
+        package_start = package["testing_start_at"]
+        assert package_start.replace(tzinfo=timezone.utc) == datetime(2026, 10, 8, 6, 34, tzinfo=timezone.utc)
+        assert package["testing_timezone"] == "America/Los_Angeles"
 
         response = download_approved_onboarding_bundle("org-pkg", region_code="PKG-R", db=db, current_user=soc)
         assert response.media_type == "application/zip"
+        with ZipFile(BytesIO(_run(response_bytes(response)))) as archive:
+            workbook = load_workbook(BytesIO(archive.read("checklist.xlsx")), read_only=True)
+            metadata = {row[0]: row[1] for row in workbook["Checklist"].iter_rows(min_row=2, max_col=2, values_only=True) if row[0]}
+            assert metadata["Testing start (SOC / IST)"] == "08 Oct 2026, 12:04 PM IST"
+            assert metadata["Testing start (client local: America/Los_Angeles)"] == "07 Oct 2026, 11:34 PM PDT"
+
+            pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(archive.read("checklist.pdf"))).pages)
+            assert "Testing start (SOC / IST)" in pdf_text
+            assert "08 Oct 2026, 12:04 PM IST" in pdf_text
+            assert "07 Oct 2026, 11:34 PM PDT" in pdf_text
     finally:
         db.close()
-

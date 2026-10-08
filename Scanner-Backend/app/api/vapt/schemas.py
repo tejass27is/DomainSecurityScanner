@@ -25,6 +25,7 @@ class VaptImportListItem(BaseModel):
     status: Optional[str] = None
     lifecycle_status: str = "report_published"
     cycle_number: int = 1
+    next_vapt_due_at: Optional[datetime] = None
 
 
 class VaptImportDetail(VaptImportListItem):
@@ -42,5 +43,4 @@ class VaptUploadResponse(VaptImportDetail):
 class VaptFindingStatusUpdate(BaseModel):
     status: str
     comment: Optional[str] = None
-
 

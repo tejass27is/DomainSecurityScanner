@@ -62,6 +62,109 @@ ONBOARDING_REQUIRED_FIELDS = ["testing_start_at", "testing_timezone"]
 # full "rejected" which wipes the submission.
 CHECKLIST_REVIEW_STATUSES = {"approved", "changes_requested", "rejected"}
 
+REGION_CHECKLIST_REQUIRED_QUESTIONS = {
+    "company_details": (
+        "organization_name",
+        "primary_contact",
+        "office_locations",
+        "technical_contact",
+        "assets_in_scope",
+        "previous_vapt",
+        "network_diagram",
+        "sensitive_information",
+    ),
+    "type_of_testing": (
+        "testing_location",
+        "testing_information_level",
+        "mobile_apps_in_scope",
+        "wireless_in_scope",
+        "physical_security_in_scope",
+    ),
+    "internet_network": (
+        "internal_ip_ranges",
+        "network_devices",
+        "firewall_make_model",
+        "static_public_ips",
+        "cloud_public_addresses",
+        "internet_address_type",
+        "dns_provider",
+    ),
+    "computers_servers": (
+        "total_machines",
+        "machines_in_scope",
+        "asset_inventory",
+        "servers_in_scope",
+        "endpoints_by_os",
+        "asset_list_upload",
+        "nas_or_file_server",
+    ),
+    "remote_access": (
+        "remote_vpn_used",
+        "vpn_service",
+        "remote_vpn_range",
+        "vpn_access_for_testing",
+        "separate_vpn_test_account",
+        "remote_machine_count",
+        "remote_machine_ownership",
+        "remote_login_rules",
+    ),
+    "web_applications": (
+        "websites_in_scope",
+        "website_access_type",
+        "staging_in_scope",
+        "web_login_required",
+        "web_login_method",
+        "web_user_roles",
+        "web_test_accounts",
+        "web_mfa_enabled",
+        "apis_in_scope",
+        "waf_or_security_service",
+    ),
+    "cloud_services": (
+        "cloud_platforms",
+        "cloud_systems_in_scope",
+        "cloud_provider_approval",
+        "online_business_tools",
+        "cloud_tools_mfa",
+        "cloud_admin_access",
+    ),
+    "email_security": (
+        "email_service",
+        "email_domain_matches",
+        "email_domains",
+        "email_security_protection",
+    ),
+    "endpoint_protection": (
+        "antivirus_solution",
+        "edr_xdr_solution",
+        "protected_machine_count",
+    ),
+    "company_directory": (
+        "active_directory_used",
+        "directory_domain",
+        "domain_controller_count",
+        "domain_controller_addresses",
+        "directory_in_scope",
+    ),
+    "monitoring_access": (
+        "siem_solution",
+        "temporary_monitoring_tool",
+        "additional_testing_access",
+    ),
+    "safety_rules": (
+        "fragile_critical_systems",
+        "recent_backup",
+        "avoid_dos_tests",
+        "emergency_contact",
+        "third_party_permission",
+    ),
+    "scheduling_approval": (
+        "testing_blackout_times",
+        "final_testing_approver",
+        "approval_documents",
+    ),
+}
+
 
 def _normalize_review_flags(raw) -> list[dict]:
     """Normalize the per-question review flags sent by SOC."""
@@ -96,30 +199,44 @@ def _clear_flagged_answers(answers, flags: list[dict]) -> dict:
         entry = section.get(flag.get("question_id"))
         if not isinstance(entry, dict):
             continue
-        flag["previous_answer"] = entry.get("answer") or ""
-        flag["previous_na"] = bool(entry.get("na"))
-        attachment = entry.get("attachment")
-        flag["previous_attachment_id"] = str(attachment.get("id")) if isinstance(attachment, dict) and attachment.get("id") else ""
         entry["answer"] = ""
         entry["na"] = False
         entry.pop("attachment", None)
     return result
 
 
+def _apply_onboarding_review_decision(
+    checklist: VaptOnboardingChecklist,
+    status: str,
+    reviewer: User,
+    note: str | None,
+    flags: list[dict],
+    reviewed_at: datetime,
+) -> None:
+    checklist.review_status = status
+    checklist.reviewed_by = reviewer.user_id
+    checklist.reviewed_at = reviewed_at
+    checklist.review_note = note
+    if status == "changes_requested":
+        checklist.checklist_answers = _clear_flagged_answers(checklist.checklist_answers, flags)
+        checklist.review_flags = flags or None
+    elif status == "approved":
+        checklist.review_flags = None
+    else:
+        checklist.completed_at = None
+        checklist.review_flags = None
+
+
 def _flagged_answers_updated(answers, flags: list[dict]) -> bool:
-    """Ensure every flagged item is re-entered rather than resubmitted unchanged."""
+    """Require a completed response for each SOC-flagged item."""
     for flag in flags:
         entry = (answers.get(flag.get("section")) or {}).get(flag.get("question_id")) if isinstance(answers, dict) else None
         entry = entry if isinstance(entry, dict) else {}
         attachment = entry.get("attachment")
-        attachment_id = str(attachment.get("id")) if isinstance(attachment, dict) and attachment.get("id") else ""
-        current = (entry.get("answer") or "", bool(entry.get("na")), attachment_id)
-        previous = (
-            flag.get("previous_answer") or "",
-            bool(flag.get("previous_na")),
-            str(flag.get("previous_attachment_id") or ""),
-        )
-        if current == previous or (not current[0].strip() and not current[1] and not current[2]):
+        answer = entry.get("answer")
+        has_answer = isinstance(answer, str) and bool(answer.strip())
+        has_attachment = isinstance(attachment, dict) and bool(attachment.get("id"))
+        if not has_answer and not bool(entry.get("na")) and not has_attachment:
             return False
     return True
 
@@ -142,10 +259,12 @@ def _checklist_review_email_note(status: str, note: str | None, flags: list[dict
 
 def _get_onboarding_or_create(db: Session, org_id: str) -> VaptOnboardingChecklist:
     record = db.query(VaptOnboardingChecklist).filter(VaptOnboardingChecklist.org_id == org_id).first()
-    latest_import = db.query(VaptImport).filter(
+    imports = db.query(VaptImport).filter(
         VaptImport.org_id == org_id,
-    ).order_by(VaptImport.cycle_number.desc()).first()
-    next_cycle = (latest_import.cycle_number + 1) if latest_import and latest_import.lifecycle_status == "closed" else (latest_import.cycle_number if latest_import else 1)
+    ).all()
+    latest_cycle = max((item.cycle_number for item in imports), default=0)
+    has_open_cycle = any(item.lifecycle_status != "closed" for item in imports)
+    next_cycle = latest_cycle + 1 if imports and not has_open_cycle else max(latest_cycle, 1)
     if not record:
         record = VaptOnboardingChecklist(org_id=org_id, cycle_number=next_cycle)
         db.add(record)
@@ -176,6 +295,23 @@ def _get_onboarding_or_create(db: Session, org_id: str) -> VaptOnboardingCheckli
     return record
 
 
+def _has_checklist_answers(answers) -> bool:
+    if not answers:
+        return False
+
+    def count_answers(value):
+        if isinstance(value, dict):
+            own_answer = value.get("answer")
+            return (1 if own_answer or value.get("na") else 0) + sum(
+                count_answers(child) for child in value.values()
+            )
+        if isinstance(value, list):
+            return sum(count_answers(child) for child in value)
+        return 0
+
+    return isinstance(answers, dict) and count_answers(answers) > 0
+
+
 def _is_onboarding_complete(record: VaptOnboardingChecklist) -> bool:
     if not record:
         return False
@@ -183,19 +319,70 @@ def _is_onboarding_complete(record: VaptOnboardingChecklist) -> bool:
         val = getattr(record, field, None)
         if val is None or val == "" or val is False:
             return False
-    if not record.checklist_answers:
+    return _has_checklist_answers(record.checklist_answers)
+
+
+def _is_region_checklist_complete(
+    submission: dict | None,
+    testing_start_at: datetime | None,
+    testing_timezone: str | None,
+) -> bool:
+    if not isinstance(submission, dict) or not testing_start_at or not testing_timezone:
         return False
-    if isinstance(record.checklist_answers, dict):
-        def count_answers(value):
-            if isinstance(value, dict):
-                own_answer = value.get("answer")
-                return (1 if own_answer or value.get("na") else 0) + sum(count_answers(child) for child in value.values())
-            if isinstance(value, list):
-                return sum(count_answers(child) for child in value)
-            return 0
-        if count_answers(record.checklist_answers) == 0:
+    answers = submission.get("checklist_answers")
+    if not isinstance(answers, dict):
+        return False
+    for section_id, question_ids in REGION_CHECKLIST_REQUIRED_QUESTIONS.items():
+        section = answers.get(section_id)
+        if not isinstance(section, dict):
             return False
+        for question_id in question_ids:
+            entry = section.get(question_id)
+            if not isinstance(entry, dict):
+                return False
+            if entry.get("na"):
+                continue
+            if question_id == "asset_list_upload":
+                attachment = entry.get("attachment")
+                has_attachment = isinstance(attachment, dict) and bool(attachment.get("id"))
+                rows = entry.get("rows")
+                has_rows = isinstance(rows, list) and any(
+                    isinstance(row, dict)
+                    and any(str(value or "").strip() for value in row.values())
+                    for row in rows
+                )
+                if not has_attachment and not has_rows:
+                    return False
+            elif not str(entry.get("answer") or "").strip():
+                return False
     return True
+
+
+def _require_complete_region_checklist(
+    db: Session,
+    row: OrganizationRegion,
+    region_code: str,
+) -> None:
+    if not _is_region_checklist_complete(
+        row.checklist_submission,
+        row.testing_start_at,
+        row.testing_timezone,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="A completed checklist for this region is required before approval.",
+        )
+    missing_uploads = _missing_required_uploads(
+        db,
+        row.org_id,
+        row.checklist_submission.get("checklist_answers"),
+        region_code,
+    )
+    if missing_uploads:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload the following file(s) before approving this region: {', '.join(missing_uploads)}.",
+        )
 
 
 # ─── Checklist attachments (client-uploaded files) ───────────────────────────
@@ -273,13 +460,18 @@ def _attachment_ids_in(answers) -> set:
     return ids
 
 
-def _missing_required_uploads(db: Session, org_id: str, answers) -> list:
+def _missing_required_uploads(
+    db: Session,
+    org_id: str,
+    answers,
+    region_code: str | None = None,
+) -> list:
     """Labels of required upload questions that carry no usable attachment."""
     missing: list = []
     for question_id, rule in CHECKLIST_UPLOAD_QUESTIONS.items():
         if not rule.get("required"):
             continue
-        _, entry = _find_answer_entry(answers, question_id)
+        section_id, entry = _find_answer_entry(answers, question_id)
         if entry is None or entry.get("na"):
             continue
         attachment = entry.get("attachment")
@@ -289,13 +481,23 @@ def _missing_required_uploads(db: Session, org_id: str, answers) -> list:
                 continue
             missing.append(rule["label"])
             continue
-        # The metadata lives in client-supplied JSON, so confirm the row really
-        # exists and belongs to this org before trusting it.
-        owned = db.query(VaptChecklistAttachment).filter(
+        # Answer metadata is client-supplied, so bind the attachment to this
+        # checklist's organization, region, section, and required question.
+        attachment_query = db.query(VaptChecklistAttachment).filter(
             VaptChecklistAttachment.id == attachment_id,
             VaptChecklistAttachment.org_id == org_id,
-        ).first()
-        if not owned:
+            VaptChecklistAttachment.section_id == section_id,
+            VaptChecklistAttachment.question_id == question_id,
+        )
+        if region_code is None:
+            attachment_query = attachment_query.filter(
+                VaptChecklistAttachment.region_code.is_(None),
+            )
+        else:
+            attachment_query = attachment_query.filter(
+                VaptChecklistAttachment.region_code == region_code,
+            )
+        if not attachment_query.first():
             missing.append(rule["label"])
     return missing
 
@@ -488,7 +690,7 @@ async def upload_checklist_attachment(
     row = VaptChecklistAttachment(
         id=attachment_id,
         org_id=current_user.org_id,
-        region_code=(region_code or "").strip()[:64] or None,
+        region_code=(region_code or "").strip().upper()[:64] or None,
         section_id=(section_id or "").strip()[:64],
         question_id=question_id.strip()[:64],
         original_filename=filename[:255],
@@ -568,6 +770,44 @@ def _checklist_rows(checklist_data: dict) -> list[list[str]]:
     return rows
 
 
+def _format_checklist_datetime(value, time_zone: str) -> str:
+    if not value:
+        return ""
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    if not isinstance(parsed, datetime):
+        return str(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    try:
+        localized = parsed.astimezone(ZoneInfo(time_zone))
+    except (ZoneInfoNotFoundError, ValueError):
+        return parsed.isoformat()
+    return localized.strftime("%d %b %Y, %I:%M %p %Z")
+
+
+def _checklist_metadata_rows(checklist_data: dict) -> list[tuple[str, str]]:
+    client_timezone = checklist_data.get("testing_timezone") or ""
+    metadata = [
+        ("Region", checklist_data.get("region_name") or checklist_data.get("region_code") or "Organization onboarding"),
+        (
+            "Approved at (SOC / IST)",
+            _format_checklist_datetime(checklist_data.get("approved_at") or checklist_data.get("reviewed_at"), "Asia/Kolkata"),
+        ),
+        ("Testing timezone", client_timezone),
+    ]
+    for field, label in (("testing_start_at", "Testing start"), ("testing_end_at", "Testing end")):
+        value = checklist_data.get(field)
+        metadata.append((f"{label} (SOC / IST)", _format_checklist_datetime(value, "Asia/Kolkata")))
+        if client_timezone:
+            metadata.append((f"{label} (client local: {client_timezone})", _format_checklist_datetime(value, client_timezone)))
+    return metadata
+
+
 def _generate_checklist_xlsx(checklist_data: dict) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -576,15 +816,8 @@ def _generate_checklist_xlsx(checklist_data: dict) -> bytes:
     sheet = workbook.active
     sheet.title = "Checklist"
     sheet.append(["Field", "Value"])
-    metadata = [
-        ("Region", checklist_data.get("region_name") or checklist_data.get("region_code") or "Organization onboarding"),
-        ("Approved at", checklist_data.get("approved_at") or checklist_data.get("reviewed_at") or ""),
-        ("Testing timezone", checklist_data.get("testing_timezone") or ""),
-        ("Testing start", checklist_data.get("testing_start_at") or ""),
-        ("Testing end", checklist_data.get("testing_end_at") or ""),
-    ]
-    for key, value in metadata:
-        sheet.append([key, str(value)])
+    for key, value in _checklist_metadata_rows(checklist_data):
+        sheet.append([key, value])
     sheet.append([])
     for row in _checklist_rows(checklist_data):
         sheet.append(row)
@@ -618,7 +851,22 @@ def _generate_checklist_pdf(checklist_data: dict) -> bytes:
     cell_style = ParagraphStyle("ChecklistCell", parent=styles["BodyText"], fontSize=7.5, leading=9)
     header_style = ParagraphStyle("ChecklistHeader", parent=cell_style, textColor=colors.white, fontName="Helvetica-Bold")
     region = checklist_data.get("region_name") or checklist_data.get("region_code") or "Organization onboarding"
-    story = [Paragraph("VAPT Client Checklist", title_style), Paragraph(f"Region: {region}", styles["Heading3"]), Spacer(1, 5)]
+    story = [
+        Paragraph("VAPT Client Checklist", title_style),
+        Paragraph(f"Region: {region}", styles["Heading3"]),
+        Spacer(1, 5),
+    ]
+    metadata_rows = [["Field", "Value"], *[[key, value] for key, value in _checklist_metadata_rows(checklist_data)]]
+    metadata_table = Table(metadata_rows, colWidths=[58 * mm, 130 * mm])
+    metadata_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#205A87")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F1F5F9")]),
+    ]))
+    story.extend([metadata_table, Spacer(1, 8)])
     rows = _checklist_rows(checklist_data)
     table_data = [[Paragraph(str(value).replace("&", "&amp;"), header_style if index == 0 else cell_style) for value in row] for index, row in enumerate(rows)]
     table = Table(table_data, colWidths=[42 * mm, 92 * mm, 120 * mm], repeatRows=1)
@@ -679,6 +927,9 @@ def download_approved_onboarding_bundle(
             "region_code": region.code,
             "region_name": region.name,
             "approved_at": row.reviewed_at or checklist_data.get("reviewed_at"),
+            "testing_start_at": row.testing_start_at or checklist_data.get("testing_start_at"),
+            "testing_end_at": row.testing_end_at or checklist_data.get("testing_end_at"),
+            "testing_timezone": row.testing_timezone or checklist_data.get("testing_timezone"),
         }
         answers = checklist_data.get("checklist_answers") or {}
         package_name = f"{region.code}-{region.name}" if region else region_code
@@ -1018,20 +1269,14 @@ async def review_vapt_onboarding(
             detail="Add remarks or flag at least one checklist item.",
         )
 
-    checklist.review_status = status
-    checklist.reviewed_by = current_user.user_id
-    checklist.reviewed_at = datetime.now(timezone.utc)
-    checklist.review_note = note
-    if status == "changes_requested":
-        # Keep the submission cycle, but clear flagged values so the client must
-        # provide fresh answers before this checklist can be resubmitted.
-        checklist.checklist_answers = _clear_flagged_answers(checklist.checklist_answers, flags)
-        checklist.review_flags = flags
-    elif status == "approved":
-        checklist.review_flags = None
-    else:  # rejected → full redo
-        checklist.completed_at = None
-        checklist.review_flags = None
+    _apply_onboarding_review_decision(
+        checklist,
+        status,
+        current_user,
+        note,
+        flags,
+        datetime.now(timezone.utc),
+    )
     db.add(checklist)
     db.commit()
     db.refresh(checklist)
@@ -1135,6 +1380,9 @@ async def decide_initial_vapt_access(
     if not org_region or org_region.status != "pending":
         raise HTTPException(status_code=409, detail="The selected region is not a pending first-time request.")
 
+    if status == "approved":
+        _require_complete_region_checklist(db, org_region, code)
+
     now = datetime.now(timezone.utc)
     checklist.review_status = status
     checklist.reviewed_by = current_user.user_id
@@ -1144,6 +1392,9 @@ async def decide_initial_vapt_access(
     org_region.reviewed_at = now
     org_region.rejection_reason = checklist.review_note if status == "rejected" else None
     org_region.status = status
+    org_region.checklist_review_status = status
+    org_region.checklist_review_note = checklist.review_note
+    org_region.checklist_flags = None
     org_region.schedule_status = "confirmed" if status == "approved" else "rejected"
     if status == "rejected":
         checklist.completed_at = None
@@ -1227,7 +1478,9 @@ async def decide_initial_vapt_date(
         row.testing_start_at = row.proposed_start_at
         row.testing_end_at = row.proposed_end_at
         row.testing_timezone = row.proposed_timezone
-        row.status = "approved"
+        # Accepting the proposed window confirms only the schedule. The region
+        # remains pending until its checklist receives an explicit approval.
+        row.status = "pending"
         row.schedule_status = "confirmed"
         row.rejection_reason = None
     else:
@@ -1277,22 +1530,40 @@ async def request_vapt_region(
         OrganizationRegion.status == "approved",
     ).first() is not None
     if not checklist or checklist.review_status != "approved":
-        if not has_approved_region:
+        if not has_approved_region and not bool(getattr(current_user, "vapt_approved", False)):
             raise HTTPException(status_code=403, detail="The organization onboarding checklist must be approved first.")
     code = str(payload.get("region_code") or "").strip().upper()
     name = str(payload.get("region_name") or "").strip()
     if not code or not name:
         raise HTTPException(status_code=400, detail="region_code and region_name are required.")
     region = db.query(Region).filter(Region.code == code).first()
+    row = None
+    if region:
+        row = db.query(OrganizationRegion).filter(
+            OrganizationRegion.org_id == current_user.org_id,
+            OrganizationRegion.region_id == region.region_id,
+        ).first()
+    if row and row.status == "approved":
+        raise HTTPException(status_code=409, detail="This region is already approved.")
+    if not row or row.status == "rejected":
+        active_region_count = db.query(OrganizationRegion).filter(
+            OrganizationRegion.org_id == current_user.org_id,
+            OrganizationRegion.status.in_(["approved", "pending"]),
+        ).count()
+        if active_region_count >= MAX_VAPT_REGIONS_PER_ORG:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"You can request access to up to {MAX_VAPT_REGIONS_PER_ORG} regions. "
+                    "This organization has already reached that limit."
+                ),
+            )
     if not region:
         region = Region(code=code, name=name, is_active=True)
         db.add(region)
         db.flush()
     else:
         region.name = name
-    row = db.query(OrganizationRegion).filter(OrganizationRegion.org_id == current_user.org_id, OrganizationRegion.region_id == region.region_id).first()
-    if row and row.status == "approved":
-        raise HTTPException(status_code=409, detail="This region is already approved.")
     if not row:
         row = OrganizationRegion(org_id=current_user.org_id, region_id=region.region_id)
     row.status = "pending"
@@ -1320,12 +1591,26 @@ async def request_vapt_region(
         for key in submission_fields
         if payload.get(key) is not None
     }
+    if not _is_region_checklist_complete(
+        submission,
+        row.testing_start_at,
+        row.testing_timezone,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Complete the checklist for this region before submitting the region request.",
+        )
     if row.checklist_review_status == "changes_requested" and row.checklist_flags:
         submitted_answers = submission.get("checklist_answers") or {}
         if not _flagged_answers_updated(submitted_answers, row.checklist_flags):
             raise HTTPException(status_code=400, detail="Update every SOC-flagged checklist question before resubmitting.")
     if submission.get("checklist_answers"):
-        missing_uploads = _missing_required_uploads(db, current_user.org_id, submission.get("checklist_answers"))
+        missing_uploads = _missing_required_uploads(
+            db,
+            current_user.org_id,
+            submission.get("checklist_answers"),
+            code,
+        )
         if missing_uploads:
             raise HTTPException(
                 status_code=400,
@@ -1418,6 +1703,9 @@ def list_approved_vapt_onboarding(
             data["region_code"] = region.code
             data["region_name"] = region.name
             data["approved_at"] = org_region.reviewed_at or item.reviewed_at
+            data["testing_start_at"] = org_region.testing_start_at or item.testing_start_at
+            data["testing_end_at"] = org_region.testing_end_at or item.testing_end_at
+            data["testing_timezone"] = org_region.testing_timezone or item.testing_timezone
             result.append(data)
 
     # Regional checklists are independent from the organization checklist and
@@ -1441,6 +1729,9 @@ def list_approved_vapt_onboarding(
         data["region_code"] = region.code
         data["region_name"] = region.name
         data["approved_at"] = org_region.reviewed_at
+        data["testing_start_at"] = org_region.testing_start_at
+        data["testing_end_at"] = org_region.testing_end_at
+        data["testing_timezone"] = org_region.testing_timezone or data.get("testing_timezone")
         result.append(data)
     return result
 
@@ -1732,11 +2023,11 @@ def request_vapt_access(
         db.query(OrganizationRegion)
         .filter(
             OrganizationRegion.org_id == org_id,
-            OrganizationRegion.status.in_(["approved", "pending"]),
         )
         .all()
     )
     existing_by_region = {row.region_id: row for row in existing_rows}
+    active_region_count = sum(row.status in {"approved", "pending"} for row in existing_rows)
 
     for entry in requested:
         code = entry["code"]
@@ -1752,8 +2043,9 @@ def request_vapt_access(
             db.add(region)
 
         org_region = existing_by_region.get(region.region_id)
+        is_new_region = org_region is None
         if org_region is None:
-            if len(existing_by_region) >= MAX_VAPT_REGIONS_PER_ORG:
+            if active_region_count >= MAX_VAPT_REGIONS_PER_ORG:
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -1767,14 +2059,36 @@ def request_vapt_access(
         elif org_region.status == "approved":
             continue
         else:
+            if org_region.status == "rejected":
+                if active_region_count >= MAX_VAPT_REGIONS_PER_ORG:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"You can request access to up to {MAX_VAPT_REGIONS_PER_ORG} regions. "
+                            "This organization has already reached that limit."
+                        ),
+                    )
+                active_region_count += 1
             org_region.status = "pending"
             org_region.requested_at = datetime.now(timezone.utc)
+            if org_region.checklist_review_status == "rejected":
+                org_region.checklist_review_status = "pending"
+                org_region.checklist_review_note = None
+                org_region.checklist_flags = None
+                org_region.rejection_reason = None
+                org_region.schedule_status = "pending"
+
+        if is_new_region:
+            active_region_count += 1
 
         if combined_submission is not None:
             org_region.checklist_submission = combined_submission
             org_region.checklist_review_status = "pending"
             org_region.checklist_review_note = None
             org_region.checklist_flags = None
+            org_region.testing_start_at = record.testing_start_at
+            org_region.testing_end_at = record.testing_end_at
+            org_region.testing_timezone = record.testing_timezone
 
     db.commit()
     _record_audit_log(db, current_user, "VAPT_ACCESS_REQUESTED", "organization_region", org_id, {"regions": [item["code"] for item in requested], "combined_onboarding": bool(onboarding_fields.intersection(payload.keys()))})
@@ -1849,6 +2163,9 @@ async def approve_vapt_access(
         org_region = OrganizationRegion(org_id=org_id, region_id=region.region_id, status="pending")
         db.add(org_region)
 
+    if approved:
+        _require_complete_region_checklist(db, org_region, region.code)
+
     org_region.status = "approved" if approved else "rejected"
     org_region.rejection_reason = None if approved else reason
     org_region.reviewed_at = datetime.now(timezone.utc)
@@ -1857,14 +2174,20 @@ async def approve_vapt_access(
     # a checklist is decided through this plain approve/deny path.
     if org_region.checklist_submission is not None:
         org_region.checklist_review_status = "approved" if approved else "rejected"
+        org_region.checklist_review_note = reason
+        org_region.checklist_flags = None
         onboarding = db.query(VaptOnboardingChecklist).filter(
             VaptOnboardingChecklist.org_id == org_id,
         ).first()
         if onboarding:
-            onboarding.review_status = "approved" if approved else "rejected"
-            onboarding.reviewed_by = current_user.user_id
-            onboarding.reviewed_at = datetime.now(timezone.utc)
-            onboarding.review_note = reason
+            _apply_onboarding_review_decision(
+                onboarding,
+                "approved" if approved else "rejected",
+                current_user,
+                reason,
+                [],
+                org_region.reviewed_at,
+            )
             db.add(onboarding)
     db.commit()
     db.refresh(org_region)
@@ -1927,6 +2250,8 @@ async def decide_region_checklist(
         raise HTTPException(status_code=404, detail="Region request not found.")
     if row.status != "pending":
         raise HTTPException(status_code=409, detail="This region request is no longer pending.")
+    if status == "approved":
+        _require_complete_region_checklist(db, row, code)
 
     note = str(payload.get("note") or "").strip() or None
     flags = _normalize_review_flags(payload.get("flags"))
@@ -1958,9 +2283,23 @@ async def decide_region_checklist(
         row.status = "rejected"
         row.schedule_status = "rejected"
         row.rejection_reason = note
+        row.checklist_flags = None
     else:  # changes_requested — keep the region pending
         row.status = "pending"
         row.schedule_status = "pending"
+    onboarding = db.query(VaptOnboardingChecklist).filter(
+        VaptOnboardingChecklist.org_id == org_id,
+    ).first()
+    if onboarding:
+        _apply_onboarding_review_decision(
+            onboarding,
+            status,
+            current_user,
+            note,
+            flags,
+            now,
+        )
+        db.add(onboarding)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -2166,16 +2505,37 @@ async def upload_vapt_report(
                 status_code=403,
                 detail="The selected region is not approved for this organization.",
             )
+        if approved_region.checklist_review_status != "approved" or not _is_region_checklist_complete(
+            approved_region.checklist_submission,
+            approved_region.testing_start_at,
+            approved_region.testing_timezone,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="The selected region's completed checklist must be approved before a VAPT report can be uploaded.",
+            )
+        missing_uploads = _missing_required_uploads(
+            db,
+            target_org_id,
+            approved_region.checklist_submission.get("checklist_answers"),
+            region,
+        )
+        if missing_uploads:
+            raise HTTPException(
+                status_code=403,
+                detail="The selected region's checklist is missing required uploads.",
+            )
     else:
         raise HTTPException(status_code=400, detail="An approved region is required for every VAPT report.")
 
     latest_record = db.query(VaptImport).filter(
         VaptImport.org_id == target_org_id,
+        VaptImport.region == region,
     ).order_by(VaptImport.cycle_number.desc()).first()
     if latest_record and latest_record.lifecycle_status != "closed":
         raise HTTPException(
             status_code=409,
-            detail="The current VAPT cycle must be closed by SOC before the next full report can be uploaded.",
+            detail="The current VAPT cycle for this region must be closed by SOC before the next full report can be uploaded.",
         )
 
     filename = file.filename or "unnamed"
@@ -2208,7 +2568,10 @@ async def upload_vapt_report(
             "export format and try again.",
         )
 
-    cycle_number = db.query(VaptImport).filter(VaptImport.org_id == target_org_id).count() + 1
+    cycle_number = db.query(VaptImport).filter(
+        VaptImport.org_id == target_org_id,
+        VaptImport.region == region,
+    ).count() + 1
     record = VaptImport(
         org_id=target_org_id,
         uploaded_by=current_user.user_id,
@@ -2322,9 +2685,10 @@ def _closure_blockers(record: VaptImport, remaining_findings: list[dict] | None 
     for finding in findings:
         severity = _finding_severity(finding)
         status = str(finding.get("status") or "pending").strip().lower()
-        unresolved = status != "solved"
         if remaining_findings is not None:
-            unresolved = _verification_finding_key(finding) in remaining_keys or status in {"ignore", "false_positive", "pending"}
+            unresolved = _verification_finding_key(finding) in remaining_keys
+        else:
+            unresolved = status not in {"solved", "ignore", "false_positive"}
         if unresolved and severity in _CLOSURE_BLOCKING_SEVERITIES:
             blockers.append(finding)
     return blockers
@@ -2332,7 +2696,13 @@ def _closure_blockers(record: VaptImport, remaining_findings: list[dict] | None 
 
 def _closure_block_message(blockers: list[dict]) -> str:
     severities = sorted({_finding_severity(finding).title() for finding in blockers}, key=("Critical", "High", "Medium").index)
-    return f"Cannot close — unresolved {', '.join(severities)} findings remain."
+    examples = [
+        f"{finding.get('title') or finding.get('plugin_id') or finding.get('id') or 'Untitled finding'} "
+        f"({str(finding.get('status') or 'pending').replace('_', ' ')})"
+        for finding in blockers[:3]
+    ]
+    more = f", and {len(blockers) - len(examples)} more" if len(blockers) > len(examples) else ""
+    return f"Cannot close — unresolved {', '.join(severities)} findings remain: {'; '.join(examples)}{more}."
 
 
 def _reopen_unresolved_findings(record: VaptImport, verification_data: dict | None = None) -> list[dict]:
@@ -2713,6 +3083,11 @@ class RescanScheduleRequest(BaseModel):
 
 
 def _validate_rescan_prerequisites(record: VaptImport) -> None:
+    if record.lifecycle_status == "closed":
+        raise HTTPException(
+            status_code=409,
+            detail="A verification scan cannot be scheduled because this VAPT cycle is closed.",
+        )
     if record.status != "client_completed" or record.remediation_review_status != "approved":
         raise HTTPException(
             status_code=400,

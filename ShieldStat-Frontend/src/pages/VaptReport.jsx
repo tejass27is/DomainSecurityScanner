@@ -5,8 +5,8 @@ import {
   Globe, Layers, Info, FileText, Lock, Activity,
   ShieldAlert, FilterX, Database, Clock, CheckCircle2,
 } from "lucide-react";
-import { getVaptImport, getVaptImportAdmin, updateVaptFindingStatus, submitVaptImport, deleteVaptImport, deleteVaptImportAdmin, getVaptAccessStatus, getWebSocketUrl, downloadVaptVerificationReport, downloadVaptVerificationReportAdmin, postAdminRemediationReview, requestRescanDateChange, updateVerificationFindingStatus, submitVerificationReview } from "../services/api";
-import { downloadVaptClosureBundle, downloadVaptReportExcel, downloadVaptVerificationReportExcel, downloadVaptReportAdminExcel, downloadVaptVerificationReportAdminExcel, logSupportOffered, postAdminCloseWithoutVerification, postClientNextVaptDueDate } from "../services/api";
+import { getVaptImport, getVaptImportAdmin, updateVaptFindingStatus, submitVaptImport, deleteVaptImport, deleteVaptImportAdmin, getVaptAccessStatus, getWebSocketUrl, postAdminRemediationReview, requestRescanDateChange, updateVerificationFindingStatus, submitVerificationReview } from "../services/api";
+import { downloadVaptClosureBundle, downloadVaptReportExcel, downloadVaptReportAdminExcel, logSupportOffered, postAdminCloseWithoutVerification, postClientNextVaptDueDate, approveClientNextVaptDueDate } from "../services/api";
 import { getVaptRescanSchedules, postAdminApproveReschedule, postAdminRequestNewDate, postAdminVerificationDecision, acceptRescanDate, rejectRescanDate } from "../services/api";
 import RescanModal from "../components/RescanModal";
 import {
@@ -65,18 +65,30 @@ const LIFECYCLE_LABEL = {
 function getClosureBlockReason(record, schedule) {
   if (!record) return "";
   const blocking = new Set(["critical", "high", "medium"]);
-  const remainingKeys = new Set((schedule?.result_data?.remaining_findings || []).map((finding) => `${finding.plugin_id || finding.title}|${finding.port ?? ""}|${finding.protocol || ""}`));
+  const findingKey = (finding) => JSON.stringify([
+    String(finding.plugin_id || finding.title || "").trim().toLowerCase(),
+    finding.port ?? null,
+    String(finding.protocol || "").toLowerCase(),
+    (finding.cves || []).map((cve) => String(cve).trim().toLowerCase()).filter(Boolean).sort(),
+  ]);
+  const remainingKeys = new Set((schedule?.result_data?.remaining_findings || []).map(findingKey));
   const blockers = (record.findings || []).filter((finding) => {
     const severity = String(finding.severity_label || finding.severity || "").toLowerCase();
-    const key = `${finding.plugin_id || finding.title}|${finding.port ?? ""}|${finding.protocol || ""}`;
+    const status = String(finding.status || "pending").toLowerCase();
     const unresolved = schedule
-      ? remainingKeys.has(key) || ["pending", "ignore", "false_positive"].includes(String(finding.status || "pending").toLowerCase())
-      : String(finding.status || "pending").toLowerCase() !== "solved";
+      ? remainingKeys.has(findingKey(finding))
+      : !["solved", "ignore", "false_positive"].includes(status);
     return unresolved && blocking.has(severity);
   });
   if (!blockers.length) return "";
   const severities = [...new Set(blockers.map((finding) => String(finding.severity_label || finding.severity).toLowerCase()))];
-  return `Cannot close — unresolved ${severities.join(", ")} findings remain.`;
+  const examples = blockers.slice(0, 3).map((finding) => {
+    const title = finding.title || finding.plugin_id || finding.id || "Untitled finding";
+    const status = String(finding.status || "pending").replaceAll("_", " ");
+    return `${title} (${status})`;
+  });
+  const more = blockers.length > examples.length ? `, and ${blockers.length - examples.length} more` : "";
+  return `Cannot close — unresolved ${severities.join(", ")} findings remain: ${examples.join("; ")}${more}.`;
 }
 
 // ─── Animated risk gauge ──────────────────────────────────────────────────────
@@ -700,8 +712,6 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
   const remaining = (result.remaining_findings || []).map((f) => ({ ...f, _verificationStatus: "unresolved" }));
   const allFindings = [...fixed, ...remaining];
   const scheduleIndex = record?._scheduleIndex ?? 0;
-  const downloadPdf = isPlatformView ? downloadVaptVerificationReportAdmin : downloadVaptVerificationReport;
-  const downloadExcelFn = isPlatformView ? downloadVaptVerificationReportAdminExcel : downloadVaptVerificationReportExcel;
   const reviewComplete = result.client_review_status === "client_completed";
 
   const updateDraft = (findingId, field, value) => setDrafts((prev) => ({ ...prev, [findingId]: { ...prev[findingId], [field]: value } }));
@@ -763,8 +773,6 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
                schedule.status === "failed" ? "Upload failed" :
                "Completed with errors"}
             </span>
-            <button type="button" onClick={() => downloadPdf(record.import_id, schedule.id, localStorage.getItem("token"))} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"><Download size={13} /> PDF</button>
-            <button type="button" onClick={() => downloadExcelFn(record.import_id, schedule.id, localStorage.getItem("token"))} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"><Download size={13} /> Excel</button>
           </div>
         </div>
         {/* Summary row */}
@@ -973,6 +981,7 @@ export default function VaptReport() {
   const [showRescanModal, setShowRescanModal] = useState(false);
   const [rescanSchedules, setRescanSchedules] = useState([]);
   const [rescanLoading, setRescanLoading] = useState(false);
+  const [dueDateApprovalLoading, setDueDateApprovalLoading] = useState(false);
   // Rescan request row actions (platform/admin view)
   const [rescanActionLoading, setRescanActionLoading] = useState({});
   const [rescanActionError, setRescanActionError] = useState({});
@@ -1226,6 +1235,24 @@ export default function VaptReport() {
       setToast({ text: err?.message || "Failed to save the next VAPT due date", type: "error" });
     }
   }, [clientDueDate, record]);
+
+  const handleApproveClientDueDate = useCallback(async () => {
+    if (!record) return;
+    setDueDateApprovalLoading(true);
+    try {
+      const result = await approveClientNextVaptDueDate(record.import_id, localStorage.getItem("token"));
+      setRecord((prev) => prev ? {
+        ...prev,
+        lifecycle_status: result.lifecycle_status,
+        next_vapt_due_at: result.next_vapt_due_at,
+      } : prev);
+      setToast({ text: "Client's next VAPT date approved", type: "success" });
+    } catch (err) {
+      setToast({ text: err?.message || "Failed to approve the client's next VAPT date", type: "error" });
+    } finally {
+      setDueDateApprovalLoading(false);
+    }
+  }, [record]);
 
   const toggleNewDateForm = useCallback((scheduleId) => {
     setNewDateDraft((prev) => ({
@@ -1574,7 +1601,7 @@ export default function VaptReport() {
                   Schedule verification scan
                 </button>
               )}
-              {isPlatformView && record.status === "client_completed" && record.remediation_review_status === "approved" && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
+              {isPlatformView && record.lifecycle_status !== "closed" && record.status === "client_completed" && record.remediation_review_status === "approved" && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
                 <button
                   type="button"
                   onClick={() => setShowRescanModal(true)}
@@ -1682,21 +1709,25 @@ export default function VaptReport() {
                 </div>
               ))}
             </div>
-            {((record.lifecycle_status === "closed" && record.next_vapt_due_at) || !isPlatformView || rescanSchedules.some((schedule) => ["scheduled", "approved", "requested"].includes(schedule.status))) && <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            {((record.next_vapt_due_at && ["closure_pending_soc_due_date", "closed"].includes(record.lifecycle_status)) || !isPlatformView || rescanSchedules.some((schedule) => ["scheduled", "approved", "requested"].includes(schedule.status))) && <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">Next rescan</p>
+                  <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">
+                    {record.next_vapt_due_at && ["closure_pending_soc_due_date", "closed"].includes(record.lifecycle_status) ? "Next VAPT assessment" : "Next rescan"}
+                  </p>
                   <p className="mt-2 text-lg font-extrabold text-slate-900 dark:text-slate-100">
-                    {record.lifecycle_status === "closed" && record.next_vapt_due_at
+                    {record.next_vapt_due_at && ["closure_pending_soc_due_date", "closed"].includes(record.lifecycle_status)
                       ? fmtDate(record.next_vapt_due_at)
                       : rescanSchedules.length > 0 ? fmtDate(rescanSchedules[0].scheduled_at) : "No rescan scheduled"}
                   </p>
-                  {record.lifecycle_status === "closed" && record.next_vapt_due_at ? (
-                    <p className="mt-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">Next VAPT assessment date selected by the client</p>
+                  {record.lifecycle_status === "closure_pending_soc_due_date" && record.next_vapt_due_at ? (
+                    <p className="mt-1 text-xs font-semibold text-amber-600 dark:text-amber-400">Client-proposed date — waiting for SOC approval</p>
+                  ) : record.lifecycle_status === "closed" && record.next_vapt_due_at ? (
+                    <p className="mt-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">Next VAPT assessment date approved by SOC</p>
                   ) : rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && !isPlatformView && (
                     <p className="mt-1 text-xs font-semibold text-amber-600 dark:text-amber-400">SOC proposed a new date — review below</p>
                   )}
-                  {!(record.lifecycle_status === "closed" && record.next_vapt_due_at) && rescanSchedules.length > 0 && ["completed", "completed_with_errors", "failed"].includes(rescanSchedules[0].status) && (
+                  {!(record.next_vapt_due_at && ["closure_pending_soc_due_date", "closed"].includes(record.lifecycle_status)) && rescanSchedules.length > 0 && ["completed", "completed_with_errors", "failed"].includes(rescanSchedules[0].status) && (
                     <p className={`mt-1 text-xs font-semibold ${rescanSchedules[0].status === "failed" || rescanSchedules[0].status === "completed_with_errors" ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>{rescanSchedules[0].status === "failed" ? "Verification upload failed" : rescanSchedules[0].status === "completed_with_errors" ? "Completed with remaining findings" : "Verification upload completed"}</p>
                   )}
                 </div>
@@ -1734,7 +1765,17 @@ export default function VaptReport() {
                     </button>
                   )}
                   {/* SOC: schedule next scan */}
-                  {isPlatformView && record.status === "client_completed" && (
+                  {isPlatformView && record.lifecycle_status === "closure_pending_soc_due_date" && record.next_vapt_due_at && (
+                    <button
+                      type="button"
+                      onClick={handleApproveClientDueDate}
+                      disabled={dueDateApprovalLoading}
+                      className="inline-flex items-center rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      {dueDateApprovalLoading ? "Approving…" : "Approve client date"}
+                    </button>
+                  )}
+                  {isPlatformView && record.status === "client_completed" && !["closure_pending_soc_due_date", "closed"].includes(record.lifecycle_status) && (
                     <button
                       type="button"
                       onClick={() => setShowRescanModal(true)}
@@ -1755,8 +1796,10 @@ export default function VaptReport() {
                 </div>
               </div>
               <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">
-                {record.lifecycle_status === "closed" && record.next_vapt_due_at
-                  ? "The client-selected date is the next VAPT assessment date."
+                {record.lifecycle_status === "closure_pending_soc_due_date" && record.next_vapt_due_at
+                  ? "Your proposed next VAPT assessment date is waiting for SOC approval."
+                  : record.lifecycle_status === "closed" && record.next_vapt_due_at
+                  ? "The next VAPT assessment date has been approved by SOC."
                   : rescanSchedules.length > 0
                   ? rescanSchedules[0].status === "requested"
                     ? "SOC has proposed a new date for the verification scan. You can accept or reject it."
@@ -2125,7 +2168,7 @@ export default function VaptReport() {
         )}
       </div>
       <RescanModal
-        open={showRescanModal}
+        open={showRescanModal && record?.lifecycle_status !== "closed"}
         onClose={() => setShowRescanModal(false)}
         importId={record?.import_id}
         adminMode={isPlatformView}
@@ -2137,4 +2180,3 @@ export default function VaptReport() {
     </div>
   );
 }
-

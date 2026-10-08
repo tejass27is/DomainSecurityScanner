@@ -395,7 +395,7 @@ export default function VaptReports() {
                         </td>
                         <td className="px-6 py-4">
                           <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold ${FORMAT_BADGE[item.file_format] || FORMAT_BADGE.xml}`}>
-                            Cycle {item.cycle_number || 1}
+                            {formatLabel(item)}
                           </span>
                         </td>
                         <td className="px-6 py-4"><RiskPill score={item.risk_score} /></td>

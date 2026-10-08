@@ -662,10 +662,10 @@ export default function AdminVaptAccessRequests() {
                           <div className="space-y-1">
                             <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Preferred testing start</p>
                             <p className="text-slate-700 dark:text-slate-200">
-                              {orgChecklist.testing_start_at ? `${fmtDate(orgChecklist.testing_start_at, SOC_TIMEZONE)} IST` : "Not provided"}
+                              {orgChecklist.testing_start_at ? `${fmtDate(orgChecklist.testing_start_at, SOC_TIMEZONE, true)} IST` : "Not provided"}
                               {orgChecklist.testing_start_at && orgChecklist.testing_timezone && (
                                 <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
-                                  Client clock: {fmtDate(orgChecklist.testing_start_at, orgChecklist.testing_timezone)}
+                                  Client clock: {fmtDate(orgChecklist.testing_start_at, orgChecklist.testing_timezone, true)} ({orgChecklist.testing_timezone})
                                 </span>
                               )}
                             </p>
@@ -803,10 +803,10 @@ export default function AdminVaptAccessRequests() {
                                     <div>
                                       <p className="font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Testing window</p>
                                       <p className="mt-1 text-slate-700 dark:text-slate-200">
-                                        {detail?.testing_start_at ? `${fmtDate(detail.testing_start_at, SOC_TIMEZONE)} IST` : "Not provided"}
+                                        {detail?.testing_start_at ? `${fmtDate(detail.testing_start_at, SOC_TIMEZONE, true)} IST` : "Not provided"}
                                         {detail?.testing_start_at && detail?.testing_timezone && (
                                           <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
-                                            Client clock: {fmtDate(detail.testing_start_at, detail.testing_timezone)}
+                                            Client clock: {fmtDate(detail.testing_start_at, detail.testing_timezone, true)} ({detail.testing_timezone})
                                           </span>
                                         )}
                                       </p>
@@ -869,8 +869,14 @@ export default function AdminVaptAccessRequests() {
                   <div>
                     <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{checklist.region_name || "Organization onboarding"}</p>
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                      Approved {checklist.approved_at || checklist.reviewed_at ? new Date(checklist.approved_at || checklist.reviewed_at).toLocaleString() : "recently"}
+                      Approved {checklist.approved_at || checklist.reviewed_at ? `${fmtDate(checklist.approved_at || checklist.reviewed_at, SOC_TIMEZONE, true)} IST` : "recently"}
                     </p>
+                    {checklist.testing_start_at && (
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        Testing starts {fmtDate(checklist.testing_start_at, SOC_TIMEZONE, true)} IST
+                        {checklist.testing_timezone && ` · client clock: ${fmtDate(checklist.testing_start_at, checklist.testing_timezone, true)} (${checklist.testing_timezone})`}
+                      </p>
+                    )}
                   </div>
                   <button
                     type="button"

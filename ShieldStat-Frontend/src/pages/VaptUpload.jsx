@@ -531,9 +531,8 @@ export default function VaptUpload() {
       ],
     },
     {
-      id: "scheduling_approval", title: "Scheduling & Approval", description: "Preferred dates, final approval, and required sign-offs.",
+      id: "scheduling_approval", title: "Scheduling & Approval", description: "Approvers and required sign-offs before testing.",
       questions: [
-        q("preferred_testing_window", "When would you prefer the testing to happen? (dates & time window)", "text", { helper: "Example: 1-5 Sept, during office hours (10 AM - 6 PM)." }),
         q("testing_blackout_times", "Are there any dates/times we should avoid?", "textarea", { helper: "Example: month-end billing days, a big company event, festival holidays." }),
         q("final_testing_approver", "Who will give the final go-ahead/approval for this test?", "text", { helper: "Name, designation and email of the person authorized to approve the testing." }),
         q("approval_documents", "Are there any approval documents or sign-offs needed before we start?", "textarea", { helper: "Example: an authorization letter, or approval from a third-party vendor whose system is involved." }),
