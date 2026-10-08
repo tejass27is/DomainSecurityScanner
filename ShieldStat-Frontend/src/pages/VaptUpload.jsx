@@ -13,14 +13,10 @@ import {
   getVaptOrganizations,
   getAdminVaptRescanRequests,
   requestVaptAccess,
-  requestVaptRegion,
   getVaptAccessStatus,
-  getVaptOnboarding,
-  updateVaptOnboarding,
   uploadVaptChecklistAttachment,
   deleteVaptChecklistAttachment,
   downloadVaptAssetListTemplate,
-  getHasCompletedScans,
   decideInitialVaptDate,
   getWebSocketUrl,
 } from "../services/api";
@@ -643,13 +639,8 @@ export default function VaptUpload() {
   }));
   const [onboarding, setOnboarding] = useState(() => emptyOnboarding);
   const timezoneOptions = timezoneOptionsFor();
-  const [hasScans, setHasScans] = useState(true);
-  const [accessCode, setAccessCode] = useState("");
-  const [accessName, setAccessName] = useState("");
   const [requestRegionCode, setRequestRegionCode] = useState("");
   const [requestRegionName, setRequestRegionName] = useState("");
-  const [requestSubmitting, setRequestSubmitting] = useState(false);
-  const [requestMessage, setRequestMessage] = useState("");
   const [checklistSubmitting, setChecklistSubmitting] = useState(false);
   const [checklistMessage, setChecklistMessage] = useState("");
   const [socReviewNote, setSocReviewNote] = useState("");
@@ -657,7 +648,6 @@ export default function VaptUpload() {
   // items stay editable, everything else is locked (already reviewed).
   const [restrictToFlagged, setRestrictToFlagged] = useState(false);
   const [activeSection, setActiveSection] = useState("company_details");
-  const [saveState, setSaveState] = useState("saved");
   const sectionNumberMap = Object.fromEntries(QUESTION_SECTIONS.map((section, index) => [section.id, index + 1]));
 
   const [currentUser] = useState(() => {
@@ -698,9 +688,18 @@ export default function VaptUpload() {
   const isQuestionLocked = (sectionId, questionId) => lockUnflagged && !flagFor(sectionId, questionId);
   const clientAccessState = getClientVaptAccessState({
     vaptAccessEnabled: !!vaptAccessStatus.vapt_access_enabled,
-    hasScans,
-    onboarding: onboarding || emptyOnboarding,
+    approvedRegions: vaptAccessStatus.approved_regions || [],
+    pendingRegions: vaptAccessStatus.pending_regions || [],
   });
+  const currentAccessState = regionRequestMode && clientAccessState === "allowed"
+    ? "checklist_required"
+    : clientAccessState;
+  const isFirstRegionRequest = currentAccessState === "checklist_required"
+    && !(vaptAccessStatus.approved_regions || []).length
+    && !(vaptAccessStatus.pending_regions || []).length;
+  const isRegionRequestForm = regionRequestMode
+    || currentAccessState === "region_required"
+    || isFirstRegionRequest;
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -760,7 +759,6 @@ export default function VaptUpload() {
         const message = JSON.parse(event.data);
         if (["vapt_access_reviewed", "vapt_region_reviewed", "vapt_initial_date_proposed", "vapt_initial_date_decided"].includes(message.event)) {
           getVaptAccessStatus(token).then((status) => setVaptAccessStatus(status || {})).catch(() => {});
-          getVaptOnboarding(token).then((data) => setOnboarding((prev) => ({ ...prev, ...(data || {}) }))).catch(() => {});
         }
       } catch {
         // Ignore malformed realtime messages.
@@ -793,110 +791,66 @@ export default function VaptUpload() {
     return () => window.removeEventListener("logout", handleStorageChange);
   }, [emptyOnboarding]);
 
-  // Only fully approved clients can leave the onboarding flow for the report
-  // library. If the checklist is incomplete or SOC has not approved it yet,
-  // we stay on the VAPT onboarding/request screens to avoid the flicker loop.
+  // Only clients with an approved regional checklist can leave the region intake.
   useEffect(() => {
     if (canUpload) return;
 
-    const onboardingApproved = (onboarding?.review_status || "pending").toLowerCase() === "approved";
-    const onboardingReady = Boolean(onboarding?.completed) && onboardingApproved;
-    if (regionRequestMode || !vaptAccessStatus.vapt_access_enabled || !onboardingReady) return;
+    if (regionRequestMode || clientAccessState !== "allowed") return;
 
     navigate("/vapt/reports", { replace: true });
-  }, [canUpload, onboarding, regionRequestMode, vaptAccessStatus.vapt_access_enabled, navigate]);
+  }, [canUpload, clientAccessState, regionRequestMode, navigate]);
 
-  // Check onboarding status for org users (not SOC analysts)
+  // Load a pending regional checklist for resubmission, or select the first
+  // approved region that still needs its checklist.
   useEffect(() => {
-    if (canUpload) return; // SOC analysts skip onboarding
+    if (canUpload) return;
     const token = localStorage.getItem("token");
     if (!token) return;
     (async () => {
       try {
-        const [onbData, scanData] = await Promise.all([
-          getVaptOnboarding(token),
-          getHasCompletedScans(token),
-        ]);
-        
-        const nextOnboarding = {
-          ...emptyOnboarding,
-          ...(onbData || {}),
-          testing_start_at: toDatetimeLocal(onbData?.testing_start_at),
-          proposed_start_at: onbData?.proposed_start_at || "",
-          proposed_end_at: onbData?.proposed_end_at || "",
-          checklist_answers: normalizeChecklistAnswers((onbData || {}).checklist_answers),
-        };
-
-        // For rejected submissions, reset completed flag so user can resubmit
-        if ((onbData?.review_status || "").toLowerCase() === "rejected") {
-          nextOnboarding.completed = false;
+        const status = await getVaptAccessStatus(token);
+        setVaptAccessStatus(status || {});
+        const pendingRegions = status?.pending_regions || [];
+        const pendingChecklist = pendingRegions.find((region) => region.has_checklist);
+        const initialRegion = (status?.approved_regions || []).find(
+          (region) => !region.has_checklist || region.checklist_review_status !== "approved",
+        );
+        const selected = regionRequestMode
+          ? (pendingChecklist || pendingRegions[0])
+          : (pendingChecklist || initialRegion || pendingRegions[0]);
+        setRestrictToFlagged(Boolean(selected?.checklist_flags?.length));
+        setRequestRegionCode(selected?.code || "");
+        setRequestRegionName(selected?.name || "");
+        setSocReviewNote(selected?.checklist_review_note || "");
+        if (selected?.checklist_submission) {
+          const submission = selected.checklist_submission;
+          const flags = selected.checklist_flags || [];
+          setOnboarding((prev) => ({
+            ...prev,
+            ...submission,
+            checklist_answers: clearFlaggedAnswers(submission.checklist_answers || {}, flags),
+            testing_start_at: toDatetimeLocal(selected.testing_start_at) || prev.testing_start_at,
+            testing_timezone: selected.testing_timezone || prev.testing_timezone,
+            review_flags: flags,
+            completed: false,
+            review_status: "pending",
+          }));
+          setActiveSection(flags[0]?.section || "company_details");
+        } else {
+          setOnboarding((prev) => ({
+            ...prev,
+            checklist_answers: buildEmptyChecklistAnswers(),
+            testing_start_at: "",
+            testing_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+            review_flags: [],
+          }));
           setActiveSection("company_details");
-          setChecklistMessage("");
         }
-
-        // Changes requested: answers are preserved, so land the client on the
-        // first section SOC flagged instead of making them hunt for it.
-        const orgChangesRequested = (onbData?.review_status || "").toLowerCase() === "changes_requested";
-        if (orgChangesRequested) {
-          nextOnboarding.checklist_answers = clearFlaggedAnswers(nextOnboarding.checklist_answers, onbData?.review_flags || []);
-          const firstFlag = (onbData?.review_flags || []).find((flag) => flag?.section);
-          if (firstFlag?.section) setActiveSection(firstFlag.section);
-          setChecklistMessage("");
-        }
-        setRestrictToFlagged(orgChangesRequested);
-
-        setOnboarding(nextOnboarding);
-        setSocReviewNote((onbData || {})?.review_note || "");
-        setHasScans(!!scanData?.has_completed_scans);
-
-        // For region requests: if SOC sent this region's checklist back asking
-        // for more information, prefill it and highlight the flagged items so
-        // the client only fixes what is actually missing.
-        if (regionRequestMode) {
-          const status = await getVaptAccessStatus(token).catch(() => null);
-          const pending = (status?.pending_regions || []).find(
-            (region) => region.checklist_review_status === "changes_requested",
-          );
-          setRestrictToFlagged(Boolean(pending));
-          if (pending) {
-            const submission = pending.checklist_submission || {};
-            setRequestRegionCode(pending.code || "");
-            setRequestRegionName(pending.name || "");
-            setSocReviewNote(pending.checklist_review_note || "");
-            setOnboarding((prev) => ({
-              ...prev,
-              ...submission,
-              checklist_answers: clearFlaggedAnswers(submission.checklist_answers || {}, pending.checklist_flags || []),
-              testing_start_at: toDatetimeLocal(pending.testing_start_at) || prev.testing_start_at,
-              testing_timezone: pending.testing_timezone || prev.testing_timezone,
-              review_flags: pending.checklist_flags || [],
-              completed: false,
-              review_status: "pending",
-            }));
-            setActiveSection(pending.checklist_flags?.[0]?.section || "company_details");
-          } else {
-            setOnboarding((prev) => ({
-              ...prev,
-              checklist_answers: buildEmptyChecklistAnswers(),
-              testing_start_at: "",
-              testing_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-              completed: false,
-              review_status: "pending",
-              review_flags: [],
-            }));
-            setRequestRegionCode("");
-            setRequestRegionName("");
-            setActiveSection("company_details");
-          }
-          setChecklistMessage("");
-        }
-      } catch {
-        // If onboarding endpoint doesn't exist yet, allow through
-        setHasScans(true);
+        setChecklistMessage("");
+      } catch (error) {
+        setChecklistMessage(error?.message || "Could not load regional VAPT status. Please try again.");
       }
     })();
-  // These helpers are local form normalizers and intentionally use the initial render scope.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canUpload, regionRequestMode]);
 
   useEffect(() => {
@@ -912,31 +866,6 @@ export default function VaptUpload() {
       })
       .catch(() => setOrgsError("Could not load organizations or approved rescans. Please try again."));
   }, [canUpload]);
-
-  const submitVaptRequest = useCallback(async () => {
-    const token = localStorage.getItem("token");
-    if (!token) return;
-    const code = (accessCode || "").trim().toUpperCase();
-    const name = (accessName || "").trim();
-    if (!code || !name) {
-      setRequestMessage("Please enter both the region code and region name (e.g. ACC-IND / Accenture India).");
-      return;
-    }
-    setRequestSubmitting(true);
-    setRequestMessage("");
-    try {
-      await requestVaptAccess([{ code, name }], token);
-      const nextStatus = await getVaptAccessStatus(token);
-      setVaptAccessStatus(nextStatus || { vapt_access_enabled: false, requested_regions: [], approved_regions: [], available_regions: [] });
-      setAccessCode("");
-      setAccessName("");
-      setRequestMessage(`VAPT request for ${code} (${name}) has been submitted. Please wait for admin approval.`);
-    } catch (err) {
-      setRequestMessage(err?.message || "Unable to submit VAPT request.");
-    } finally {
-      setRequestSubmitting(false);
-    }
-  }, [accessCode, accessName]);
 
   const handleFile = useCallback((file) => {
     setUploadError("");
@@ -996,20 +925,6 @@ export default function VaptUpload() {
     }
   }, [preview, canUpload]);
 
-  useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (regionRequestMode || !token || !onboarding || !onboarding.checklist_answers) return;
-    const timer = setTimeout(async () => {
-      try {
-        await updateVaptOnboarding(onboarding, token);
-        setSaveState("saved");
-      } catch {
-        setSaveState("error");
-      }
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [onboarding, regionRequestMode]);
-
   if (!canUpload && vaptAccessStatus.vapt_blocked) {
     return (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-red-200 bg-white p-8 shadow-sm dark:border-red-900 dark:bg-slate-900">
@@ -1026,7 +941,7 @@ export default function VaptUpload() {
     );
   }
 
-  if (!canUpload && clientAccessState === "approval_required") {
+  if (!canUpload && currentAccessState === "approval_required") {
     return (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <div className="mb-6 flex items-center gap-3">
@@ -1037,79 +952,6 @@ export default function VaptUpload() {
         <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
           An administrator must approve VAPT access for your account before you can use this module. Contact your administrator.
         </p>
-      </div>
-    );
-  }
-
-  if (!canUpload && clientAccessState === "region_required") {
-    return (
-      <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="mb-6 flex items-center gap-3">
-          <span className="material-symbols-outlined text-purple-600">fact_check</span>
-          <span className="text-xs font-black uppercase tracking-[0.28em] text-purple-700 dark:text-purple-400">VAPT access</span>
-        </div>
-        <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100">Request VAPT access</h2>
-        <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
-          Your account does not have an approved region yet. Request the region you need, then wait for your admin or SOC team to approve it — the onboarding checklist unlocks once your region is approved.
-        </p>
-
-        <div className="mt-6 space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <label htmlFor="vapt-access-code" className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                Region code
-              </label>
-              <input
-                id="vapt-access-code"
-                type="text"
-                value={accessCode}
-                onChange={(e) => setAccessCode(e.target.value.toUpperCase())}
-                placeholder="e.g. ACC-IND"
-                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 font-mono text-sm font-semibold uppercase tracking-wide text-slate-900 outline-none transition placeholder:font-sans placeholder:font-normal placeholder:normal-case placeholder:text-slate-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-              />
-            </div>
-            <div className="space-y-2">
-              <label htmlFor="vapt-access-name" className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                Region name
-              </label>
-              <input
-                id="vapt-access-name"
-                type="text"
-                value={accessName}
-                onChange={(e) => setAccessName(e.target.value)}
-                placeholder="e.g. Accenture India"
-                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
-              />
-            </div>
-          </div>
-          <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">
-            Code: <b className="text-slate-700 dark:text-slate-200">first 3 letters of your company</b> +{" "}
-            <b className="text-slate-700 dark:text-slate-200">“-”</b> + <b className="text-slate-700 dark:text-slate-200">region</b>. You type both the code and
-            the name yourself — nothing is preset. Example: <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-bold text-purple-700 dark:bg-slate-800 dark:text-purple-300">ACC-IND</code>{" "}
-            / <b className="text-slate-700 dark:text-slate-200">Accenture India</b>. Once submitted, the request is sent to your admin for approval.
-          </p>
-
-          <button
-            type="button"
-            onClick={submitVaptRequest}
-            disabled={requestSubmitting || !(accessCode || "").trim() || !(accessName || "").trim()}
-            className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-purple-500/15 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {requestSubmitting ? "Submitting request..." : "Send request"}
-          </button>
-
-          {requestMessage && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
-              {requestMessage}
-            </div>
-          )}
-
-          {(vaptAccessStatus.requested_regions || []).length > 0 && !vaptAccessStatus.vapt_access_enabled && (
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
-              Current request: <span className="font-bold">{(vaptAccessStatus.requested_regions || []).join(", ")}</span>
-            </div>
-          )}
-        </div>
       </div>
     );
   }
@@ -1153,7 +995,7 @@ export default function VaptUpload() {
   ].every((value) => value !== "" && value != null);
   const canSubmitChecklist = allChecklistComplete && requiredFieldsComplete && flaggedQuestionsComplete;
 
-  // ── Onboarding checklist for first-time org users ──
+  // ── Checklist submitted and reviewed independently for each region ──
   const attachmentKey = (sectionId, questionId) => `${sectionId}::${questionId}`;
 
   const handleAttachmentSelected = async (sectionId, question, file) => {
@@ -1166,7 +1008,7 @@ export default function VaptUpload() {
         {
           sectionId,
           questionId: question.id,
-          regionCode: regionRequestMode ? (requestRegionCode || "").trim().toUpperCase() : "",
+          regionCode: (requestRegionCode || "").trim().toUpperCase(),
         },
         localStorage.getItem("token"),
       );
@@ -1182,7 +1024,6 @@ export default function VaptUpload() {
         return syncDerivedOnboardingFields({ ...prev, checklist_answers: nextAnswers });
       });
       setAttachmentState((prev) => ({ ...prev, [key]: { uploading: false, error: "" } }));
-      setSaveState("saving");
     } catch (err) {
       setAttachmentState((prev) => ({
         ...prev,
@@ -1209,7 +1050,6 @@ export default function VaptUpload() {
       nextAnswers[sectionId][question.id] = { ...rest, answer: "", na: false };
       return syncDerivedOnboardingFields({ ...prev, checklist_answers: nextAnswers });
     });
-    setSaveState("saving");
     if (!attachmentId) return;
     try {
       await deleteVaptChecklistAttachment(attachmentId, localStorage.getItem("token"));
@@ -1230,7 +1070,6 @@ export default function VaptUpload() {
       };
       return syncDerivedOnboardingFields({ ...prev, checklist_answers: nextAnswers });
     });
-    setSaveState("saving");
   };
 
   const updateAssetRows = (sectionId, questionId, rows) => {
@@ -1246,7 +1085,6 @@ export default function VaptUpload() {
       };
       return syncDerivedOnboardingFields({ ...prev, checklist_answers: nextAnswers });
     });
-    setSaveState("saving");
   };
 
   const toggleNa = (sectionId, questionId) => {
@@ -1328,55 +1166,26 @@ export default function VaptUpload() {
       checklist_answers: normalizedAnswers,
     };
 
-      // An additional region carries its own checklist so SOC reviews the region
-      // and the checklist together. The initial region follows the same combined
-      // request path after the administrator grants account access.
-    if (regionRequestMode) {
-      setChecklistSubmitting(true);
-      setChecklistMessage("");
-      try {
-        await requestVaptRegion({
-          region_code: regionCode,
-          region_name: regionName,
-          ...payload,
-        }, token);
-        setVaptAccessStatus(await getVaptAccessStatus(token));
-        // Flags are resolved by this submission, so unlock the form again.
-        setOnboarding((prev) => ({ ...prev, review_flags: [] }));
-        setRestrictToFlagged(false);
-        setChecklistMessage("The new region request and its checklist have been submitted. SOC will review them together.");
-      } catch (err) {
-        setChecklistMessage(err?.message || "Unable to submit the region request. Please try again.");
-      } finally {
-        setChecklistSubmitting(false);
-      }
-      return;
-    }
-
     setChecklistSubmitting(true);
     setChecklistMessage("");
     try {
-      // Initial access approval unlocks this form; the region and checklist
-      // are submitted together for the administrator's review.
-      const response = await requestVaptAccess([{ code: regionCode, name: regionName }], token, payload);
+      await requestVaptAccess([{ code: regionCode, name: regionName }], payload, token);
+      const status = await getVaptAccessStatus(token);
+      setVaptAccessStatus(status || {});
       setOnboarding((prev) => ({
         ...prev,
         ...payload,
-        completed: true,
         review_status: "pending",
       }));
-      if (response) {
-        setVaptAccessStatus(response);
-      }
-      setChecklistMessage("Your checklist and region request have been submitted. The administrator will review them together.");
+      setChecklistMessage("This region's checklist has been submitted. Admin/SOC will review the region and checklist together.");
     } catch (err) {
-      setChecklistMessage(err?.message || "Unable to submit the checklist. Please try again.");
+      setChecklistMessage(err?.message || "Unable to submit the regional checklist. Please try again.");
     } finally {
       setChecklistSubmitting(false);
     }
   };
 
-  if (!canUpload && regionRequestMode && clientAccessState === "allowed") {
+  if (!canUpload && regionRequestMode && currentAccessState === "allowed") {
     return (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <div className="mb-6 flex items-center justify-between gap-4">
@@ -1393,7 +1202,7 @@ export default function VaptUpload() {
           </button>
         </div>
         <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100 sm:text-3xl">Request New Region</h2>
-        <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">Request an additional testing region without repeating the organization onboarding checklist.</p>
+        <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">Submit the assessment checklist for this region so SOC can review the region request.</p>
         <div className="mt-8 space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
@@ -1426,31 +1235,31 @@ export default function VaptUpload() {
     );
   }
 
-  if (!canUpload && clientAccessState === "checklist_required") {
+  if (!canUpload && ["checklist_required", "region_required"].includes(currentAccessState)) {
     return (
       <div className="mx-auto max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <div className="mb-6 flex items-center justify-between gap-4">
           <span className="material-symbols-outlined text-purple-600">fact_check</span>
           <button
             type="button"
-            onClick={() => navigate(regionRequestMode ? "/vapt/reports" : "/scan-dashboard")}
-            aria-label={regionRequestMode ? "Back to VAPT reports" : "Back to dashboard"}
-            title={regionRequestMode ? "Back to VAPT reports" : "Back to dashboard"}
+            onClick={() => navigate(isRegionRequestForm ? "/vapt/reports" : "/scan-dashboard")}
+            aria-label={isRegionRequestForm ? "Back to VAPT reports" : "Back to dashboard"}
+            title={isRegionRequestForm ? "Back to VAPT reports" : "Back to dashboard"}
             className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-700 shadow-sm transition hover:border-blue-400 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:border-blue-600 dark:hover:bg-blue-900/60 dark:focus:ring-blue-900"
           >
             <ArrowLeft size={16} aria-hidden="true" />
-            <span>{regionRequestMode ? "Back to reports" : "Back to dashboard"}</span>
+            <span>{isRegionRequestForm ? "Back to reports" : "Back to dashboard"}</span>
           </button>
         </div>
-        <h2 className="break-words text-2xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100 sm:text-3xl">{regionRequestMode ? "Request New Region" : "VAPT Onboarding Checklist"}</h2>
+        <h2 className="break-words text-2xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100 sm:text-3xl">{isRegionRequestForm ? "Request Region and VAPT Checklist" : "Regional VAPT Checklist"}</h2>
         <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
-          {regionRequestMode
+          {isRegionRequestForm
             ? socReviewNote
-              ? "Only the items SOC flagged below can be edited — everything else is locked and already reviewed. Fix the flagged items and resubmit."
-              : "Complete the VAPT form again for this region. SOC will review the region, checklist, and testing start together."
+              ? "Only the items SOC flagged below can be edited — everything else is locked and already reviewed. Fix the flagged items and resubmit the region and checklist together."
+              : "Complete the checklist and region details in one submission. Admin/SOC will review and decide on both together."
             : onboarding.review_status === "changes_requested"
               ? "Only the items SOC flagged below can be edited — everything else is locked and already reviewed. Fix the flagged items and resubmit."
-              : "Complete this one-time checklist so your security team knows how to scope and schedule your first scan."}
+              : "Complete the checklist for the selected region. Each region is reviewed and approved independently."}
         </p>
 
         <div className="mt-8 space-y-6">
@@ -1458,16 +1267,16 @@ export default function VaptUpload() {
             This intake is structured by section so it stays manageable. Progress saves automatically as you go, and you can return later without losing work.
           </div>
 
-          {socReviewNote && (regionRequestMode || onboarding.review_status === "rejected" || onboarding.review_status === "changes_requested") && (
+          {socReviewNote && (isRegionRequestForm || onboarding.review_status === "rejected" || onboarding.review_status === "changes_requested") && (
             <div
               className={`rounded-xl border px-4 py-3 text-sm ${
-                onboarding.review_status === "rejected" && !regionRequestMode
+                onboarding.review_status === "rejected" && !isRegionRequestForm
                   ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
                   : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
               }`}
             >
               <p className="font-bold">
-                {onboarding.review_status === "rejected" && !regionRequestMode ? "SOC review feedback" : "SOC requested more information"}
+                {onboarding.review_status === "rejected" && !isRegionRequestForm ? "SOC review feedback" : "SOC requested more information"}
               </p>
               <p className="mt-1 whitespace-pre-wrap">{socReviewNote}</p>
             </div>
@@ -1475,7 +1284,7 @@ export default function VaptUpload() {
 
           <div className="mx-auto w-full max-w-6xl rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-5 grid gap-4 rounded-2xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-900 dark:bg-violet-950/30 md:grid-cols-2">
-              {regionRequestMode ? (
+              {isRegionRequestForm ? (
                 <>
                   <div className="space-y-2">
                     <label htmlFor="request-region-code" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Region code</label>
@@ -1545,12 +1354,9 @@ export default function VaptUpload() {
                     {Object.values(onboarding.checklist_answers || {}).reduce((total, section) => total + Object.values(section || {}).length, 0)} fields across {QUESTION_SECTIONS.length} sections
                   </p>
                 </div>
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                  <span className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-emerald-700 shadow-sm dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400">
-                    <span className="text-[11px]">{saveState === "saved" ? "✓" : saveState === "saving" ? "•" : "↻"}</span>
-                    {saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving..." : "Try again"}
-                  </span>
-                </div>
+                <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  Answers are saved when you submit this regional checklist.
+                </p>
               </div>
             </div>
 
@@ -2006,7 +1812,7 @@ export default function VaptUpload() {
     );
   }
 
-  if (!canUpload && clientAccessState === "pending_soc_review") {
+  if (!canUpload && currentAccessState === "pending_soc_review") {
     return (
       <div className="flex min-h-screen items-center justify-center p-6 text-slate-900 dark:text-slate-100">
         <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">

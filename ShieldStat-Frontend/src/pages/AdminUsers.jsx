@@ -758,7 +758,7 @@ function AdminUsers() {
                             {isExpanded && (
                             <div className="overflow-x-auto bg-white animate-in slide-in-from-top-2 fade-in duration-200 border-t border-surface-container">
                             <div className="grid gap-3 border-b border-surface-container bg-indigo-50 p-6 sm:grid-cols-2 lg:grid-cols-4">
-                              <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">VAPT onboarding</p><p className="mt-1 font-semibold text-slate-900">{org.vapt?.onboarding_status || "not_started"}</p></div>
+                              <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Approved regional checklists</p><p className="mt-1 font-semibold text-slate-900">{(org.vapt?.approved_regions || []).filter((region) => region.checklist_review_status === "approved").length}</p></div>
                               <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Reports</p><p className="mt-1 font-semibold text-slate-900">{org.vapt?.report_count || 0}</p></div>
                               <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Approved regions</p><p className="mt-1 font-semibold text-emerald-700">{org.vapt?.approved_regions?.length || 0}</p></div>
                               <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Pending regions</p><p className="mt-1 font-semibold text-amber-700">{org.vapt?.pending_regions?.length || 0}</p></div>
@@ -1095,4 +1095,3 @@ function AdminUsers() {
 }
 
 export default AdminUsers;
-

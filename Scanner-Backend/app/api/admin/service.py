@@ -33,7 +33,6 @@ from app.db.models import (
     ResolvedFinding,
     Region,
     OrganizationRegion,
-    VaptOnboardingChecklist,
     VaptImport,
     NotificationPreference,
 )
@@ -484,15 +483,18 @@ def get_users_by_org(db: Session) -> dict:
 
 
 def _get_admin_vapt_org_summary(db: Session, org_id: str) -> dict:
-    onboarding = db.query(VaptOnboardingChecklist).filter(VaptOnboardingChecklist.org_id == org_id).first()
     rows = db.query(OrganizationRegion, Region).join(Region, OrganizationRegion.region_id == Region.region_id).filter(OrganizationRegion.org_id == org_id).all()
     imports = db.query(VaptImport).filter(VaptImport.org_id == org_id).all()
     return {
-        "onboarding_status": onboarding.review_status if onboarding else "not_started",
-        "onboarding_completed": bool(onboarding and onboarding.completed_at),
-        "testing_start_at": onboarding.testing_start_at if onboarding else None,
-        "testing_timezone": onboarding.testing_timezone if onboarding else None,
-        "approved_regions": [{"code": region.code, "name": region.name} for row, region in rows if row.status == "approved"],
+        "approved_regions": [
+            {
+                "code": region.code,
+                "name": region.name,
+                "checklist_review_status": row.checklist_review_status,
+            }
+            for row, region in rows
+            if row.status == "approved"
+        ],
         "pending_regions": [{"code": region.code, "name": region.name, "testing_start_at": row.testing_start_at, "testing_timezone": row.testing_timezone, "rejection_reason": row.rejection_reason} for row, region in rows if row.status == "pending"],
         "rejected_regions": [{"code": region.code, "name": region.name, "rejection_reason": row.rejection_reason} for row, region in rows if row.status == "rejected"],
         "report_count": len(imports),

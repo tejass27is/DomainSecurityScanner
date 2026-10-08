@@ -54,7 +54,7 @@ from app.api.admin.service import (
 )
 from app.api.admin.semgrep_status import SemgrepVersionCheckError, get_semgrep_version_status
 from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
-from app.api.vapt.routes import _region_display_name, _to_detail, _to_list_item, _uploader_email_map, _verification_download_filename
+from app.api.vapt.routes import _region_display_name, _require_open_vapt_cycle, _to_detail, _to_list_item, _uploader_email_map, _verification_download_filename
 from app.api.vapt import schedule_service
 from app.core.middleware import (
     require_admin,
@@ -437,6 +437,7 @@ def delete_vapt_import_admin(
 ):
     """Delete any VAPT import from the platform."""
     record = _platform_import_or_404(db, import_id)
+    _require_open_vapt_cycle(record)
     db.delete(record)
     db.commit()
     return {"success": True, "import_id": import_id}

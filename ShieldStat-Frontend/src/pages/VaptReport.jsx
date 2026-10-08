@@ -1709,7 +1709,7 @@ export default function VaptReport() {
                 </div>
               ))}
             </div>
-            {((record.next_vapt_due_at && ["closure_pending_soc_due_date", "closed"].includes(record.lifecycle_status)) || !isPlatformView || rescanSchedules.some((schedule) => ["scheduled", "approved", "requested"].includes(schedule.status))) && <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            {(!(record.lifecycle_status === "closed" && record.next_vapt_due_at) && ((record.next_vapt_due_at && ["closure_pending_soc_due_date", "closed"].includes(record.lifecycle_status)) || !isPlatformView || rescanSchedules.some((schedule) => ["scheduled", "approved", "requested"].includes(schedule.status)))) && <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">
@@ -1775,7 +1775,7 @@ export default function VaptReport() {
                       {dueDateApprovalLoading ? "Approving…" : "Approve client date"}
                     </button>
                   )}
-                  {isPlatformView && record.status === "client_completed" && !["closure_pending_soc_due_date", "closed"].includes(record.lifecycle_status) && (
+                  {isPlatformView && record.status === "client_completed" && record.lifecycle_status === "revalidation_required" && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
                     <button
                       type="button"
                       onClick={() => setShowRescanModal(true)}

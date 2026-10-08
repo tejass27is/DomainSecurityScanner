@@ -43,7 +43,7 @@ assert.equal(
 assert.equal(
   getClientVaptAccessState({
     vaptAccessEnabled: true,
-    onboarding: { completed: true, review_status: 'pending' },
+    pendingRegions: [{ has_checklist: true, checklist_review_status: 'pending' }],
   }),
   'pending_soc_review',
   'completed checklist must wait for SOC approval before library access'
@@ -52,7 +52,7 @@ assert.equal(
 assert.equal(
   getClientVaptAccessState({
     vaptAccessEnabled: true,
-    onboarding: { completed: true, review_status: 'rejected' },
+    pendingRegions: [{ has_checklist: true, checklist_review_status: 'rejected' }],
   }),
   'checklist_required',
   'a rejected checklist must send the client back to the form so the flagged items can be fixed'
@@ -61,7 +61,7 @@ assert.equal(
 assert.equal(
   getClientVaptAccessState({
     vaptAccessEnabled: true,
-    onboarding: { completed: true, review_status: 'changes_requested' },
+    pendingRegions: [{ has_checklist: true, checklist_review_status: 'changes_requested' }],
   }),
   'checklist_required',
   'a partial review keeps the client on the checklist to amend only the flagged items'
@@ -70,7 +70,7 @@ assert.equal(
 assert.equal(
   getClientVaptAccessState({
     vaptAccessEnabled: true,
-    onboarding: { completed: true, review_status: 'approved' },
+    approvedRegions: [{ has_checklist: true, checklist_review_status: 'approved' }],
   }),
   'allowed',
   'admin approval + checklist should allow the client into the VAPT flow'
@@ -79,7 +79,7 @@ assert.equal(
 assert.equal(
   getClientVaptAccessState({
     vaptAccessEnabled: false,
-    onboarding: { completed: true, review_status: 'approved' },
+    approvedRegions: [{ has_checklist: true, checklist_review_status: 'approved' }],
   }),
   'approval_required',
   'the VAPT module stays locked until an admin approves the account'

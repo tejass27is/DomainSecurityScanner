@@ -926,18 +926,12 @@ export async function uploadVaptVerificationReport(file, scheduleId, token, disp
   return res.json();
 }
 
-export function requestVaptAccess(regions, token, onboarding = null) {
-  // Handle both single region (string) and multiple regions (array)
-  const regionArray = Array.isArray(regions) ? regions : [regions];
+export function requestVaptAccess(regions, onboarding, token) {
   return request("/vapt/request-access", {
     method: "POST",
-    body: { regions: regionArray, ...(onboarding || {}) },
+    body: { regions, ...onboarding },
     token,
   });
-}
-
-export function requestVaptRegion(body, token) {
-  return request("/vapt/request-region", { method: "POST", body, token });
 }
 
 export function decideInitialVaptDate(regionCode, body, token) {
@@ -1167,27 +1161,16 @@ export function submitVerificationReview(importId, scheduleId, token) {
   });
 }
 
-// ─── VAPT Onboarding ────────────────────────────────────────────────────────
+// ─── Regional VAPT checklist attachments ───────────────────────────────────
 
-export function getVaptOnboarding(token) {
-  return request("/vapt/onboarding", { token, skipCache: true });
-}
-
-export function updateVaptOnboarding(fields, token) {
-  return request("/vapt/onboarding", { method: "PATCH", body: fields, token });
-}
-
-export function submitVaptChecklist(fields, token) {
-  return request("/vapt/onboarding/submit", { method: "POST", body: fields, token });
-}
-
-/** Upload a file against an upload-capable checklist question. */
-export async function uploadVaptChecklistAttachment(file, { sectionId, questionId, regionCode = "" }, token) {
+/** Upload a file against an upload-capable regional checklist question. */
+export async function uploadVaptChecklistAttachment(file, { sectionId, questionId, regionCode }, token) {
+  if (!regionCode?.trim()) throw new Error("Select a region before uploading a checklist attachment.");
   const formData = new FormData();
   formData.append("file", file);
   formData.append("section_id", sectionId || "");
   formData.append("question_id", questionId);
-  if (regionCode) formData.append("region_code", regionCode);
+  formData.append("region_code", regionCode.trim().toUpperCase());
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const res = await fetch(buildUrl("/vapt/onboarding/attachment"), {
     method: "POST",
@@ -1259,10 +1242,6 @@ export function logSupportOffered(importId, token) {
   return request(`/vapt/imports/${encodeURIComponent(importId)}/log-support-offered`, { method: "POST", token });
 }
 
-export function getAdminVaptOnboardingReviews(token) {
-  return request("/vapt/admin/onboarding", { token, skipCache: true });
-}
-
 export function getApprovedVaptOnboarding(token) {
   return request("/vapt/admin/onboarding/approved", { token, skipCache: true });
 }
@@ -1291,14 +1270,6 @@ export function reviewAdminVaptOnboarding(orgId, status, note, token, flags = []
   return request(`/vapt/admin/onboarding/${encodeURIComponent(orgId)}/review`, {
     method: "POST",
     body: { status, note, flags },
-    token,
-  });
-}
-
-export function decideInitialVaptAccess(orgId, body, token) {
-  return request(`/vapt/admin/onboarding/${encodeURIComponent(orgId)}/decision`, {
-    method: "POST",
-    body,
     token,
   });
 }

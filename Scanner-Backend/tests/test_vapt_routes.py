@@ -383,11 +383,9 @@ def test_request_vapt_access_accepts_combined_submission_payload():
                 "tech_contact_name": "Alice Admin",
                 "tech_contact_email": "alice@example.com",
                 "testing_window": "15-18 Sep 2026, 10:00 AM to 6:00 PM IST",
-                "checklist_answers": {
-                    "general_information": {
-                        "organization_name": {"answer": "Acme Corp", "na": False},
-                    }
-                },
+                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_timezone": "UTC",
+                "checklist_answers": _complete_region_checklist_answers(),
             },
             db=db,
             current_user=user,
@@ -395,11 +393,37 @@ def test_request_vapt_access_accepts_combined_submission_payload():
 
         assert response["success"] is True
         assert "ACC-IND" in response["requested_regions"]
-        onboarding = db.query(VaptOnboardingChecklist).filter_by(org_id="org-1").first()
-        assert onboarding is not None
-        assert onboarding.scope_ip_ranges == "10.0.0.0/8"
-        assert onboarding.authorization_confirmed is True
-        assert onboarding.testing_window == "15-18 Sep 2026, 10:00 AM to 6:00 PM IST"
+        region = db.query(Region).filter_by(code="ACC-IND").one()
+        request = db.query(OrganizationRegion).filter_by(
+            org_id="org-1",
+            region_id=region.region_id,
+        ).one()
+        assert request.status == "pending"
+        assert request.checklist_submission["scope_ip_ranges"] == "10.0.0.0/8"
+        assert request.checklist_submission["authorization_confirmed"] is True
+        assert request.checklist_submission["testing_window"] == "15-18 Sep 2026, 10:00 AM to 6:00 PM IST"
+        assert request.checklist_review_status == "pending"
+    finally:
+        db.close()
+
+
+def test_request_vapt_access_rejects_region_only_submission():
+    class Client:
+        org_id = "org-region-only"
+
+    db = Session(bind=engine)
+    try:
+        try:
+            request_vapt_access(
+                payload={"regions": [{"code": "ACC-IND", "name": "Accenture India"}]},
+                db=db,
+                current_user=Client(),
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert "checklist together" in exc.detail
+        else:
+            raise AssertionError("region-only requests must be rejected")
     finally:
         db.close()
 

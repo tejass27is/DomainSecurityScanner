@@ -460,11 +460,7 @@ class VaptImport(Base):
 
 
 class VaptOnboardingChecklist(Base):
-    """One-time onboarding checklist for an org's first VAPT experience.
-
-    Once all required fields are completed the org never sees it again.
-    Stored per org, PATCHed per field with autosave.
-    """
+    """Legacy organization-level checklist data retained for existing records."""
 
     __tablename__ = "vapt_onboarding_checklists"
 
@@ -526,8 +522,7 @@ class VaptChecklistAttachment(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     org_id = Column(String(36), ForeignKey("organizations.org_id"), nullable=False)
-    # Set when the file belongs to an additional-region checklist; NULL for the
-    # organisation-level onboarding checklist.
+    # NULL is retained only for historical uploads; new uploads require a region.
     region_code = Column(String(64), nullable=True)
     section_id = Column(String(64), nullable=False)
     question_id = Column(String(64), nullable=False)
