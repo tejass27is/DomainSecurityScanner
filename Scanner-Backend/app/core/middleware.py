@@ -136,3 +136,12 @@ def require_webscan_access(current_user: User = Depends(protect)):
     return current_user
 
 
+def require_cloud_assessment_access(current_user: User = Depends(protect)):
+    """Users need explicit admin approval before using Cloud Assessment."""
+    if not bool(getattr(current_user, "cloud_assessment_approved", False)):
+        raise HTTPException(
+            status_code=403,
+            detail="Cloud Assessment access has not been approved for this account.",
+        )
+    return current_user
+

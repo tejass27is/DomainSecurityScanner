@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, approveVaptAccess, revokeVaptAccess, approveWebscanAccess, revokeWebscanAccess, getScanSummaries, getTotalScans, createAdmin, deleteAdmin, createSocAnalyst, deleteSocAnalyst, setSocAnalystActive } from "../services/api";
+import { getUsersByOrg, getBlacklistedEmails, blockUserByEmail, unblockUserByEmail, approveVaptAccess, revokeVaptAccess, approveWebscanAccess, revokeWebscanAccess, approveCloudAssessmentAccess, revokeCloudAssessmentAccess, setWebscanScanLimit, resetWebscanScanUsage, setCloudAssessmentScanLimit, resetCloudAssessmentScanUsage, getScanSummaries, getTotalScans, createAdmin, deleteAdmin, createSocAnalyst, deleteSocAnalyst, setSocAnalystActive } from "../services/api";
 
 const ROLE_LABEL = {
   owner: "Owner",
@@ -54,6 +54,73 @@ function getVectorStyles(name) {
   };
 }
 
+function UserScanQuotaControls({ user, values, onChange, onSave, onReset, disabled }) {
+  const quotas = [
+    { feature: "webscan", label: "WebScan", limitField: "webscan_scan_limit", usedField: "webscan_scans_used" },
+    {
+      feature: "cloud_assessment",
+      label: "Cloud Assessment",
+      limitField: "cloud_assessment_scan_limit",
+      usedField: "cloud_assessment_scans_used",
+    },
+  ];
+
+  return (
+    <div className="grid gap-3 xl:grid-cols-2">
+      {quotas.map(({ feature, label, limitField, usedField }) => {
+        const approved = feature === "webscan" ? user.webscan_approved : user.cloud_assessment_approved;
+        return (
+          <div key={feature} className="rounded-lg border border-surface-container p-3">
+            <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+              <span className="font-semibold text-on-surface">{label} scans</span>
+              <span className="text-on-surface-variant">
+                {user[usedField] || 0} / {user[limitField] || 0} used
+              </span>
+            </div>
+            {!approved ? (
+              <p className="text-xs text-amber-700">
+                Approve {label} access to configure the scan limit.
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="sr-only" htmlFor={`scan-quota-${feature}-${user.user_id}`}>
+                  {label} scan limit for {user.email}
+                </label>
+                <input
+                  id={`scan-quota-${feature}-${user.user_id}`}
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={values?.[feature] ?? String(user[limitField] || 0)}
+                  onChange={(event) => onChange(user.user_id, feature, event.target.value)}
+                  disabled={disabled}
+                  className="h-9 w-24 rounded-md border border-surface-container bg-white px-2 text-sm text-on-surface outline-none focus:border-primary disabled:opacity-60"
+                />
+                <button
+                  type="button"
+                  onClick={() => onSave(user.user_id, feature)}
+                  disabled={disabled}
+                  className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary-dim disabled:opacity-60"
+                >
+                  Apply
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onReset(user.user_id, feature)}
+                  disabled={disabled}
+                  className="rounded-md border border-surface-container px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-low disabled:opacity-60"
+                >
+                  Reset usage
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function AdminUsers() {
   const [activeTab, setActiveTab] = useState("users");
   const [loading, setLoading] = useState(true);
@@ -70,6 +137,7 @@ function AdminUsers() {
   const [blocking, setBlocking] = useState(false);
   const [vaptBlocking, setVaptBlocking] = useState(false);
   const [accessActions, setAccessActions] = useState({});
+  const [scanQuotaInputs, setScanQuotaInputs] = useState({});
   const [newAdminEmail, setNewAdminEmail] = useState("");
   const [creatingAdmin, setCreatingAdmin] = useState(false);
   const [newSocAnalystEmail, setNewSocAnalystEmail] = useState("");
@@ -215,6 +283,85 @@ function AdminUsers() {
     }
   };
 
+  const handleApproveCloudAssessment = async (userId) => {
+    if (!userId) return;
+    setVaptBlocking(true);
+    try {
+      await approveCloudAssessmentAccess(userId, localStorage.getItem("token"));
+      showNotification("Cloud Assessment access approved for this user");
+      fetchUsers();
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setVaptBlocking(false);
+    }
+  };
+
+  const handleRevokeCloudAssessment = async (userId) => {
+    if (!userId) return;
+    setVaptBlocking(true);
+    try {
+      await revokeCloudAssessmentAccess(userId, localStorage.getItem("token"));
+      showNotification("Cloud Assessment access revoked for this user");
+      fetchUsers();
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setVaptBlocking(false);
+    }
+  };
+
+  const handleScanQuotaInput = (userId, feature, value) => {
+    setScanQuotaInputs((current) => ({
+      ...current,
+      [userId]: { ...current[userId], [feature]: value },
+    }));
+  };
+
+  const handleSetScanQuota = async (userId, feature) => {
+    const user = usersData?.organizations?.flatMap((org) => org.users || []).find((item) => item.user_id === userId);
+    const limitField = feature === "webscan" ? "webscan_scan_limit" : "cloud_assessment_scan_limit";
+    const input = scanQuotaInputs[userId]?.[feature] ?? String(user?.[limitField] || 0);
+    if (!/^\d+$/.test(input)) {
+      showNotification("Enter a whole-number scan limit of zero or more.", "error");
+      return;
+    }
+
+    setVaptBlocking(true);
+    try {
+      const setLimit = feature === "webscan" ? setWebscanScanLimit : setCloudAssessmentScanLimit;
+      await setLimit(userId, Number(input), localStorage.getItem("token"));
+      setScanQuotaInputs((current) => {
+        const next = { ...current };
+        if (next[userId]) {
+          next[userId] = { ...next[userId] };
+          delete next[userId][feature];
+        }
+        return next;
+      });
+      showNotification(`${feature === "webscan" ? "WebScan" : "Cloud Assessment"} scan limit updated.`);
+      fetchUsers();
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setVaptBlocking(false);
+    }
+  };
+
+  const handleResetScanUsage = async (userId, feature) => {
+    setVaptBlocking(true);
+    try {
+      const resetUsage = feature === "webscan" ? resetWebscanScanUsage : resetCloudAssessmentScanUsage;
+      await resetUsage(userId, localStorage.getItem("token"));
+      showNotification(`${feature === "webscan" ? "WebScan" : "Cloud Assessment"} usage reset.`);
+      fetchUsers();
+    } catch (err) {
+      showNotification(err.message, "error");
+    } finally {
+      setVaptBlocking(false);
+    }
+  };
+
   const handleApplyAccessAction = async (userId) => {
     const action = accessActions[userId];
     if (!userId || !action) return;
@@ -230,6 +377,13 @@ function AdminUsers() {
         await handleRevokeWebscan(userId);
       } else {
         await handleApproveWebscan(userId);
+      }
+    }
+    if (action === "cloud_assessment") {
+      if (usersData?.organizations?.flatMap((org) => org.users || []).find((user) => user.user_id === userId)?.cloud_assessment_approved) {
+        await handleRevokeCloudAssessment(userId);
+      } else {
+        await handleApproveCloudAssessment(userId);
       }
     }
     setAccessActions((current) => ({ ...current, [userId]: "" }));
@@ -764,16 +918,17 @@ function AdminUsers() {
                               <div><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Pending regions</p><p className="mt-1 font-semibold text-amber-700">{org.vapt?.pending_regions?.length || 0}</p></div>
                               <div className="sm:col-span-2 lg:col-span-4"><p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Region details</p><div className="mt-2 flex flex-wrap gap-2">{[...(org.vapt?.approved_regions || []).map((region) => ({ ...region, status: "approved" })), ...(org.vapt?.pending_regions || []).map((region) => ({ ...region, status: "pending" })), ...(org.vapt?.rejected_regions || []).map((region) => ({ ...region, status: "rejected" }))].map((region) => <span key={`${region.status}-${region.code}`} className={`rounded-full border px-3 py-1 text-xs font-semibold ${region.status === "approved" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : region.status === "pending" ? "border-amber-200 bg-amber-50 text-amber-700" : "border-red-200 bg-red-50 text-red-700"}`}>{region.code} · {region.name} · {region.status}</span>)}{!org.vapt?.approved_regions?.length && !org.vapt?.pending_regions?.length && !org.vapt?.rejected_regions?.length && <span className="text-sm text-slate-500">No VAPT region requests yet.</span>}</div></div>
                             </div>
-                                <table className="w-full text-left border-collapse">
+                                <table className="w-full min-w-[900px] text-left border-collapse">
                                     <thead className="bg-surface-container-lowest">
                                     <tr>
                                         <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">User Email</th>
                                         <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Role</th>
                                         <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Status</th>
+                                        <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">VAPT / WebScan Access</th>
                                     </tr>
                                     </thead>
                                     <tbody className="divide-y divide-surface-container bg-white">
-                                    {org.users?.filter(u => u.role !== "owner").length > 0 ? org.users.filter(u => u.role !== "owner").map((user) => (
+                                    {org.users?.length > 0 ? org.users.map((user) => (
                                         <tr key={user.user_id} className="hover:bg-slate-50 transition-colors">
                                             <td className="px-6 py-4">
                                                 <div className="flex items-center gap-3">
@@ -793,16 +948,65 @@ function AdminUsers() {
                                                     <span className="px-3 py-1 bg-red-100 text-red-700 text-[10px] font-bold rounded-full uppercase">
                                                         Blocked
                                                     </span>
+                                            ) : !user.email_verified ? (
+                                                    <span className="px-3 py-1 bg-amber-100 text-amber-800 text-[10px] font-bold rounded-full uppercase">
+                                                        Email pending
+                                                    </span>
                                             ) : (
                                                     <span className="px-3 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full uppercase">
                                                         Active
                                                     </span>
                                             )}
                                             </td>
+                                            <td className="px-6 py-4">
+                                              <div className="flex min-w-[330px] flex-col gap-3">
+                                                <div className="flex flex-wrap gap-2 text-[10px] font-bold uppercase">
+                                                  <span className={`rounded-full px-2.5 py-1 ${user.vapt_approved ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}`}>
+                                                    VAPT {user.vapt_approved ? "Approved" : "Not approved"}
+                                                  </span>
+                                                  <span className={`rounded-full px-2.5 py-1 ${user.webscan_approved ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}`}>
+                                                    WebScan {user.webscan_approved ? "Approved" : "Not approved"}
+                                                  </span>
+                                                  <span className={`rounded-full px-2.5 py-1 ${user.cloud_assessment_approved ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}`}>
+                                                    Cloud Assessment {user.cloud_assessment_approved ? "Approved" : "Not approved"}
+                                                  </span>
+                                                </div>
+                                                <UserScanQuotaControls
+                                                  user={user}
+                                                  values={scanQuotaInputs[user.user_id]}
+                                                  onChange={handleScanQuotaInput}
+                                                  onSave={handleSetScanQuota}
+                                                  onReset={handleResetScanUsage}
+                                                  disabled={vaptBlocking}
+                                                />
+                                                <div className="flex h-10 max-w-md items-stretch overflow-hidden rounded-lg border border-surface-container bg-white focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
+                                                  <select
+                                                    aria-label={`Access action for ${user.email}`}
+                                                    value={accessActions[user.user_id] || ""}
+                                                    onChange={(event) => setAccessActions((current) => ({ ...current, [user.user_id]: event.target.value }))}
+                                                    disabled={vaptBlocking}
+                                                    className="min-w-0 flex-1 cursor-pointer bg-transparent px-3 text-xs font-semibold text-on-surface-variant outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                                                  >
+                                                    <option value="">Select access</option>
+                                                    <option value="vapt">VAPT Access</option>
+                                                    <option value="webscan">WebScan Access</option>
+                                                    <option value="cloud_assessment">Cloud Assessment</option>
+                                                  </select>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleApplyAccessAction(user.user_id)}
+                                                    disabled={vaptBlocking || !accessActions[user.user_id]}
+                                                    className="inline-flex shrink-0 items-center justify-center border-l border-surface-container bg-primary px-4 text-xs font-semibold text-white transition-colors hover:bg-primary-dim disabled:cursor-not-allowed disabled:border-transparent disabled:bg-surface-container-high disabled:text-on-surface-variant"
+                                                  >
+                                                    Apply
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            </td>
                                         </tr>
                                     )) : (
                                         <tr>
-                                        <td colSpan="3" className="px-6 py-8 text-center text-sm text-slate-500">No members bound to this organization.</td>
+                                        <td colSpan="4" className="px-6 py-8 text-center text-sm text-slate-500">No users bound to this organization.</td>
                                         </tr>
                                     )}
                                     </tbody>
@@ -958,6 +1162,9 @@ function AdminUsers() {
                                                 <span className={`rounded-full px-2.5 py-1 font-semibold uppercase ${u.webscan_approved ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}`}>
                                                   WebScan {u.webscan_approved ? "Approved" : "Not Approved"}
                                                 </span>
+                                                <span className={`rounded-full px-2.5 py-1 font-semibold uppercase ${u.cloud_assessment_approved ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}`}>
+                                                  Cloud Assessment {u.cloud_assessment_approved ? "Approved" : "Not Approved"}
+                                                </span>
                                               </>
                                             )}
                                           </div>
@@ -968,6 +1175,16 @@ function AdminUsers() {
                                         <p className="mb-2.5 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
                                           User actions
                                         </p>
+                                        {u.org_id && (
+                                          <UserScanQuotaControls
+                                            user={u}
+                                            values={scanQuotaInputs[u.user_id]}
+                                            onChange={handleScanQuotaInput}
+                                            onSave={handleSetScanQuota}
+                                            onReset={handleResetScanUsage}
+                                            disabled={vaptBlocking}
+                                          />
+                                        )}
                                         <div className="flex w-full flex-col gap-2.5 sm:flex-row sm:items-center">
                                           {u.org_id && (
                                             <div className="flex h-11 min-w-0 flex-1 items-stretch overflow-hidden rounded-xl border border-surface-container bg-white focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
@@ -983,6 +1200,7 @@ function AdminUsers() {
                                                 <option value="">Access action</option>
                                                 <option value="vapt">VAPT Access</option>
                                                 <option value="webscan">WebScan Access</option>
+                                                <option value="cloud_assessment">Cloud Assessment</option>
                                               </select>
                                               <span className="pointer-events-none flex items-center pr-3 text-on-surface-variant" aria-hidden="true">
                                                 <span className="material-symbols-outlined text-lg">expand_more</span>

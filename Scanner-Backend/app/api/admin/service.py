@@ -58,6 +58,11 @@ def _serialize_user(user: User, blocked_emails: set[str]) -> dict:
         "vapt_approved": bool(getattr(user, "vapt_approved", False)),
         "vapt_blocked": bool(getattr(user, "vapt_blocked", False)),
         "webscan_approved": bool(getattr(user, "webscan_approved", False)),
+        "cloud_assessment_approved": bool(getattr(user, "cloud_assessment_approved", False)),
+        "webscan_scan_limit": int(getattr(user, "webscan_scan_limit", 0) or 0),
+        "webscan_scans_used": int(getattr(user, "webscan_scans_used", 0) or 0),
+        "cloud_assessment_scan_limit": int(getattr(user, "cloud_assessment_scan_limit", 0) or 0),
+        "cloud_assessment_scans_used": int(getattr(user, "cloud_assessment_scans_used", 0) or 0),
         "is_active": bool(getattr(user, "is_active", True)),
         "email_verified": bool(user.email_verified),
     }
@@ -440,7 +445,6 @@ def get_users_by_org(db: Session) -> dict:
     organizations = db.query(Organization).order_by(cast(Organization.domain, Text).asc()).all()
     users = (
         db.query(User)
-        .filter(User.email_verified.is_(True))
         .order_by(User.created_at.desc())
         .all()
     )
@@ -451,7 +455,7 @@ def get_users_by_org(db: Session) -> dict:
     for user in users:
         if user.org_id:
             users_by_org.setdefault(user.org_id, []).append(user)
-        else:
+        elif user.email_verified:
             unassigned_users.append(user)
 
     admin_only = [u for u in unassigned_users if u.role == "admin"]
@@ -675,6 +679,8 @@ def approve_webscan_access(
     user = _get_user_for_vapt_action(identifier, db)
     if user.user_id == current_admin.user_id:
         raise HTTPException(status_code=400, detail="Admin cannot change their own WebScan access")
+    if not user.webscan_approved and not user.webscan_scan_limit:
+        user.webscan_scan_limit = 3
     user.webscan_approved = True
     db.add(user)
     db.commit()
@@ -695,6 +701,178 @@ def revoke_webscan_access(
     db.commit()
     _record_audit_log(db, current_admin, "WEBSCAN_ACCESS_REVOKED", "user", user.user_id, {"email": user.email, "status": "revoked"}, ip_address, public_ip)
     return {"success": True, "user_id": user.user_id, "email": user.email, "webscan_approved": False}
+
+
+def approve_cloud_assessment_access(
+    identifier: str,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    user = _get_user_for_vapt_action(identifier, db)
+    if user.user_id == current_admin.user_id:
+        raise HTTPException(status_code=400, detail="Admin cannot change their own Cloud Assessment access")
+    if not user.cloud_assessment_approved and not user.cloud_assessment_scan_limit:
+        user.cloud_assessment_scan_limit = 3
+    user.cloud_assessment_approved = True
+    db.add(user)
+    db.commit()
+    _record_audit_log(
+        db,
+        current_admin,
+        "CLOUD_ASSESSMENT_ACCESS_APPROVED",
+        "user",
+        user.user_id,
+        {"email": user.email, "status": "approved"},
+        ip_address,
+        public_ip,
+    )
+    return {
+        "success": True,
+        "user_id": user.user_id,
+        "email": user.email,
+        "cloud_assessment_approved": True,
+    }
+
+
+def revoke_cloud_assessment_access(
+    identifier: str,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    user = _get_user_for_vapt_action(identifier, db)
+    user.cloud_assessment_approved = False
+    db.add(user)
+    db.commit()
+    _record_audit_log(
+        db,
+        current_admin,
+        "CLOUD_ASSESSMENT_ACCESS_REVOKED",
+        "user",
+        user.user_id,
+        {"email": user.email, "status": "revoked"},
+        ip_address,
+        public_ip,
+    )
+    return {
+        "success": True,
+        "user_id": user.user_id,
+        "email": user.email,
+        "cloud_assessment_approved": False,
+    }
+
+
+def set_user_scan_limit(
+    identifier: str,
+    feature: str,
+    scan_limit: int,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    feature_fields = {
+        "webscan": ("webscan_scan_limit", "webscan_scans_used", "WEBSCAN", "webscan_approved"),
+        "cloud_assessment": (
+            "cloud_assessment_scan_limit",
+            "cloud_assessment_scans_used",
+            "CLOUD_ASSESSMENT",
+            "cloud_assessment_approved",
+        ),
+    }
+    if feature not in feature_fields:
+        raise HTTPException(status_code=400, detail="Unknown scan quota feature.")
+    if scan_limit < 0:
+        raise HTTPException(status_code=422, detail="Scan limit cannot be negative.")
+
+    limit_field, used_field, audit_prefix, approval_field = feature_fields[feature]
+    user = _get_user_for_vapt_action(identifier, db)
+    if not getattr(user, approval_field, False):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Approve {feature.replace('_', ' ').title()} access before configuring its scan limit.",
+        )
+    setattr(user, limit_field, scan_limit)
+    db.add(user)
+    db.commit()
+    _record_audit_log(
+        db,
+        current_admin,
+        f"{audit_prefix}_SCAN_LIMIT_SET",
+        "user",
+        user.user_id,
+        {
+            "email": user.email,
+            "scan_limit": scan_limit,
+            "scans_used": getattr(user, used_field),
+        },
+        ip_address,
+        public_ip,
+    )
+    return {
+        "success": True,
+        "user_id": user.user_id,
+        "email": user.email,
+        "scan_limit": scan_limit,
+        "scans_used": getattr(user, used_field),
+    }
+
+
+def reset_user_scan_usage(
+    identifier: str,
+    feature: str,
+    current_admin: User,
+    db: Session,
+    ip_address: str | None = None,
+    public_ip: str | None = None,
+) -> dict:
+    feature_fields = {
+        "webscan": ("webscan_scan_limit", "webscan_scans_used", "WEBSCAN", "webscan_approved"),
+        "cloud_assessment": (
+            "cloud_assessment_scan_limit",
+            "cloud_assessment_scans_used",
+            "CLOUD_ASSESSMENT",
+            "cloud_assessment_approved",
+        ),
+    }
+    if feature not in feature_fields:
+        raise HTTPException(status_code=400, detail="Unknown scan quota feature.")
+
+    limit_field, used_field, audit_prefix, approval_field = feature_fields[feature]
+    user = _get_user_for_vapt_action(identifier, db)
+    if not getattr(user, approval_field, False):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Approve {feature.replace('_', ' ').title()} access before resetting its scan usage.",
+        )
+    previous_usage = int(getattr(user, used_field) or 0)
+    setattr(user, used_field, 0)
+    db.add(user)
+    db.commit()
+    _record_audit_log(
+        db,
+        current_admin,
+        f"{audit_prefix}_SCAN_USAGE_RESET",
+        "user",
+        user.user_id,
+        {
+            "email": user.email,
+            "previous_scans_used": previous_usage,
+            "scan_limit": getattr(user, limit_field),
+        },
+        ip_address,
+        public_ip,
+    )
+    return {
+        "success": True,
+        "user_id": user.user_id,
+        "email": user.email,
+        "scan_limit": getattr(user, limit_field),
+        "scans_used": 0,
+    }
 
 
 def unblock_vapt_access(

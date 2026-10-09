@@ -47,6 +47,7 @@ from app.api.vapt.routes import (
     upload_checklist_attachment,
     upload_vapt_report,
 )
+from app.api.admin.service import get_users_by_org
 from app.api.vapt.schemas import VaptImportDetail, VaptImportListItem
 
 
@@ -189,6 +190,61 @@ def test_access_status_returns_all_approved_org_regions():
         assert other_status["region"] == "NORTH-TEST"
         assert other_status["approved_region_codes"] == sorted(other_region_codes)
         assert {region["code"] for region in other_status["approved_regions"]} == set(other_region_codes)
+    finally:
+        db.close()
+
+
+def test_admin_organization_users_include_owner_and_unverified_members():
+    db = Session(bind=engine)
+    try:
+        owner = User(
+            user_id="admin-org-owner",
+            org_id="org-admin-users",
+            email="owner@example.com",
+            password="test-password",
+            role="owner",
+            email_verified=False,
+        )
+        member = User(
+            user_id="admin-org-member",
+            org_id="org-admin-users",
+            email="member@example.com",
+            password="test-password",
+            role="member",
+            email_verified=False,
+        )
+        unassigned = User(
+            user_id="admin-unassigned",
+            org_id=None,
+            email="unassigned@example.com",
+            password="test-password",
+            role="member",
+            email_verified=False,
+        )
+        db.add_all([
+            owner,
+            member,
+            unassigned,
+            Organization(
+                org_id="org-admin-users",
+                user_id=owner.user_id,
+                domain="admin-users.example.com",
+            ),
+        ])
+        db.commit()
+
+        result = get_users_by_org(db)
+        organization = next(
+            item for item in result["organizations"]
+            if item["org_id"] == "org-admin-users"
+        )
+
+        assert {user["user_id"] for user in organization["users"]} == {
+            owner.user_id,
+            member.user_id,
+        }
+        assert result["admin"] == []
+        assert result["soc_analysts"] == []
     finally:
         db.close()
 

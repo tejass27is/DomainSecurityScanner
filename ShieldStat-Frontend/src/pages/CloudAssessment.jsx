@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Cloud, LoaderCircle, Play, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cloud, Download, LoaderCircle, Play, ShieldCheck } from "lucide-react";
+import isecurifyLogoUrl from "../assets/iSecurify Logo - Full Colour - Transparent (2).png";
 import {
   createCloudAssessment,
   getCloudAssessment,
+  getCloudAssessmentAccessStatus,
   listCloudAssessments,
 } from "../services/api";
 
@@ -38,17 +40,39 @@ function Field({ label, type = "text", value, onChange, placeholder, required = 
   );
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, warningCount = 0 }) {
   const styles = {
     running: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300",
     completed: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
     failed: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
   };
+  const hasWarnings = status === "completed" && warningCount > 0;
+  const label = hasWarnings ? "Completed with warnings" : status;
+  const badgeStyle = hasWarnings
+    ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200"
+    : styles[status] || "bg-slate-100 text-slate-700";
   return (
-    <span className={`rounded-full px-2.5 py-1 text-xs font-bold capitalize ${styles[status] || "bg-slate-100 text-slate-700"}`}>
-      {status}
+    <span className={`rounded-full px-2.5 py-1 text-xs font-bold capitalize ${badgeStyle}`}>
+      {label}
     </span>
   );
+}
+
+function unavailableCheckCount(summary) {
+  return Number(summary?.checks_unavailable)
+    || (Number(summary?.errored_checks) || 0) + (Number(summary?.skipped_checks) || 0);
+}
+
+async function loadPdfLogo() {
+  const response = await fetch(isecurifyLogoUrl);
+  if (!response.ok) throw new Error("Could not load the iSecurify logo for the report.");
+  const logoBlob = await response.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Could not prepare the iSecurify logo for the report."));
+    reader.readAsDataURL(logoBlob);
+  });
 }
 
 function CloudAssessment() {
@@ -67,7 +91,10 @@ function CloudAssessment() {
   const [scans, setScans] = useState([]);
   const [selectedScan, setSelectedScan] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [accessApproved, setAccessApproved] = useState(null);
+  const [scanQuota, setScanQuota] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -90,7 +117,35 @@ function CloudAssessment() {
   }, []);
 
   useEffect(() => {
-    refreshScans();
+    const token = localStorage.getItem("token");
+    if (!token) {
+      setError("Please sign in to access Cloud Assessment.");
+      setLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    getCloudAssessmentAccessStatus(token)
+      .then((status) => {
+        if (cancelled) return;
+        const approved = Boolean(status?.cloud_assessment_approved);
+        setAccessApproved(approved);
+        setScanQuota({
+          limit: Number(status?.cloud_assessment_scan_limit) || 0,
+          used: Number(status?.cloud_assessment_scans_used) || 0,
+        });
+        if (approved) refreshScans();
+        else setLoading(false);
+      })
+      .catch((requestError) => {
+        if (cancelled) return;
+        setError(requestError.message || "Could not verify Cloud Assessment access.");
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [refreshScans]);
 
   useEffect(() => {
@@ -150,6 +205,7 @@ function CloudAssessment() {
 
     try {
       const scan = await createCloudAssessment(body, token);
+      setScanQuota((current) => current ? { ...current, used: current.used + 1 } : current);
       setScans((current) => [scan, ...current.filter((item) => item.scan_id !== scan.scan_id)]);
       setSelectedScan(null);
       setNotice("Assessment started. Your credentials were sent securely for this scan and are not saved.");
@@ -184,6 +240,209 @@ function CloudAssessment() {
     }
   };
 
+  const downloadAssessmentPdf = async () => {
+    if (!selectedScan || selectedScan.status !== "completed") return;
+    setError("");
+    setDownloadingPdf(true);
+    try {
+      const [{ jsPDF }, { default: autoTable }] = await Promise.all([
+        import("jspdf"),
+        import("jspdf-autotable"),
+      ]);
+      const doc = new jsPDF({ orientation: "landscape" });
+      const logoData = await loadPdfLogo();
+      const summary = selectedScan.summary || {};
+      const severityCounts = summary.severity_counts || {};
+      const unavailableChecks = unavailableCheckCount(summary);
+      const scopeText = Object.values(selectedScan.scope || {}).flat().join(", ") || "Cloud account from credentials";
+      const generatedAt = new Date();
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 13;
+      const providerName = String(selectedScan.provider || "Cloud").toUpperCase();
+      const assessmentDate = formatDate(selectedScan.completed_at);
+      const drawPageHeader = (isFirstPage) => {
+        doc.setFillColor(37, 16, 55);
+        doc.rect(0, 0, pageWidth, isFirstPage ? 39 : 18, "F");
+        if (isFirstPage) {
+          doc.setFillColor(255, 255, 255);
+          doc.roundedRect(margin, 8, 42, 22, 2, 2, "F");
+          doc.addImage(logoData, "PNG", margin + 2, 13.3, 38, 11.4);
+          doc.setTextColor(216, 180, 230);
+          doc.setFontSize(8);
+          doc.setFont("helvetica", "bold");
+          doc.text("CLOUD SECURITY ASSESSMENT", 61, 14);
+          doc.setTextColor(255, 255, 255);
+          doc.setFontSize(19);
+          doc.text("Security Assessment Report", 61, 24);
+          doc.setTextColor(232, 220, 240);
+          doc.setFontSize(9);
+          doc.setFont("helvetica", "normal");
+          doc.text(`${providerName}  |  Completed ${assessmentDate}`, 61, 32);
+          doc.setFontSize(8);
+          doc.text(`REPORT  ${String(selectedScan.scan_id).slice(0, 8).toUpperCase()}`, pageWidth - margin, 18, { align: "right" });
+          doc.text("POWERED BY PROWLER", pageWidth - margin, 26, { align: "right" });
+        } else {
+          doc.setFillColor(255, 255, 255);
+          doc.roundedRect(margin, 3, 29, 12, 1, 1, "F");
+          doc.addImage(logoData, "PNG", margin + 1.5, 5.1, 26, 7.8);
+          doc.setTextColor(255, 255, 255);
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(9);
+          doc.text(`${providerName} SECURITY ASSESSMENT`, 47, 11);
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(8);
+          doc.text(`REPORT  ${String(selectedScan.scan_id).slice(0, 8).toUpperCase()}`, pageWidth - margin, 11, { align: "right" });
+        }
+      };
+
+      doc.setProperties({
+        title: `${providerName} Security Assessment`,
+        subject: "Prowler cloud security assessment results",
+        creator: "iSecurify",
+      });
+      drawPageHeader(true);
+      doc.setTextColor(51, 51, 61);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.text("ASSESSMENT SCOPE", margin, 48);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(79, 70, 88);
+      const scopeLines = doc.splitTextToSize(scopeText, pageWidth - margin * 2 - 83);
+      doc.text(scopeLines.slice(0, 2), margin, 54);
+      doc.setFontSize(8);
+      doc.setTextColor(107, 102, 112);
+      doc.text(`Generated ${generatedAt.toLocaleString()}`, pageWidth - margin, 49, { align: "right" });
+      doc.text(`Completed ${assessmentDate}`, pageWidth - margin, 55, { align: "right" });
+      doc.setDrawColor(228, 222, 232);
+      doc.line(margin, 62, pageWidth - margin, 62);
+
+      const cards = [
+        { label: "TOTAL CHECKS", value: summary.total_checks ?? 0, color: [79, 70, 88] },
+        { label: "FAILED", value: summary.failed_checks ?? 0, color: [190, 45, 61] },
+        { label: "PASSED", value: summary.passed_checks ?? 0, color: [22, 130, 91] },
+        { label: "COULDN'T RUN", value: unavailableChecks, color: unavailableChecks ? [174, 111, 19] : [79, 70, 88] },
+        { label: "MANUAL", value: summary.manual_checks ?? 0, color: [78, 91, 164] },
+      ];
+      const cardGap = 5;
+      const cardWidth = (pageWidth - margin * 2 - cardGap * (cards.length - 1)) / cards.length;
+      cards.forEach((card, index) => {
+        const x = margin + index * (cardWidth + cardGap);
+        doc.setFillColor(248, 246, 250);
+        doc.setDrawColor(235, 230, 239);
+        doc.roundedRect(x, 67, cardWidth, 20, 2, 2, "FD");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7);
+        doc.setTextColor(112, 105, 119);
+        doc.text(card.label, x + 4, 73);
+        doc.setFontSize(14);
+        doc.setTextColor(...card.color);
+        doc.text(String(card.value), x + 4, 82);
+      });
+
+      const severityText = `Severity of failed checks: Critical ${severityCounts.critical ?? 0}  |  High ${severityCounts.high ?? 0}  |  Medium ${severityCounts.medium ?? 0}  |  Low ${severityCounts.low ?? 0}  |  Informational ${severityCounts.informational ?? 0}`;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(74, 65, 82);
+      doc.text(severityText, margin, 95, { maxWidth: pageWidth - margin * 2 });
+
+      if (unavailableChecks > 0) {
+        doc.setFillColor(255, 247, 225);
+        doc.setDrawColor(239, 212, 153);
+        doc.roundedRect(margin, 99, pageWidth - margin * 2, 11, 1.5, 1.5, "FD");
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(125, 78, 14);
+        doc.text(
+          `${unavailableChecks} checks could not run (${summary.errored_checks ?? 0} errors, ${summary.skipped_checks ?? 0} skipped). Review permissions and check details before relying on coverage.`,
+          margin + 4,
+          106,
+          { maxWidth: pageWidth - margin * 2 - 8 },
+        );
+      }
+
+      const findings = Array.isArray(selectedScan.findings) ? selectedScan.findings : [];
+      if (findings.length === 0) {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        doc.setTextColor(100, 95, 106);
+        doc.text("No individual check results were included in this report.", margin, unavailableChecks > 0 ? 118 : 108);
+      }
+      autoTable(doc, {
+        startY: unavailableChecks > 0 ? 114 : 101,
+        margin: { top: 22, bottom: 16, left: margin, right: margin },
+        head: [["Status", "Severity", "Check", "Service", "Resource", "Region", "Details", "Remediation"]],
+        body: findings.map((finding) => [
+          finding.status || "",
+          finding.severity || "",
+          [finding.title, finding.check_id].filter(Boolean).join("\n"),
+          finding.service || "",
+          [finding.resource_name, finding.resource_id, finding.resource_type].filter(Boolean).join("\n"),
+          finding.region || "",
+          finding.status_extended || finding.description || "",
+          [finding.remediation, finding.remediation_url].filter(Boolean).join("\n"),
+        ]),
+        theme: "grid",
+        styles: { font: "helvetica", fontSize: 7, cellPadding: 2.2, overflow: "linebreak", valign: "top", textColor: [55, 50, 60], lineColor: [232, 228, 235], lineWidth: 0.15 },
+        headStyles: { fillColor: [76, 30, 94], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5, cellPadding: 3 },
+        alternateRowStyles: { fillColor: [249, 248, 251] },
+        columnStyles: {
+          0: { cellWidth: 19, fontStyle: "bold" },
+          1: { cellWidth: 20 },
+          2: { cellWidth: 38 },
+          3: { cellWidth: 24 },
+          4: { cellWidth: 36 },
+          5: { cellWidth: 20 },
+          6: { cellWidth: 52 },
+          7: { cellWidth: 65 },
+        },
+        didParseCell: (data) => {
+          if (data.section !== "body") return;
+          const status = String(data.row.raw[0] || "").toUpperCase();
+          const severity = String(data.row.raw[1] || "").toLowerCase();
+          if (data.column.index === 0 && status === "FAIL") {
+            data.cell.styles.textColor = [176, 39, 54];
+          } else if (data.column.index === 0 && status === "PASS") {
+            data.cell.styles.textColor = [18, 119, 82];
+          } else if (data.column.index === 0 && ["ERROR", "SKIP", "SKIPPED"].includes(status)) {
+            data.cell.styles.textColor = [155, 96, 13];
+          }
+          if (data.column.index === 1 && ["critical", "high"].includes(severity)) {
+            data.cell.styles.textColor = [176, 39, 54];
+          }
+        },
+        didDrawPage: (data) => {
+          if (data.pageNumber > 1) drawPageHeader(false);
+        },
+      });
+
+      const pageCount = doc.internal.getNumberOfPages();
+      for (let page = 1; page <= pageCount; page += 1) {
+        doc.setPage(page);
+        doc.setDrawColor(225, 220, 230);
+        doc.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7.5);
+        doc.setTextColor(115, 108, 120);
+        doc.text("iSecurify  |  Confidential cloud security assessment", margin, pageHeight - 7);
+        doc.text(
+          `Report ${String(selectedScan.scan_id).slice(0, 8).toUpperCase()}  |  Page ${page} of ${pageCount}`,
+          pageWidth - margin,
+          pageHeight - 7,
+          { align: "right" },
+        );
+      }
+
+      const date = generatedAt.toISOString().slice(0, 10);
+      doc.save(`cloud-assessment-${selectedScan.provider}-${date}.pdf`);
+    } catch (requestError) {
+      setError(requestError.message || "Could not generate the assessment PDF.");
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   const selectProvider = (nextProvider) => {
     if (nextProvider === provider) return;
     setProvider(nextProvider);
@@ -202,6 +461,27 @@ function CloudAssessment() {
     }));
   };
 
+  if (loading && accessApproved === null) {
+    return <div className="p-8 text-center text-slate-600 dark:text-slate-300">Checking Cloud Assessment access…</div>;
+  }
+
+  if (accessApproved === false) {
+    return (
+      <div className="mx-auto max-w-2xl rounded-3xl border border-amber-200 bg-amber-50 p-8 text-center dark:border-amber-900 dark:bg-amber-950/30">
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Cloud Assessment access pending</h1>
+        <p className="mt-3 text-slate-600 dark:text-slate-300">
+          An administrator must approve Cloud Assessment for your account before you can use it.
+        </p>
+      </div>
+    );
+  }
+
+  if (accessApproved === null && error) {
+    return <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>;
+  }
+
+  const scanLimitReached = !scanQuota || scanQuota.used >= scanQuota.limit;
+
   return (
     <div className="mx-auto max-w-7xl space-y-8 p-4 sm:p-6">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -219,6 +499,15 @@ function CloudAssessment() {
           Read-only access required
         </div>
       </header>
+
+      <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+        Cloud Assessment scans used: {scanQuota?.used ?? 0} of {scanQuota?.limit ?? 0}
+      </p>
+      {scanLimitReached && (
+        <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+          Your scan allowance is used or has not been configured. Ask an administrator to increase the limit or reset usage.
+        </p>
+      )}
 
       {error && (
         <div role="alert" className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
@@ -327,11 +616,11 @@ function CloudAssessment() {
 
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || scanLimitReached}
             className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
           >
             {submitting ? <LoaderCircle className="animate-spin" size={18} /> : <Play size={17} />}
-            {submitting ? "Starting assessment…" : "Start assessment"}
+                {submitting ? "Checking credentials…" : "Verify credentials and start"}
           </button>
         </form>
 
@@ -345,6 +634,9 @@ function CloudAssessment() {
           </p>
           <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
             Use least-privilege read-only permissions. The scanner service must have Prowler installed and network access to the selected cloud APIs.
+          </p>
+          <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-slate-400">
+            Credentials are authenticated before an assessment starts, so failed credential checks do not use your scan allowance. This verifies identity only; it does not confirm read-only access to every assessment check. Permission gaps appear in the completed report as checks that could not run.
           </p>
         </aside>
       </section>
@@ -390,7 +682,9 @@ function CloudAssessment() {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{formatDate(scan.created_at)}</td>
-                      <td className="px-4 py-3"><StatusBadge status={scan.status} /></td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={scan.status} warningCount={unavailableCheckCount(scan.summary)} />
+                      </td>
                       <td className="px-4 py-3 font-semibold text-slate-700 dark:text-slate-200">
                         {scan.summary?.failed_checks ?? "—"}
                       </td>
@@ -420,6 +714,17 @@ function CloudAssessment() {
             <button type="button" onClick={() => setSelectedScan(null)} className="text-sm font-semibold text-slate-500 hover:text-slate-900 dark:hover:text-white">
               Close
             </button>
+            {selectedScan.status === "completed" && (
+              <button
+                type="button"
+                onClick={downloadAssessmentPdf}
+                disabled={downloadingPdf}
+                className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-indigo-700 disabled:cursor-wait disabled:opacity-60"
+              >
+                {downloadingPdf ? <LoaderCircle className="animate-spin" size={16} /> : <Download size={16} />}
+                {downloadingPdf ? "Preparing PDF…" : "Download PDF"}
+              </button>
+            )}
           </div>
 
           {selectedScan.status === "running" && (
@@ -430,9 +735,21 @@ function CloudAssessment() {
           )}
           {selectedScan.status === "completed" && (
             <>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              {unavailableCheckCount(selectedScan.summary) > 0 && (
+                <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                  <p className="font-bold">
+                    Completed with warnings: {unavailableCheckCount(selectedScan.summary)} checks couldn’t run
+                    ({selectedScan.summary?.errored_checks ?? 0} errored, {selectedScan.summary?.skipped_checks ?? 0} skipped).
+                  </p>
+                  <p className="mt-1">
+                    This can indicate missing cloud permissions or other provider errors. Review the affected check details and confirm the account has the required read-only access before relying on these results.
+                  </p>
+                </div>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                 {[
                   ["Failed checks", selectedScan.summary?.failed_checks ?? 0],
+                  ["Couldn’t run", unavailableCheckCount(selectedScan.summary)],
                   ["Critical", selectedScan.summary?.severity_counts?.critical ?? 0],
                   ["High", selectedScan.summary?.severity_counts?.high ?? 0],
                   ["Medium", selectedScan.summary?.severity_counts?.medium ?? 0],

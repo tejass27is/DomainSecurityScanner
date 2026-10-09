@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import Navbar from "../components/Navbar";
-import { getVaptAccessStatus, getWebscanAccessStatus } from "../services/api";
+import { getCloudAssessmentAccessStatus, getVaptAccessStatus, getWebscanAccessStatus } from "../services/api";
 
 function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -21,6 +21,33 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
   // Clients only see the VAPT option once an admin has approved the account.
   const [vaptVisible, setVaptVisible] = useState(false);
   const [webscanVisible, setWebscanVisible] = useState(false);
+  const [cloudAssessmentVisible, setCloudAssessmentVisible] = useState(false);
+
+  useEffect(() => {
+    if (isSocAnalyst || typeof window === "undefined") return;
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    let cancelled = false;
+    const load = () => {
+      getCloudAssessmentAccessStatus(token)
+        .then((status) => {
+          if (!cancelled) setCloudAssessmentVisible(Boolean(status?.cloud_assessment_approved));
+        })
+        .catch(() => {
+          // Keep the last known visibility on transient errors.
+        });
+    };
+
+    load();
+    const intervalId = setInterval(load, 20000);
+    window.addEventListener("focus", load);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+      window.removeEventListener("focus", load);
+    };
+  }, [isSocAnalyst]);
 
   useEffect(() => {
     if (isSocAnalyst || typeof window === "undefined") return;
@@ -82,7 +109,7 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
     : [
         { to: "/scan-dashboard", label: "Dashboard", icon: "dashboard" },
         { to: "/assessment", label: "Assessment", icon: "security" },
-        { to: "/cloud-assessment", label: "Cloud Assessment", icon: "cloud" },
+        ...(cloudAssessmentVisible ? [{ to: "/cloud-assessment", label: "Cloud Assessment", icon: "cloud" }] : []),
         { to: "/scan", label: "Audit Domain", icon: "radar" },
         { to: "/malware", label: "Malware Scan", icon: "bug_report" },
         ...(webscanVisible ? [{ to: "/webscan", label: "Web Scan", icon: "travel_explore" }] : []),

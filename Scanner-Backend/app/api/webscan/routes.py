@@ -32,9 +32,10 @@ from reportlab.platypus import Image, Paragraph, Preformatted, SimpleDocTemplate
 from sqlalchemy.orm import Session
 
 from app.api.scanner.service import _normalize_domain_for_match
-from app.api.webscan.acunetix import AcunetixClient, AcunetixError, resolve_base_url
+from app.api.webscan.acunetix import AcunetixClient, AcunetixError
 from app.api.webscan.schemas import WebScanCreateRequest, WebScanDetail, WebScanListItem
 from app.core.middleware import require_webscan_access
+from app.core.scan_quotas import reserve_scan_quota
 from app.core.redis_queue import RedisClient
 from app.core.websocket_manager import ws_manager
 from app.db.base import get_db
@@ -1015,6 +1016,7 @@ async def create_web_scan(
                 detail="A repository token is required to scan a private repository.",
             )
 
+    reserve_scan_quota(db, user.user_id, "webscan")
     requested_profile = (request.scan_profile or request.profile_id or "").strip() if scan_mode == "dynamic" else ""
     requested_criticality = request.criticality if scan_mode == "dynamic" else "medium"
     requested_auth = bool(request.authentication_required) if scan_mode == "dynamic" else False
@@ -1217,7 +1219,6 @@ async def create_web_scan(
 
     return _to_detail(record)
 
-
 @router.post("/scans/static/upload", response_model=WebScanDetail)
 async def create_static_upload_scan(
     file: UploadFile = File(...),
@@ -1240,6 +1241,7 @@ async def create_static_upload_scan(
     if len(payload) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="The uploaded archive is too large to scan.")
 
+    reserve_scan_quota(db, user.user_id, "webscan")
     record = WebScan(
         org_id=user.org_id,
         user_id=user.user_id,
@@ -1371,54 +1373,3 @@ async def cancel_web_scan(
         logger.debug("Could not broadcast webscan_cancelled", exc_info=True)
 
     return _to_detail(record)
-
-
-@router.get("/diagnostics")
-async def webscan_diagnostics(user: User = Depends(require_webscan_access)):
-    """Check the configured scanning service without starting a scan.
-
-    Confirms the configured URL/key work and reports the available scanning
-    profiles, so a misconfiguration can be spotted before a scan fails. The API
-    key itself is never returned — only whether it is set.
-    """
-    result: dict = {
-        "base_url": resolve_base_url(),
-        "api_key_configured": bool((os.getenv("ACUNETIX_API_KEY") or "").strip()),
-        "reachable": False,
-        "profiles": [],
-        "profile_id": "",
-        "profile_name": "",
-        "error": "",
-    }
-
-    if not result["base_url"]:
-        result["error"] = (
-            "The dynamic scanning service URL is not configured. Set its base URL "
-            "in the backend environment."
-        )
-        return result
-
-    try:
-        with AcunetixClient() as client:
-            profiles = client.list_profiles()
-            result["reachable"] = True
-            result["profiles"] = [
-                {"profile_id": str(p.get("profile_id") or ""), "name": str(p.get("name") or "")}
-                for p in profiles
-            ]
-            try:
-                resolved = client.resolve_profile_id()
-                result["profile_id"] = resolved
-                result["profile_name"] = next(
-                    (p["name"] for p in result["profiles"] if p["profile_id"] == resolved),
-                    "",
-                )
-            except AcunetixError as exc:
-                result["error"] = str(exc)
-    except AcunetixError as exc:
-        result["error"] = str(exc)
-    except Exception as exc:  # network/DNS failures surface as a readable message
-        logger.warning("Acunetix diagnostics failed", exc_info=True)
-        result["error"] = f"Could not reach the scanning service: {_brand_neutral_text(exc)}"
-
-    return result

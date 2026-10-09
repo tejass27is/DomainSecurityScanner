@@ -89,6 +89,57 @@ def resolve_base_url(raw: str | None = None) -> str:
     return f"{candidate}/api/v1"
 
 
+def get_scanner_connection_status() -> dict:
+    """Check configured scanner connectivity and report available profiles."""
+    result: dict = {
+        "base_url": resolve_base_url(),
+        "api_key_configured": bool((os.getenv("ACUNETIX_API_KEY") or "").strip()),
+        "reachable": False,
+        "profiles": [],
+        "profile_id": "",
+        "profile_name": "",
+        "error": "",
+    }
+    if not result["base_url"]:
+        result["error"] = (
+            "The dynamic scanning service URL is not configured. Set its base URL "
+            "in the backend environment."
+        )
+        return result
+
+    try:
+        with AcunetixClient() as client:
+            profiles = client.list_profiles()
+            result["reachable"] = True
+            result["profiles"] = [
+                {
+                    "profile_id": str(profile.get("profile_id") or ""),
+                    "name": str(profile.get("name") or ""),
+                }
+                for profile in profiles
+            ]
+            try:
+                resolved = client.resolve_profile_id()
+                result["profile_id"] = resolved
+                result["profile_name"] = next(
+                    (
+                        profile["name"]
+                        for profile in result["profiles"]
+                        if profile["profile_id"] == resolved
+                    ),
+                    "",
+                )
+            except AcunetixError as error:
+                result["error"] = str(error)
+    except AcunetixError as error:
+        result["error"] = str(error)
+    except Exception as error:
+        logger.warning("Acunetix diagnostics failed", exc_info=True)
+        result["error"] = f"Could not reach the scanning service: {error}"
+
+    return result
+
+
 def _error_detail(response: httpx.Response) -> str:
     """Best-effort human-readable error body from an Acunetix response."""
     try:

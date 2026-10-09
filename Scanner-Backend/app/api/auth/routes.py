@@ -214,6 +214,9 @@ def get_profile(
         "vapt_blocked": vapt_blocked,
         "vapt_approved": bool(getattr(current_user, "vapt_approved", False)),
         "webscan_approved": bool(getattr(current_user, "webscan_approved", False)),
+        "webscan_scan_limit": current_user.webscan_scan_limit,
+        "webscan_scans_used": current_user.webscan_scans_used,
+        "cloud_assessment_approved": bool(getattr(current_user, "cloud_assessment_approved", False)),
         "region": getattr(org, "region", None) if org else None,
     }
 

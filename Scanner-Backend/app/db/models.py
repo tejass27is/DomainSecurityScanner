@@ -92,6 +92,11 @@ class User(Base):
     vapt_approved            = Column(Boolean, nullable=False, server_default="false")
     vapt_blocked              = Column(Boolean, nullable=False, server_default="false")
     webscan_approved          = Column(Boolean, nullable=False, server_default="false")
+    cloud_assessment_approved = Column(Boolean, nullable=False, server_default="false")
+    webscan_scan_limit = Column(Integer, nullable=False, server_default="3")
+    webscan_scans_used = Column(Integer, nullable=False, server_default="0")
+    cloud_assessment_scan_limit = Column(Integer, nullable=False, server_default="3")
+    cloud_assessment_scans_used = Column(Integer, nullable=False, server_default="0")
     is_active                 = Column(Boolean, nullable=False, server_default="true")
 
     # ── NEW: TOTP columns ─────────────────────────────────────────────────────

@@ -12,16 +12,21 @@ from app.api.admin.schemas import (
     CreateSocAnalystRequest,
     GeneratePromoCodeRequest,
     PersonalEmailApprovalRequest,
+    UserScanQuotaRequest,
     VaptBlockRequest,
 )
 from app.api.admin.service import (
     assign_promo_code_to_user,
+    approve_cloud_assessment_access,
     block_email,
     block_vapt_access,
     approve_vapt_access,
     approve_webscan_access,
     revoke_vapt_access,
+    revoke_cloud_assessment_access,
     revoke_webscan_access,
+    reset_user_scan_usage,
+    set_user_scan_limit,
     unblock_vapt_access,
     check_escalation_rules,
     create_personal_email_invitation,
@@ -54,6 +59,7 @@ from app.api.admin.service import (
 )
 from app.api.admin.semgrep_status import SemgrepVersionCheckError, get_semgrep_version_status
 from app.api.admin.prowler_status import ProwlerVersionCheckError, get_prowler_version_status
+from app.api.webscan.acunetix import get_scanner_connection_status
 from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
 from app.api.vapt.routes import _region_display_name, _require_open_vapt_cycle, _to_detail, _to_list_item, _uploader_email_map, _verification_download_filename
 from app.api.vapt import schedule_service
@@ -91,6 +97,13 @@ def prowler_version_status(
         return get_prowler_version_status()
     except ProwlerVersionCheckError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/tools/webscan-connection")
+def webscan_connection_status(
+    _current_admin: User = Depends(require_admin),
+):
+    return get_scanner_connection_status()
 
 
 def get_request_ip(request: Request) -> str | None:
@@ -671,6 +684,102 @@ def revoke_webscan_access_route(
 ):
     identifier = req.user_id or req.email
     return revoke_webscan_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
+@router.post("/cloud-assessment/approve")
+def approve_cloud_assessment_access_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    identifier = req.user_id or req.email
+    return approve_cloud_assessment_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
+@router.post("/cloud-assessment/revoke")
+def revoke_cloud_assessment_access_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    identifier = req.user_id or req.email
+    return revoke_cloud_assessment_access(identifier, current_admin, db, ip_address=get_request_ip(request), public_ip=get_public_ip(request))
+
+
+@router.put("/webscan/quota")
+def set_webscan_scan_limit_route(
+    req: UserScanQuotaRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    identifier = req.user_id or req.email
+    return set_user_scan_limit(
+        identifier,
+        "webscan",
+        req.scan_limit,
+        current_admin,
+        db,
+        ip_address=get_request_ip(request),
+        public_ip=get_public_ip(request),
+    )
+
+
+@router.post("/webscan/quota/reset")
+def reset_webscan_scan_usage_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    identifier = req.user_id or req.email
+    return reset_user_scan_usage(
+        identifier,
+        "webscan",
+        current_admin,
+        db,
+        ip_address=get_request_ip(request),
+        public_ip=get_public_ip(request),
+    )
+
+
+@router.put("/cloud-assessment/quota")
+def set_cloud_assessment_scan_limit_route(
+    req: UserScanQuotaRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    identifier = req.user_id or req.email
+    return set_user_scan_limit(
+        identifier,
+        "cloud_assessment",
+        req.scan_limit,
+        current_admin,
+        db,
+        ip_address=get_request_ip(request),
+        public_ip=get_public_ip(request),
+    )
+
+
+@router.post("/cloud-assessment/quota/reset")
+def reset_cloud_assessment_scan_usage_route(
+    req: VaptBlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    identifier = req.user_id or req.email
+    return reset_user_scan_usage(
+        identifier,
+        "cloud_assessment",
+        current_admin,
+        db,
+        ip_address=get_request_ip(request),
+        public_ip=get_public_ip(request),
+    )
 
 
 @router.post("/vapt/unblock")

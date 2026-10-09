@@ -4,7 +4,7 @@ import {
   createWebScan,
   downloadWebScanReport,
   getWebScan,
-  getWebScanDiagnostics,
+  getProfile,
   listWebScans,
   uploadStaticWebScan,
 } from "../services/api";
@@ -291,13 +291,12 @@ function WebScanTab() {
 
   const [scans, setScans] = useState([]);
   const [listLoading, setListLoading] = useState(true);
+  const [scanQuota, setScanQuota] = useState(null);
+  const [quotaError, setQuotaError] = useState("");
 
   const [activeId, setActiveId] = useState(null);
   const [activeScan, setActiveScan] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
-
-  const [diagnostics, setDiagnostics] = useState(null);
-  const [diagLoading, setDiagLoading] = useState(false);
 
   const loadList = useCallback(async () => {
     if (!token) {
@@ -305,10 +304,19 @@ function WebScanTab() {
       return;
     }
     try {
-      const data = await listWebScans(token);
+      const [data, profile] = await Promise.all([
+        listWebScans(token),
+        getProfile(token),
+      ]);
       setScans(Array.isArray(data) ? data : []);
+      setScanQuota({
+        limit: Number(profile?.webscan_scan_limit) || 0,
+        used: Number(profile?.webscan_scans_used) || 0,
+      });
+      setQuotaError("");
     } catch (error) {
       console.warn("Could not load web scans", error);
+      setQuotaError(error?.message || "Could not verify your WebScan scan allowance.");
     } finally {
       setListLoading(false);
     }
@@ -451,21 +459,6 @@ function WebScanTab() {
     }
   };
 
-  // Confirms the scanning service configured in the backend is reachable,
-  // without waiting for a scan to fail.
-  const handleTestConnection = async () => {
-    setFormError("");
-    setDiagLoading(true);
-    try {
-      const data = await getWebScanDiagnostics(token);
-      setDiagnostics(data);
-    } catch (err) {
-      setDiagnostics({ error: err?.message || "Could not reach the backend." });
-    } finally {
-      setDiagLoading(false);
-    }
-  };
-
   const handleCancel = async (scanId) => {
     if (!scanId) return;
     try {
@@ -499,6 +492,7 @@ function WebScanTab() {
 
   const isStaticUpload = scanMode === "static" && staticSource === "upload";
   const isActive = Boolean(activeScan && ACTIVE_STATUSES.has(activeScan.status));
+  const scanLimitReached = !scanQuota || scanQuota.used >= scanQuota.limit;
   const progress = Math.max(0, Math.min(100, Number(activeScan?.progress) || 0));
   const severityTone = severityStyle(activeScan?.severity);
 
@@ -532,6 +526,18 @@ function WebScanTab() {
               exploitation checks run continuously, so the scan reports back here as it progresses.
             </p>
           </div>
+        </div>
+
+        <div className={`mb-5 rounded-xl border px-4 py-3 text-sm ${
+          scanLimitReached
+            ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+            : "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+        }`}>
+          {quotaError
+            ? quotaError
+            : scanQuota
+              ? `WebScan scans used: ${scanQuota.used} of ${scanQuota.limit}${scanLimitReached ? ". Ask an administrator to increase the limit or reset usage." : "."}`
+              : "Checking your WebScan scan allowance…"}
         </div>
 
         <div className="mb-4 flex flex-wrap gap-2">
@@ -598,8 +604,67 @@ function WebScanTab() {
               </div>
               <button
                 type="submit"
-                disabled={submitting || !archiveFile}
+                disabled={submitting || !archiveFile || scanLimitReached}
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-purple-700 px-8 py-3.5 text-sm font-bold text-white shadow-md transition-all duration-300 hover:shadow-lg hover:from-purple-700 hover:to-purple-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {submitting ? (
+                  <>
+                    <span className="material-symbols-outlined animate-spin text-base">progress_activity</span>
+                    Starting…
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-base">rocket_launch</span>
+                    Start Static Scan
+                  </>
+                )}
+              </button>
+            </div>
+          ) : scanMode === "static" ? (
+            <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-700 dark:bg-slate-900/40 md:grid-cols-[minmax(0,1fr)_170px_auto] md:items-end">
+              <div className="min-w-0">
+                <label
+                  htmlFor="webscan-repository-url"
+                  className="mb-1.5 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400"
+                >
+                  GitHub repository URL
+                </label>
+                <div className="relative">
+                  <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-lg text-purple-500">
+                    code
+                  </span>
+                  <input
+                    id="webscan-repository-url"
+                    type="url"
+                    value={urlInput}
+                    onChange={(event) => setUrlInput(event.target.value)}
+                    placeholder="https://github.com/owner/repository"
+                    spellCheck="false"
+                    autoComplete="url"
+                    className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-11 pr-4 text-sm font-medium text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  />
+                </div>
+              </div>
+              <div>
+                <label
+                  htmlFor="webscan-repository-branch"
+                  className="mb-1.5 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400"
+                >
+                  Branch
+                </label>
+                <input
+                  id="webscan-repository-branch"
+                  type="text"
+                  value={repoBranch}
+                  onChange={(event) => setRepoBranch(event.target.value.trimStart())}
+                  placeholder="main"
+                  className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={submitting || !urlInput.trim() || scanLimitReached}
+                className="inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-gradient-to-r from-purple-600 to-purple-700 px-5 text-sm font-bold text-white shadow-md transition-all duration-300 hover:from-purple-700 hover:to-purple-800 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? (
                   <>
@@ -650,7 +715,7 @@ function WebScanTab() {
               )}
               <button
                 type="submit"
-                disabled={submitting || !urlInput.trim()}
+                disabled={submitting || !urlInput.trim() || scanLimitReached}
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 to-purple-700 px-8 py-3.5 text-sm font-bold text-white shadow-md transition-all duration-300 hover:shadow-lg hover:from-purple-700 hover:to-purple-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? (
@@ -849,48 +914,6 @@ function WebScanTab() {
             : "Dynamic mode scans a live application URL for security issues."}
         </p>
 
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={handleTestConnection}
-            disabled={diagLoading}
-            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-2 text-xs font-bold text-slate-600 dark:text-slate-300 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {diagLoading ? (
-              <span className="material-symbols-outlined animate-spin text-base">progress_activity</span>
-            ) : (
-              <span className="material-symbols-outlined text-base">cable</span>
-            )}
-            Test scanning service connection
-          </button>
-
-          {diagnostics && (
-            <div
-              className={`flex flex-1 items-center gap-2 rounded-xl border px-4 py-2 text-xs font-medium ${
-                diagnostics.reachable
-                  ? "border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300"
-                  : "border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300"
-              }`}
-            >
-              <span className="material-symbols-outlined text-base">
-                {diagnostics.reachable ? "check_circle" : "warning"}
-              </span>
-              {diagnostics.reachable ? (
-                <span>
-                  Scanning service is reachable — {diagnostics.profiles.length} profile
-                  {diagnostics.profiles.length === 1 ? "" : "s"} available
-                  {diagnostics.profile_name
-                    ? `, using “${diagnostics.profile_name}”.`
-                    : ", using the default profile."}
-                </span>
-              ) : (
-                <span>
-                  {diagnostics.error || "The scanning service is not reachable with the configured settings."}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
       </div>
 
       {/* ── Live progress ── */}

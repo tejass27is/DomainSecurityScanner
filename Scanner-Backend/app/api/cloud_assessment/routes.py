@@ -5,12 +5,29 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.cloud_assessment.schemas import CloudAssessmentRequest
-from app.api.cloud_assessment.service import request_credentials, run_cloud_assessment
-from app.core.middleware import protect
+from app.api.cloud_assessment.service import (
+    CloudCredentialValidationError,
+    request_credentials,
+    run_cloud_assessment,
+    validate_cloud_credentials,
+)
+from app.core.middleware import protect, require_cloud_assessment_access
+from app.core.scan_quotas import reserve_scan_quota
 from app.db.base import get_db
 from app.db.models import CloudSecurityAssessment, User
 
 router = APIRouter(prefix="/cloud-assessment", tags=["Cloud Assessment"])
+
+
+@router.get("/access-status")
+def get_cloud_assessment_access_status(
+    current_user: User = Depends(protect),
+):
+    return {
+        "cloud_assessment_approved": bool(current_user.cloud_assessment_approved),
+        "cloud_assessment_scan_limit": current_user.cloud_assessment_scan_limit,
+        "cloud_assessment_scans_used": current_user.cloud_assessment_scans_used,
+    }
 
 
 def _serialize_scan(scan: CloudSecurityAssessment, include_findings: bool = False) -> dict[str, Any]:
@@ -34,9 +51,14 @@ def create_cloud_assessment(
     request: CloudAssessmentRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_cloud_assessment_access),
 ):
     provider, scope, credentials = request_credentials(request)
+    try:
+        validate_cloud_credentials(provider, credentials)
+    except CloudCredentialValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    reserve_scan_quota(db, current_user.user_id, "cloud_assessment")
     scan_id = str(uuid.uuid4())
     scan = CloudSecurityAssessment(
         scan_id=scan_id,
@@ -62,7 +84,7 @@ def create_cloud_assessment(
 @router.get("/scans")
 def list_cloud_assessments(
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_cloud_assessment_access),
 ):
     scans = (
         db.query(CloudSecurityAssessment)
@@ -78,7 +100,7 @@ def list_cloud_assessments(
 def get_cloud_assessment(
     scan_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(protect),
+    current_user: User = Depends(require_cloud_assessment_access),
 ):
     scan = db.query(CloudSecurityAssessment).filter(
         CloudSecurityAssessment.scan_id == scan_id,

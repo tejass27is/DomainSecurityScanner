@@ -10,6 +10,7 @@ from pypdf import PdfReader
 from app.api.webscan.acunetix import (
     AcunetixClient,
     AcunetixError,
+    get_scanner_connection_status,
     _error_detail,
     _env_bool,
     _env_float,
@@ -36,6 +37,40 @@ def test_report_missing_values_use_vendor_neutral_text():
     assert _report_value("Not provided by Acunetix") == "Not provided by iSecurify"
     assert _brand_neutral_text("ACUNETIX") == "iSecurify"
     assert _brand_neutral_data({"message": "Acunetix scan"}) == {"message": "iSecurify scan"}
+
+
+def test_scanner_connection_status_reports_missing_configuration():
+    status = get_scanner_connection_status()
+
+    assert status["reachable"] is False
+    assert status["profiles"] == []
+    assert "URL is not configured" in status["error"]
+
+
+def test_scanner_connection_status_reports_profiles_without_exposing_key(monkeypatch):
+    monkeypatch.setenv("ACUNETIX_URL", "https://scanner.example")
+    monkeypatch.setenv("ACUNETIX_API_KEY", "secret-key")
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def list_profiles(self):
+            return [{"profile_id": "profile-1", "name": "Full Scan"}]
+
+        def resolve_profile_id(self):
+            return "profile-1"
+
+    monkeypatch.setattr("app.api.webscan.acunetix.AcunetixClient", FakeClient)
+    status = get_scanner_connection_status()
+
+    assert status["reachable"] is True
+    assert status["api_key_configured"] is True
+    assert "secret-key" not in str(status)
+    assert status["profile_name"] == "Full Scan"
 
 
 def test_report_cwe_is_normalized_for_display():

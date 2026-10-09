@@ -265,6 +265,10 @@ export function listCloudAssessments(token) {
   return request("/cloud-assessment/scans", { token, skipCache: true });
 }
 
+export function getCloudAssessmentAccessStatus(token) {
+  return request("/cloud-assessment/access-status", { token, skipCache: true });
+}
+
 export function getCloudAssessment(scanId, token) {
   return request(`/cloud-assessment/scans/${encodeURIComponent(scanId)}`, {
     token,
@@ -379,11 +383,6 @@ export function cancelWebScan(scanId, token) {
     method: "POST",
     token,
   });
-}
-
-// Verifies the configured dynamic scanning service without starting a scan.
-export function getWebScanDiagnostics(token) {
-  return request("/webscan/diagnostics", { token, skipCache: true });
 }
 
 // ─── Score / Analyzer ─────────────────────────────────────────────────────────
@@ -546,6 +545,10 @@ export function getSemgrepVersionStatus(token) {
 
 export function getProwlerVersionStatus(token) {
   return request("/admin/tools/prowler", { token, skipCache: true });
+}
+
+export function getWebScanConnectionStatus(token) {
+  return request("/admin/tools/webscan-connection", { token, skipCache: true });
 }
 
 export function setSocAnalystActive(email, active, token) {
@@ -1361,6 +1364,42 @@ export function approveWebscanAccess(userId, token) {
 
 export function revokeWebscanAccess(userId, token) {
   return request("/admin/webscan/revoke", { method: "POST", body: { user_id: userId }, token });
+}
+
+export function setWebscanScanLimit(userId, scanLimit, token) {
+  return request("/admin/webscan/quota", {
+    method: "PUT",
+    body: { user_id: userId, scan_limit: scanLimit },
+    token,
+  });
+}
+
+export function resetWebscanScanUsage(userId, token) {
+  return request("/admin/webscan/quota/reset", { method: "POST", body: { user_id: userId }, token });
+}
+
+export function approveCloudAssessmentAccess(userId, token) {
+  return request("/admin/cloud-assessment/approve", { method: "POST", body: { user_id: userId }, token });
+}
+
+export function revokeCloudAssessmentAccess(userId, token) {
+  return request("/admin/cloud-assessment/revoke", { method: "POST", body: { user_id: userId }, token });
+}
+
+export function setCloudAssessmentScanLimit(userId, scanLimit, token) {
+  return request("/admin/cloud-assessment/quota", {
+    method: "PUT",
+    body: { user_id: userId, scan_limit: scanLimit },
+    token,
+  });
+}
+
+export function resetCloudAssessmentScanUsage(userId, token) {
+  return request("/admin/cloud-assessment/quota/reset", {
+    method: "POST",
+    body: { user_id: userId },
+    token,
+  });
 }
 
 export function getWebscanAccessStatus(token) {

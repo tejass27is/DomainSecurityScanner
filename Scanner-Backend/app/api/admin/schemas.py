@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class BlacklistEmailRequest(BaseModel):
@@ -11,6 +11,12 @@ class VaptBlockRequest(BaseModel):
     """Block/unblock an individual user's VAPT access — by user_id or email."""
     user_id: str | None = None
     email: str | None = None
+
+
+class UserScanQuotaRequest(BaseModel):
+    user_id: str | None = None
+    email: str | None = None
+    scan_limit: int = Field(ge=0)
 
 
 class CreateAdminRequest(BaseModel):

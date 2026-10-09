@@ -20,8 +20,10 @@ from app.db.models import CloudSecurityAssessment
 
 logger = logging.getLogger(__name__)
 PROWLER_TIMEOUT_SECONDS = 60 * 60
+CREDENTIAL_CHECK_TIMEOUT_SECONDS = 30
 FINDING_SEVERITIES = {"critical", "high", "medium", "low", "informational"}
 PROWLER_EXECUTABLE = os.getenv("PROWLER_EXECUTABLE", "prowler").strip() or "prowler"
+PROWLER_PYTHON_EXECUTABLE = os.getenv("PROWLER_PYTHON_EXECUTABLE", "").strip()
 PROVIDER_CREDENTIAL_ENV_VARS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
@@ -44,6 +46,96 @@ PROVIDER_CREDENTIAL_ENV_VARS = {
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_PROJECT_ID",
 }
+CREDENTIAL_CHECKS = {
+    "aws": "import boto3; boto3.client('sts').get_caller_identity()",
+    "azure": """
+import json
+import os
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
+
+tenant_id = quote(os.environ["AZURE_TENANT_ID"], safe="")
+request = Request(
+    f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+    data=urlencode({
+        "client_id": os.environ["AZURE_CLIENT_ID"],
+        "client_secret": os.environ["AZURE_CLIENT_SECRET"],
+        "grant_type": "client_credentials",
+        "scope": "https://management.azure.com/.default",
+    }).encode(),
+    headers={"Content-Type": "application/x-www-form-urlencoded"},
+)
+with urlopen(request, timeout=20) as response:
+    if not json.load(response).get("access_token"):
+        raise RuntimeError("Azure did not return an access token.")
+""",
+    "gcp": """
+import json
+import sys
+from google.auth.transport.requests import Request
+from google.oauth2 import service_account
+
+credentials = service_account.Credentials.from_service_account_info(
+    json.load(sys.stdin),
+    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+)
+credentials.refresh(Request())
+""",
+}
+
+
+class CloudCredentialValidationError(RuntimeError):
+    pass
+
+
+def validate_cloud_credentials(provider: str, credential_values: dict[str, str]) -> None:
+    if provider not in CREDENTIAL_CHECKS:
+        raise ValueError(f"Unsupported cloud provider: {provider}")
+    prowler_path = shutil.which(PROWLER_EXECUTABLE)
+    if not prowler_path:
+        raise RuntimeError("Prowler CLI is not installed on the scanner.")
+
+    python_executable = PROWLER_PYTHON_EXECUTABLE or str(
+        Path(prowler_path).resolve().with_name("python.exe" if os.name == "nt" else "python")
+    )
+    process_environment = _provider_environment(os.environ, provider, credential_values)
+    request_input = None
+    if provider == "gcp":
+        request_input = credential_values["service_account_json"]
+
+    try:
+        result = subprocess.run(
+            [python_executable, "-c", CREDENTIAL_CHECKS[provider]],
+            env=process_environment,
+            input=request_input,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=CREDENTIAL_CHECK_TIMEOUT_SECONDS,
+            text=True,
+        )
+    except subprocess.TimeoutExpired as error:
+        logger.warning("Cloud credential preflight timed out for provider %s.", provider)
+        raise CloudCredentialValidationError(
+            f"Could not verify {provider.upper()} credentials before timeout. "
+            "Check cloud API connectivity and try again; no scan allowance was used."
+        ) from error
+    except OSError as error:
+        logger.exception("Could not start cloud credential preflight for provider %s.", provider)
+        raise RuntimeError(
+            "Cloud credential verification is unavailable on the scanner."
+        ) from error
+
+    if result.returncode != 0:
+        logger.warning(
+            "Cloud credential preflight failed for provider %s (exit code %s).",
+            provider,
+            result.returncode,
+        )
+        raise CloudCredentialValidationError(
+            f"Could not authenticate the {provider.upper()} credentials. "
+            "Check the credential values and try again; no scan allowance was used."
+        )
 
 
 def _normalize_csv_findings(csv_text: str) -> list[dict[str, str]]:
@@ -73,11 +165,16 @@ def _normalize_csv_findings(csv_text: str) -> list[dict[str, str]]:
 
 def _summarize_findings(findings: list[dict[str, str]]) -> dict[str, Any]:
     failed = [finding for finding in findings if finding["status"] == "FAIL"]
+    errored = [finding for finding in findings if finding["status"] == "ERROR"]
+    skipped = [finding for finding in findings if finding["status"] in {"SKIP", "SKIPPED"}]
     summary: dict[str, Any] = {
         "total_checks": len(findings),
         "failed_checks": len(failed),
         "passed_checks": sum(finding["status"] == "PASS" for finding in findings),
         "manual_checks": sum(finding["status"] == "MANUAL" for finding in findings),
+        "errored_checks": len(errored),
+        "skipped_checks": len(skipped),
+        "checks_unavailable": len(errored) + len(skipped),
         "severity_counts": {severity: 0 for severity in sorted(FINDING_SEVERITIES)},
     }
     for finding in failed:
@@ -188,12 +285,13 @@ def run_cloud_assessment(
                     check=False,
                     timeout=PROWLER_TIMEOUT_SECONDS,
                 )
-            if completed.returncode != 0:
-                raise RuntimeError(
-                    "Prowler could not complete the assessment. Verify the cloud credentials, "
-                    "selected scope, and read-only access permissions."
-                )
-            findings = _load_csv_findings(output_directory)
+                findings = _load_csv_findings(output_directory)
+                if completed.returncode != 0:
+                    logger.info(
+                        "Prowler exited with status %s after producing a report for assessment %s.",
+                        completed.returncode,
+                        scan_id,
+                    )
 
         scan = db.query(CloudSecurityAssessment).filter(
             CloudSecurityAssessment.scan_id == scan_id,
