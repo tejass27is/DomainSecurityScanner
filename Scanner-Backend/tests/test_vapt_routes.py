@@ -119,6 +119,80 @@ def test_import_response_schemas_preserve_approved_next_vapt_date():
     ).next_vapt_due_at == due_date
 
 
+def test_access_status_returns_all_approved_org_regions():
+    db = Session(bind=engine)
+    try:
+        client = User(
+            user_id="multi-region-client",
+            org_id="org-multi-region",
+            email="multi-region-client@example.com",
+            password="test-password",
+            role="owner",
+            vapt_approved=True,
+        )
+        organization = Organization(
+            org_id="org-multi-region",
+            user_id=client.user_id,
+            region="MSU-IND",
+        )
+        region_codes = ["MSU-IND", "BOU-IND", "ACC-IND", "COLL-IRE"]
+        db.add_all([client, organization])
+        for code in region_codes:
+            region = Region(code=code, name=code, is_active=True)
+            db.add(region)
+            db.flush()
+            db.add(
+                OrganizationRegion(
+                    org_id=organization.org_id,
+                    region_id=region.region_id,
+                    status="approved",
+                    checklist_review_status="approved",
+                )
+            )
+        other_client = User(
+            user_id="other-multi-region-client",
+            org_id="org-other-multi-region",
+            email="other-multi-region-client@example.com",
+            password="test-password",
+            role="owner",
+            vapt_approved=True,
+        )
+        other_region_codes = ["NORTH-TEST", "SOUTH-TEST"]
+        db.add_all([
+            other_client,
+            Organization(
+                org_id="org-other-multi-region",
+                user_id=other_client.user_id,
+                region=other_region_codes[0],
+            ),
+        ])
+        for code in other_region_codes:
+            region = Region(code=code, name=code, is_active=True)
+            db.add(region)
+            db.flush()
+            db.add(
+                OrganizationRegion(
+                    org_id=other_client.org_id,
+                    region_id=region.region_id,
+                    status="approved",
+                    checklist_review_status="approved",
+                )
+            )
+        db.commit()
+
+        status = get_vapt_access_status(db=db, current_user=client)
+
+        assert status["region"] == "MSU-IND"
+        assert status["approved_region_codes"] == sorted(region_codes)
+        assert {region["code"] for region in status["approved_regions"]} == set(region_codes)
+        other_status = get_vapt_access_status(db=db, current_user=other_client)
+        assert other_status["region"] == "NORTH-TEST"
+        assert other_status["approved_region_codes"] == sorted(other_region_codes)
+        assert {region["code"] for region in other_status["approved_regions"]} == set(other_region_codes)
+    finally:
+        db.close()
+
+
 def test_checklist_attachment_upload_is_validated_and_org_scoped():
     """Uploads are extension-checked, stored on disk, and only readable by the
     owning org (or by SOC reviewing it)."""
@@ -1129,7 +1203,7 @@ def test_region_checklist_changes_requested_then_approved():
             role="soc_analyst",
         )
         db.add_all([client, soc])
-        db.add(Organization(org_id="org-rd", user_id="rd-client", max_domains=1))
+        db.add(Organization(org_id="org-rd", user_id="rd-client", max_domains=1, region="RD-B"))
         db.add(
             VaptOnboardingChecklist(
                 org_id="org-rd",
@@ -1161,18 +1235,15 @@ def test_region_checklist_changes_requested_then_approved():
                 current_user=soc,
             )
         )
-        _run(
-            request_vapt_region(
-                payload={
-                    "region_code": "RD-B",
-                    "region_name": "Region B",
-                    "testing_start_at": "2026-10-01T10:00:00+00:00",
-                    "testing_timezone": "UTC",
-                    "checklist_answers": _complete_region_checklist_answers(),
-                },
-                db=db,
-                current_user=client,
-            )
+        request_vapt_access(
+            payload={
+                "regions": [{"code": "RD-B", "name": "Region B"}],
+                "testing_start_at": "2026-10-01T10:00:00+00:00",
+                "testing_timezone": "UTC",
+                "checklist_answers": _complete_region_checklist_answers(),
+            },
+            db=db,
+            current_user=client,
         )
 
         reviewed = _run(
@@ -1197,11 +1268,13 @@ def test_region_checklist_changes_requested_then_approved():
         )
         assert reviewed["checklist_review_status"] == "changes_requested"
         assert reviewed["status"] == "pending"  # the region was NOT rejected
-        onboarding = db.query(VaptOnboardingChecklist).filter_by(org_id="org-rd").one()
-        assert onboarding.review_status == "changes_requested"
-        assert onboarding.review_flags[0]["question_id"] == "network_diagram_available"
-        assert onboarding.checklist_answers["general_information"]["network_diagram_available"]["answer"] == ""
-        assert onboarding.completed_at is not None
+        region_b = db.query(Region).filter_by(code="RD-B").one()
+        row = db.query(OrganizationRegion).filter_by(
+            org_id="org-rd",
+            region_id=region_b.region_id,
+        ).one()
+        assert row.checklist_flags[0]["question_id"] == "network_diagram_available"
+        assert row.checklist_submission["checklist_answers"]["general_information"]["network_diagram_available"]["answer"] == ""
 
         # The client can see the remarks and flagged items.
         status = get_vapt_access_status(db=db, current_user=client)
@@ -1212,39 +1285,34 @@ def test_region_checklist_changes_requested_then_approved():
         incomplete_answers = _complete_region_checklist_answers()
         incomplete_answers["general_information"]["network_diagram_available"]["answer"] = ""
         try:
-            _run(
-                request_vapt_region(
-                    payload={
-                        "region_code": "RD-B",
-                        "region_name": "Region B",
-                        "testing_start_at": "2026-10-01T10:00:00+00:00",
-                        "testing_timezone": "UTC",
-                        "checklist_answers": incomplete_answers,
-                    },
-                    db=db,
-                    current_user=client,
-                )
+            request_vapt_access(
+                payload={
+                    "regions": [{"code": "RD-B", "name": "Region B"}],
+                    "testing_start_at": "2026-10-01T10:00:00+00:00",
+                    "testing_timezone": "UTC",
+                    "checklist_answers": incomplete_answers,
+                },
+                db=db,
+                current_user=client,
             )
             raise AssertionError("expected 400 when the flagged answer is still empty")
         except HTTPException as exc:
             assert exc.status_code == 400
+            assert exc.detail == "Update every SOC-flagged checklist question before resubmitting."
         db.rollback()
 
         # Re-entering the flagged answer is valid even when the corrected
         # answer is textually the same as before; the client explicitly
         # re-entered it after SOC cleared it for review.
-        _run(
-            request_vapt_region(
-                payload={
-                    "region_code": "RD-B",
-                    "region_name": "Region B",
-                    "testing_start_at": "2026-10-01T10:00:00+00:00",
-                    "testing_timezone": "UTC",
-                    "checklist_answers": _complete_region_checklist_answers(),
-                },
-                db=db,
-                current_user=client,
-            )
+        request_vapt_access(
+            payload={
+                "regions": [{"code": "RD-B", "name": "Region B"}],
+                "testing_start_at": "2026-10-01T10:00:00+00:00",
+                "testing_timezone": "UTC",
+                "checklist_answers": _complete_region_checklist_answers(),
+            },
+            db=db,
+            current_user=client,
         )
         db.expire_all()
         region_b = db.query(Region).filter_by(code="RD-B").one()
@@ -1267,10 +1335,13 @@ def test_region_checklist_changes_requested_then_approved():
         assert approved["status"] == "approved"
         assert approved["checklist_review_status"] == "approved"
         db.expire_all()
-        onboarding = db.query(VaptOnboardingChecklist).filter_by(org_id="org-rd").one()
-        assert onboarding.review_status == "approved"
-        assert onboarding.review_flags is None
-        assert onboarding.completed_at is not None
+        row = db.query(OrganizationRegion).filter_by(
+            org_id="org-rd",
+            region_id=region_b.region_id,
+        ).one()
+        assert row.status == "approved"
+        assert row.checklist_review_status == "approved"
+        assert row.checklist_flags is None
     finally:
         db.close()
 

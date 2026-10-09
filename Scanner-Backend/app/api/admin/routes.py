@@ -53,6 +53,7 @@ from app.api.admin.service import (
     update_subscription_plan,
 )
 from app.api.admin.semgrep_status import SemgrepVersionCheckError, get_semgrep_version_status
+from app.api.admin.prowler_status import ProwlerVersionCheckError, get_prowler_version_status
 from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
 from app.api.vapt.routes import _region_display_name, _require_open_vapt_cycle, _to_detail, _to_list_item, _uploader_email_map, _verification_download_filename
 from app.api.vapt import schedule_service
@@ -79,6 +80,16 @@ def semgrep_version_status(
     try:
         return get_semgrep_version_status()
     except SemgrepVersionCheckError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/tools/prowler")
+def prowler_version_status(
+    _current_admin: User = Depends(require_admin),
+):
+    try:
+        return get_prowler_version_status()
+    except ProwlerVersionCheckError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

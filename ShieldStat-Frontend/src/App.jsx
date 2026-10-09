@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 
 import PublicLayout from "./layouts/PublicLayout";
 import DashboardLayout from "./layouts/DashboardLayout";
@@ -19,6 +19,7 @@ const AdminAudit = lazy(() => import("./pages/AdminAudit"));
 const PersonalInvitations = lazy(() => import("./pages/PersonalInvitations"));
 const AdminSubscription = lazy(() => import("./pages/AdminSubscription"));
 const Assessment = lazy(() => import("./pages/Assessment"));
+const CloudAssessment = lazy(() => import("./pages/CloudAssessment"));
 const MalwareScanHistory = lazy(() => import("./pages/MalwareScanHistory"));
 const MalwareDashboard = lazy(() => import("./pages/MalwareDashboard"));
 const Profile = lazy(() => import("./pages/Profile"));
@@ -96,6 +97,7 @@ function App() {
         <Route path="malware-dashboard" element={<MalwareDashboard />} />
         <Route path="assessment" element={<Assessment />} />
         <Route path="assessment/:sectionId" element={<Assessment />} />
+        <Route path="cloud-assessment" element={<CloudAssessment />} />
         <Route path="vapt" element={<VaptUpload />} />
         <Route path="vapt/reports" element={<VaptReports />} />
         <Route path="vapt/reports/:importId" element={<VaptReport />} />
@@ -124,6 +126,7 @@ function App() {
         <Route path="rescan-requests" element={<AdminRescanRequests />} />
         <Route path="soc-dashboard" element={<SocDashboard />} />
         <Route path="semgrep" element={<AdminSemgrep />} />
+        <Route path="prowler" element={<Navigate to="/admin/semgrep" replace />} />
         <Route path="profile" element={<Profile />} />
       </Route>
       </Routes>

@@ -82,6 +82,7 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
     : [
         { to: "/scan-dashboard", label: "Dashboard", icon: "dashboard" },
         { to: "/assessment", label: "Assessment", icon: "security" },
+        { to: "/cloud-assessment", label: "Cloud Assessment", icon: "cloud" },
         { to: "/scan", label: "Audit Domain", icon: "radar" },
         { to: "/malware", label: "Malware Scan", icon: "bug_report" },
         ...(webscanVisible ? [{ to: "/webscan", label: "Web Scan", icon: "travel_explore" }] : []),

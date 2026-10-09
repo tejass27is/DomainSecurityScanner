@@ -379,17 +379,19 @@ export default function AdminVaptAccessRequests() {
           </p>
         </div>
 
-        <div className="mb-6 grid gap-4 md:grid-cols-3">
+        <div className={`mb-6 grid gap-4 ${reviewSummary.incompleteCount > 0 ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
           <div className="rounded-2xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-900 dark:bg-violet-950/30">
             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-700 dark:text-violet-300">Pending regional requests</p>
             <p className="mt-3 text-3xl font-extrabold text-violet-900 dark:text-violet-100">{reviewSummary.pendingCount}</p>
             <p className="mt-2 text-xs text-violet-700 dark:text-violet-300">One review decision per region and its checklist</p>
           </div>
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-700 dark:text-amber-300">Checklist missing</p>
-            <p className="mt-3 text-3xl font-extrabold text-amber-900 dark:text-amber-100">{reviewSummary.incompleteCount}</p>
-            <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">Legacy requests need client resubmission before review</p>
-          </div>
+          {reviewSummary.incompleteCount > 0 && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-700 dark:text-amber-300">Checklist missing</p>
+              <p className="mt-3 text-3xl font-extrabold text-amber-900 dark:text-amber-100">{reviewSummary.incompleteCount}</p>
+              <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">Legacy requests need client resubmission before review</p>
+            </div>
+          )}
           <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/30">
             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-700 dark:text-emerald-300">Approved regions</p>
             <p className="mt-3 text-3xl font-extrabold text-emerald-900 dark:text-emerald-100">{reviewSummary.approvedCount}</p>
@@ -403,9 +405,11 @@ export default function AdminVaptAccessRequests() {
           <span className="text-xs text-slate-500 dark:text-slate-400">Every region and its checklist are reviewed together in one decision.</span>
         </div>
 
-        <p className="mb-6 -mt-3 text-xs text-slate-500 dark:text-slate-400">
-          Incomplete legacy requests stay visible for follow-up but cannot be approved until the checklist is resubmitted.
-        </p>
+        {reviewSummary.incompleteCount > 0 && (
+          <p className="mb-6 -mt-3 text-xs text-slate-500 dark:text-slate-400">
+            Incomplete legacy requests stay visible for follow-up but cannot be approved until the checklist is resubmitted.
+          </p>
+        )}
 
         {error && (
           <div className="mb-6 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
@@ -672,7 +676,7 @@ export default function AdminVaptAccessRequests() {
                                   <span className="inline-flex rounded-full border border-violet-300 bg-violet-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.15em] text-violet-700 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300">
                                     Region checklist submitted
                                   </span>
-                                  <div className="grid gap-3 text-xs sm:grid-cols-2">
+                                  <div className="grid gap-3 text-xs">
                                     <div>
                                       <p className="font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Testing window</p>
                                       <p className="mt-1 text-slate-700 dark:text-slate-200">
@@ -683,10 +687,6 @@ export default function AdminVaptAccessRequests() {
                                           </span>
                                         )}
                                       </p>
-                                    </div>
-                                    <div>
-                                      <p className="font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Scope IP ranges</p>
-                                      <p className="mt-1 whitespace-pre-wrap text-slate-700 dark:text-slate-200">{submission.scope_ip_ranges || "Not provided"}</p>
                                     </div>
                                   </div>
                                   {detail?.checklist_review_status === "changes_requested" && detail?.checklist_review_note && (

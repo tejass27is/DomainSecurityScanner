@@ -9,7 +9,9 @@ import {
   getReportMonth,
   getAvailableYears,
   getAvailableMonths,
+  getAvailableRegions,
   filterImportsByPeriod,
+  filterImportsByRegion,
 } from "../src/utils/vaptReportFilter.js";
 
 // Dates are built relative to the runtime current year so the suite keeps
@@ -56,6 +58,13 @@ assert.deepEqual(getAvailableYears(imports), [Y, Y - 1, Y - 2]);
 assert.deepEqual(getAvailableMonths(imports, Y), [3, 8]);
 assert.deepEqual(getAvailableMonths(imports, Y - 1), [6, 11]);
 assert.deepEqual(getAvailableMonths(imports, 1999), []);
+assert.deepEqual(
+  getAvailableRegions(
+    [mk(`${Y}-08-07T07:00:00Z`, { region: " msu-ind " })],
+    ["MSU-IND", "BOU-IND", "ACC-IND", "COLL-IRE"],
+  ),
+  ["ACC-IND", "BOU-IND", "COLL-IRE", "MSU-IND"],
+);
 
 // ─── Filter by year: exactly the right reports, nothing extra ───────────────
 const prevYear = filterImportsByPeriod(imports, { year: Y - 1 });
@@ -90,6 +99,17 @@ assert.equal(julThisYear.length, 0, "no July reports should match");
 const junPrevYear = filterImportsByPeriod(imports, { year: Y - 1, month: 6 });
 assert.equal(junPrevYear.length, 1);
 assert.equal(getReportMonth(junPrevYear[0].created_at), 6);
+
+// Region filtering is case- and whitespace-insensitive.
+const regionImports = [
+  mk(`${Y}-08-07T07:00:00Z`, { region: "COLL-IRE" }),
+  mk(`${Y}-08-07T07:00:00Z`, { region: " msu-ind " }),
+];
+assert.deepEqual(
+  filterImportsByRegion(regionImports, "MSU-IND"),
+  [regionImports[1]],
+);
+assert.equal(filterImportsByRegion(regionImports, null).length, regionImports.length);
 
 // ─── No period = everything (undated included) ──────────────────────────────
 assert.equal(filterImportsByPeriod(imports, {}).length, imports.length);

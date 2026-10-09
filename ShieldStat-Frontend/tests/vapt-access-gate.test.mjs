@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { getClientVaptAccessState } from '../src/utils/vaptAccessGate.js';
+import {
+  getClientVaptAccessState,
+  isApprovedRegionChecklist,
+} from '../src/utils/vaptAccessGate.js';
 
 // Step 1 — a brand-new client without admin approval cannot enter VAPT.
 assert.equal(
@@ -69,11 +72,34 @@ assert.equal(
 
 assert.equal(
   getClientVaptAccessState({
+    vaptAccessEnabled: false,
+    pendingRegions: [{ has_checklist: true, checklist_review_status: 'changes_requested' }],
+  }),
+  'checklist_required',
+  'a client must be able to correct a checklist even before the region is approved'
+);
+
+assert.equal(
+  getClientVaptAccessState({
     vaptAccessEnabled: true,
     approvedRegions: [{ has_checklist: true, checklist_review_status: 'approved' }],
   }),
   'allowed',
   'admin approval + checklist should allow the client into the VAPT flow'
+);
+
+const approvedRegions = [
+  { code: 'MSU-IND', has_checklist: true, checklist_review_status: 'approved' },
+  { code: 'BOU-IND', has_checklist: true, checklist_review_status: 'approved' },
+];
+assert.equal(isApprovedRegionChecklist(approvedRegions, ' msu-ind '), true);
+assert.equal(isApprovedRegionChecklist(approvedRegions, 'ACC-IND'), false);
+assert.equal(
+  isApprovedRegionChecklist(
+    [{ code: 'ACC-IND', has_checklist: true, checklist_review_status: 'pending' }],
+    'ACC-IND',
+  ),
+  false,
 );
 
 assert.equal(

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth.routes import router as auth_router
 from app.api.scanner.routes import router as scanner_router
 from app.api.assessment.routes import router as assessment_router
+from app.api.cloud_assessment.routes import router as cloud_assessment_router
 from app.db.create_db import init_db
 from app.db.init_db import init_tables
 from app.api.webhooks.routes import router as webhook_scanner_router
@@ -127,6 +128,7 @@ def healthz_check():
 app.include_router(auth_router)
 app.include_router(scanner_router)
 app.include_router(assessment_router)
+app.include_router(cloud_assessment_router)
 app.include_router(analyzer_router)
 app.include_router(fix_router)
 app.include_router(admin_router)

@@ -1625,7 +1625,6 @@ def _get_org_region_status(
     db: Session,
     org_id: str | None,
     blocked: bool = False,
-    region_code: str | None = None,
 ):
     if not org_id:
         return {
@@ -1640,14 +1639,6 @@ def _get_org_region_status(
         db.query(OrganizationRegion, Region)
         .join(Region, OrganizationRegion.region_id == Region.region_id)
         .filter(OrganizationRegion.org_id == org_id)
-        .filter(Region.code == region_code.strip().upper())
-        if region_code is not None
-        else db.query(OrganizationRegion, Region)
-        .join(Region, OrganizationRegion.region_id == Region.region_id)
-        .filter(OrganizationRegion.org_id == org_id)
-    )
-    org_region_rows = (
-        org_region_rows
         .order_by(Region.code.asc())
         .all()
     )
@@ -1813,6 +1804,19 @@ def request_vapt_access(
 
         org_region = existing_by_region.get(region.region_id)
         is_new_region = org_region is None
+        if (
+            org_region
+            and org_region.checklist_review_status == "changes_requested"
+            and org_region.checklist_flags
+            and not _flagged_answers_updated(
+                combined_submission.get("checklist_answers") or {},
+                org_region.checklist_flags,
+            )
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Update every SOC-flagged checklist question before resubmitting.",
+            )
         if org_region is None:
             if active_region_count >= MAX_VAPT_REGIONS_PER_ORG:
                 raise HTTPException(
@@ -1894,13 +1898,11 @@ def get_vapt_access_status(
         if current_user.org_id
         else None
     )
-    current_region = (organization.region or "").strip().upper() if organization else ""
     return {
         **_get_org_region_status(
             db,
             current_user.org_id,
             blocked=bool(getattr(current_user, "vapt_blocked", False)),
-            region_code=current_region,
         ),
         "vapt_access_enabled": bool(getattr(current_user, "vapt_approved", False)) and not bool(getattr(current_user, "vapt_blocked", False)),
         "vapt_approved": bool(getattr(current_user, "vapt_approved", False)),

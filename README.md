@@ -32,7 +32,7 @@ All data is organization-isolated with role-based access control.
 
 | Component | Path | Stack | Purpose |
 |---|---|---|---|
-| **Backend API** | `Scanner-Backend/` | FastAPI · SQLAlchemy · PostgreSQL · Redis | Auth, domain scanning orchestration, VAPT import engine, admin/SOC analyst management, email (SMTP), audit logs |
+| **Backend API** | `Scanner-Backend/` | FastAPI · SQLAlchemy · PostgreSQL · Redis · Prowler | Auth, domain and cloud security scan orchestration, VAPT import engine, admin/SOC analyst management, email (SMTP), audit logs |
 | **Scanner Engine** | `scanner-platform/` | Go · Redis · Webhooks | Distributed domain scanner (subdomain discovery, TLS, HTTP, DNS, mail security, ports) |
 | **Admin/User Frontend** | `ShieldStat-Frontend/` | React 18 · Vite · Tailwind CSS | Dashboards, domain scanner, VAPT upload + published report library, admin panel, SOC analyst panel |
 
@@ -133,6 +133,7 @@ Scanner-Backend/
 │   │   ├── vapt/              # VAPT import engine (parser / normalizer / report_generator)
 │   │   ├── admin/             # admin + SOC analyst provisioning, platform VAPT view
 │   │   ├── scanner/           # domain scan orchestration
+│   │   ├── cloud_assessment/  # Prowler-based AWS, Azure, and GCP assessments
 │   │   ├── analyzer/          # DNS scoring / scan pipeline
 │   │   ├── assessment/        # assessment questionnaires
 │   │   ├── fix/               # remediation recommendations
@@ -150,6 +151,18 @@ Scanner-Backend/
 ```
 
 API docs: `http://localhost:8000/docs` (Swagger).
+
+### Cloud Security Assessment
+
+The dashboard's **Cloud Assessment** page runs the [Prowler CLI](https://github.com/prowler-cloud/prowler) against AWS, Azure, or GCP accounts. The backend Docker image installs Prowler 5.44.0 into an isolated `/opt/prowler` virtual environment to avoid conflicts with the app's Semgrep dependencies; rebuild the image to update Prowler. For local runs, install Prowler in a separate virtual environment and set `PROWLER_EXECUTABLE` to its CLI path. The scanner must have outbound access to the cloud provider APIs.
+
+Users submit read-only cloud credentials for each assessment. Credentials are passed directly to the Prowler process and are not saved in scan history. Azure subscriptions and GCP projects must be selected explicitly; the supplied AWS identity determines the AWS account in scope. Results are private to the user who started the assessment. Expose the dashboard and API over HTTPS, and use least-privilege cloud credentials.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/cloud-assessment/scans` | Start an authenticated Prowler assessment |
+| GET | `/cloud-assessment/scans` | List the current user's recent assessments |
+| GET | `/cloud-assessment/scans/{scan_id}` | Get status, summary, and findings for an owned assessment |
 
 ### API Endpoints
 
@@ -213,7 +226,7 @@ API docs: `http://localhost:8000/docs` (Swagger).
 | POST | `/public/scan` · GET `/public/scan-status` · `/public/domain-overview` · POST `/public/send-report` · GET `/public/download-report` | Public scans |
 | POST | `/report-issue` | Report an issue |
 
-Admins can check the backend's installed Semgrep version and the latest PyPI release at `GET /admin/tools/semgrep` (Admin → Semgrep Updates). The backend must be able to reach `pypi.org`; this check reports update availability but does not install or deploy an update.
+Admins can check the backend's installed Semgrep version and the isolated Prowler scanner version against their latest PyPI releases from the single Admin → Tool Updates page. The status endpoints are `GET /admin/tools/semgrep` and `GET /admin/tools/prowler`. The backend must be able to reach `pypi.org`; these checks report update availability but do not install or deploy updates. Updating Prowler requires changing the version in the backend Dockerfile and redeploying the image.
 
 ### Environment Variables
 

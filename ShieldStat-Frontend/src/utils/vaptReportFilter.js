@@ -55,6 +55,30 @@ export function getAvailableMonths(imports, year) {
   return [...months].sort((a, b) => a - b);
 }
 
+/** Distinct approved or reported region codes, normalized and sorted. */
+export function getAvailableRegions(imports, approvedRegionCodes = []) {
+  const regions = new Set();
+  for (const value of approvedRegionCodes || []) {
+    const code = String(value || "").trim().toUpperCase();
+    if (code) regions.add(code);
+  }
+  for (const item of imports || []) {
+    const code = String(item?.region || "").trim().toUpperCase();
+    if (code) regions.add(code);
+  }
+  return [...regions].sort((a, b) => a.localeCompare(b));
+}
+
+/** Filter reports by region code, ignoring whitespace and case differences. */
+export function filterImportsByRegion(imports, region) {
+  const list = imports || [];
+  const selectedRegion = String(region || "").trim().toUpperCase();
+  if (!selectedRegion) return list;
+  return list.filter(
+    (item) => String(item?.region || "").trim().toUpperCase() === selectedRegion,
+  );
+}
+
 /**
  * Filter a report list by year and/or month.
  * - No period set → returns the list unchanged.

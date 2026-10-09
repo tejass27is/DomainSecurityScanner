@@ -22,7 +22,9 @@ import {
   MONTH_LABELS_SHORT,
   getAvailableYears,
   getAvailableMonths,
+  getAvailableRegions,
   filterImportsByPeriod,
+  filterImportsByRegion,
 } from "../utils/vaptReportFilter";
 
 const FORMAT_ICON = {
@@ -80,6 +82,7 @@ export default function VaptReports() {
   const [yearFilter, setYearFilter] = useState(null);
   const [monthFilter, setMonthFilter] = useState(null);
   const [approvedRegionCodes, setApprovedRegionCodes] = useState([]);
+  const [checklistUpdates, setChecklistUpdates] = useState([]);
   const [regionFilter, setRegionFilter] = useState(null);
 
   const loadImports = useCallback(async () => {
@@ -119,16 +122,29 @@ export default function VaptReports() {
         const [status] = await Promise.all([
           getVaptAccessStatus(token),
         ]);
+        setApprovedRegionCodes(
+          status?.approved_region_codes ||
+            (status?.approved_regions || []).map((region) =>
+              typeof region === "string" ? region : region?.code,
+            ).filter(Boolean),
+        );
+
+        const requestedUpdates = (status?.pending_regions || []).filter(
+          (region) => region.checklist_review_status === "changes_requested",
+        );
+        setChecklistUpdates(requestedUpdates);
 
         if (!status?.vapt_access_enabled) {
-          navigate("/vapt", { replace: true });
+          const updateRegion = requestedUpdates[0]?.code;
+          navigate(
+            updateRegion
+              ? `/vapt?region_request=1&region_code=${encodeURIComponent(updateRegion)}`
+              : "/vapt",
+            { replace: true },
+          );
           return;
         }
 
-        setApprovedRegionCodes(
-          status?.approved_region_codes ||
-            (status?.approved_regions || []).map((r) => (typeof r === "string" ? r : r?.code)).filter(Boolean),
-        );
         loadImports();
       } catch {
         navigate("/vapt", { replace: true });
@@ -179,10 +195,14 @@ export default function VaptReports() {
     : availableYears[0] ?? null;
   const effectiveYear = yearFilter === "all" ? null : (yearFilter ?? defaultYear);
   const availableMonths = getAvailableMonths(imports, effectiveYear);
-  const filteredImports = filterImportsByPeriod(imports, {
-    year: effectiveYear,
-    month: monthFilter,
-  }).filter((item) => !regionFilter || item.region === regionFilter);
+  const availableRegionCodes = getAvailableRegions(imports, approvedRegionCodes);
+  const filteredImports = filterImportsByRegion(
+    filterImportsByPeriod(imports, {
+      year: effectiveYear,
+      month: monthFilter,
+    }),
+    regionFilter,
+  );
 
   const handleYearClick = (year) => {
     setYearFilter(year);
@@ -215,6 +235,28 @@ export default function VaptReports() {
           </button>
         </div>
 
+        {checklistUpdates.length > 0 && (
+          <section className="mb-6 rounded-2xl border border-amber-300 bg-amber-50 p-5 dark:border-amber-800 dark:bg-amber-950/30">
+            <h2 className="font-bold text-amber-900 dark:text-amber-200">
+              SOC requested checklist updates
+            </h2>
+            <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
+              Update the flagged checklist item(s) and resubmit them for SOC review. Your other submitted answers will be kept.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              {checklistUpdates.map((region) => (
+                <button
+                  key={region.code}
+                  type="button"
+                  onClick={() => navigate(`/vapt?region_request=1&region_code=${encodeURIComponent(region.code)}`)}
+                  className="rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-amber-700"
+                >
+                  Update {region.name || region.code} checklist
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* ── Summary strip ── */}
         <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -247,14 +289,14 @@ export default function VaptReports() {
           </div>
         </div>
 
-        {/* ── Region tabs (your approved regions) ── */}
-        {approvedRegionCodes.length > 0 && imports.length > 0 && (
+        {/* ── Region tabs ── */}
+        {availableRegionCodes.length > 1 && (
           <div className="mb-6 flex flex-wrap items-center gap-2">
             <span className="mr-1 text-xs font-black uppercase tracking-[0.28em] text-slate-400 dark:text-slate-500">
               Region
             </span>
             <PeriodChip active={!regionFilter} onClick={() => setRegionFilter(null)}>All Regions</PeriodChip>
-            {approvedRegionCodes.map((code) => (
+            {availableRegionCodes.map((code) => (
               <PeriodChip key={code} active={regionFilter === code} onClick={() => setRegionFilter(code)}>
                 {code}
               </PeriodChip>

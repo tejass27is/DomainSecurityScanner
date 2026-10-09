@@ -251,6 +251,27 @@ export function getActiveScan(domain, orgId, token) {
   });
 }
 
+// ─── Cloud Assessment ────────────────────────────────────────────────────────
+
+export function createCloudAssessment(body, token) {
+  return request("/cloud-assessment/scans", {
+    method: "POST",
+    body,
+    token,
+  });
+}
+
+export function listCloudAssessments(token) {
+  return request("/cloud-assessment/scans", { token, skipCache: true });
+}
+
+export function getCloudAssessment(scanId, token) {
+  return request(`/cloud-assessment/scans/${encodeURIComponent(scanId)}`, {
+    token,
+    skipCache: true,
+  });
+}
+
 // ─── Web Scan (dynamic + Semgrep static mode) ──────────────────────────────
 
 export function createWebScan({
@@ -521,6 +542,10 @@ export function getSubscriptionPlans(token) {
 
 export function getSemgrepVersionStatus(token) {
   return request("/admin/tools/semgrep", { token, skipCache: true });
+}
+
+export function getProwlerVersionStatus(token) {
+  return request("/admin/tools/prowler", { token, skipCache: true });
 }
 
 export function setSocAnalystActive(email, active, token) {

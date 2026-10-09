@@ -303,6 +303,21 @@ class ActiveScan(Base):
     created_at = Column(TIMESTAMP, server_default=func.now())
 
 
+class CloudSecurityAssessment(Base):
+    __tablename__ = "cloud_security_assessments"
+
+    scan_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    provider = Column(String(20), nullable=False)
+    scope = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="running")
+    summary = Column(JSON, nullable=True)
+    findings = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class PortFixRequest(Base):
     __tablename__ = "port_fix_requests"
 
