@@ -20,7 +20,7 @@ def init_db():
 
     if not cursor.fetchone():
         from psycopg import sql
-        cursor.execute(
+        cursor.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query -- psycopg.sql.Identifier safely quotes the configured database identifier.
             sql.SQL("CREATE DATABASE {}")
             .format(sql.Identifier(db_name))
         )

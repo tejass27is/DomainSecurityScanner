@@ -2,10 +2,13 @@ import asyncio
 import io
 import os
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 from fastapi import HTTPException, UploadFile
+from openpyxl import load_workbook
+from pypdf import PdfReader
 from sqlalchemy.orm import Session
 
 from app.db.base import Base, engine
@@ -26,8 +29,12 @@ from app.api.vapt.routes import (
     _closure_block_message,
     _evaluate_manual_verification,
     _get_onboarding_or_create,
+    _to_detail,
     _missing_required_uploads,
     _normalize_finding_status,
+    _new_findings_requiring_follow_up,
+    _parse_report_files,
+    _requires_vapt_finding_triage,
     _reopen_unresolved_findings,
     _validate_rescan_prerequisites,
     _verification_display_name,
@@ -44,11 +51,19 @@ from app.api.vapt.routes import (
     request_vapt_region,
     review_vapt_onboarding,
     submit_onboarding_checklist,
+    submit_vapt_import,
     upload_checklist_attachment,
     upload_vapt_report,
+    update_vapt_finding_status,
 )
+from app.api.vapt.normalizer import group_stored_findings, normalize_import
 from app.api.admin.service import get_users_by_org
-from app.api.vapt.schemas import VaptImportDetail, VaptImportListItem
+from app.api.vapt.schemas import VaptFindingStatusUpdate, VaptImportDetail, VaptImportListItem
+from app.api.vapt.report_generator import (
+    generate_vapt_report_pdf,
+    generate_vapt_verification_report_pdf,
+    generate_vapt_verification_report_xlsx,
+)
 
 
 def _complete_region_checklist_answers():
@@ -67,6 +82,343 @@ def _complete_region_checklist_answers():
         "network_diagram_available": {"answer": "Available", "na": False},
     }
     return answers
+
+
+def test_vapt_pdf_generation_includes_region_without_callback_name_error():
+    record = SimpleNamespace(
+        import_id="test-import",
+        org_id="test-org",
+        region="CHA-IRE",
+        file_name="combined-report.nessus",
+        file_format="nessus",
+        source_tool="nessus",
+        status="open",
+        lifecycle_status="report_published",
+        total_findings=1,
+        unique_hosts=1,
+        risk_score=50,
+        severity="high",
+        severity_distribution={"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0},
+        category_distribution={"Network": 1},
+        summary={"raw_findings_parsed": 1},
+        findings=[{
+            "id": "finding-1",
+            "title": "Test vulnerability",
+            "severity_label": "high",
+            "cvss_score": 8.0,
+            "affected_hosts": ["192.0.2.10"],
+            "category": "Network",
+            "description": "A test finding.",
+            "solution": "Apply the recommended fix.",
+        }],
+        created_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+    )
+
+    pdf = generate_vapt_report_pdf(record)
+
+    assert pdf.startswith(b"%PDF")
+    assert "CHA-IRE" in PdfReader(io.BytesIO(pdf)).pages[1].extract_text()
+
+
+def test_verification_exports_include_fully_fixed_grouped_findings():
+    fixed = {
+        "id": "F001",
+        "title": "Grouped fixed vulnerability",
+        "severity_label": "high",
+        "affected_hosts": ["192.0.2.10", "192.0.2.11"],
+        "affected_assets": [
+            {"host": "192.0.2.10", "mac_address": "00:11:22:33:44:10"},
+            {"host": "192.0.2.11", "mac_address": "00:11:22:33:44:11"},
+        ],
+        "mac_address": "00:11:22:33:44:10, 00:11:22:33:44:11",
+        "protocols": ["tcp", "udp"],
+        "ports": [53, 443],
+        "verified_fixed_hosts": ["192.0.2.10", "192.0.2.11"],
+        "original_host_count": 2,
+        "category": "Network",
+        "description": "The grouped issue was fixed on both hosts.",
+    }
+    schedule = SimpleNamespace(
+        result_data={
+            "findings": [],
+            "fixed_findings": [fixed],
+            "remaining_findings": [],
+            "new_findings": [],
+            "unverified_findings": [],
+        },
+        status="completed",
+        scheduled_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+        uploaded_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+        verification_outcome="pending",
+    )
+    record = SimpleNamespace(
+        import_id="test-import",
+        org_id="test-org",
+        region="CHA-IRE",
+        file_name="initial-report.nessus",
+        file_format="nessus",
+        source_tool="nessus",
+        risk_score=50,
+        severity_distribution={"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0},
+        category_distribution={"Network": 1},
+        summary={},
+        findings=[fixed],
+        created_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+    )
+
+    pdf = generate_vapt_verification_report_pdf(schedule, record)
+    xlsx = generate_vapt_verification_report_xlsx(schedule, record)
+
+    assert "Grouped fixed vulnerability" in "\n".join(
+        page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf)).pages
+    )
+    workbook = load_workbook(io.BytesIO(xlsx), read_only=True)
+    rows = list(workbook["Verification Findings"].values)
+    assert any(row[1] == "Grouped fixed vulnerability" and row[6] == "Fixed" for row in rows)
+    assert rows[1][4] == "192.0.2.10, 192.0.2.11"
+    assert rows[1][7] == "00:11:22:33:44:10, 00:11:22:33:44:11"
+    assert rows[1][8] == "tcp, udp"
+    assert rows[1][9] == "53, 443"
+
+
+def test_parse_report_files_merges_findings_and_records_source_metadata(monkeypatch):
+    parsed = {
+        "first.nessus": ([{"title": "First issue", "host": "10.0.1.15", "severity": 3}], "nessus", "nessus"),
+        "second.nessus": ([{"title": "Second issue", "host": "10.0.2.15", "severity": 3}], "nessus", "nessus"),
+    }
+    monkeypatch.setattr(
+        "app.api.vapt.routes.parse_upload",
+        lambda content, filename: parsed[filename],
+    )
+
+    findings, source_tool, file_format, filenames, tools = _parse_report_files([
+        ("first.nessus", b"first"),
+        ("second.nessus", b"second"),
+    ])
+
+    assert findings == [
+        {"title": "First issue", "host": "10.0.1.15", "severity": 3},
+        {"title": "Second issue", "host": "10.0.2.15", "severity": 3},
+    ]
+    normalized = normalize_import(findings, "nessus")
+    assert source_tool == "nessus"
+    assert file_format == "nessus"
+    assert filenames == ["first.nessus", "second.nessus"]
+    assert tools == ["nessus"]
+    assert {host for finding in normalized["findings"] for host in finding["affected_hosts"]} == {
+        "10.0.1.15",
+        "10.0.2.15",
+    }
+
+
+def test_normalizer_groups_the_same_scanner_check_across_hosts():
+    findings = [
+        {
+            "title": "Weak TLS configuration",
+            "plugin_id": "1234",
+            "severity": 3,
+            "severity_label": "high",
+            "host": host,
+            "port": 443,
+            "protocol": "tcp",
+            "description": "The service supports a weak protocol.",
+            "cves": [],
+            "evidence": f"Evidence from {host}",
+        }
+        for host in ("192.0.2.10", "192.0.2.11", "192.0.2.12")
+    ]
+
+    normalized = normalize_import(findings, "nessus")
+
+    assert len(normalized["findings"]) == 1
+    grouped = normalized["findings"][0]
+    assert grouped["host_count"] == 3
+    assert grouped["affected_hosts"] == ["192.0.2.10", "192.0.2.11", "192.0.2.12"]
+    assert {entry["host"] for entry in grouped["host_outputs"]} == set(grouped["affected_hosts"])
+    assert normalized["total_findings"] == 1
+    assert normalized["risk_score"] == normalize_import(findings[:1], "nessus")["risk_score"]
+
+
+def test_normalizer_groups_same_finding_name_across_protocols_and_keeps_asset_pairs():
+    findings = [
+        {
+            "title": "  Shared   vulnerability name ",
+            "plugin_id": "plugin-a",
+            "severity": 2,
+            "severity_label": "medium",
+            "host": "192.0.2.20",
+            "mac_address": "00:11:22:33:44:55",
+            "hostname": "server-a",
+            "port": 53,
+            "protocol": "udp",
+            "description": "UDP-specific detail.",
+        },
+        {
+            "title": "shared vulnerability name",
+            "plugin_id": "plugin-b",
+            "severity": 3,
+            "severity_label": "high",
+            "host": "192.0.2.21",
+            "mac_address": "00:11:22:33:44:66",
+            "hostname": "server-b",
+            "port": 443,
+            "protocol": "tcp",
+            "description": "TCP-specific detail.",
+        },
+        {
+            "title": "SHARED VULNERABILITY NAME",
+            "plugin_id": "plugin-c",
+            "severity": 2,
+            "severity_label": "medium",
+            "host": "192.0.2.20",
+            "mac_address": "00:11:22:33:44:55",
+            "hostname": "server-a",
+            "port": 8443,
+            "protocol": "tcp",
+            "description": "Another port on the same asset.",
+        },
+    ]
+
+    normalized = normalize_import(findings, "generic")
+
+    assert len(normalized["findings"]) == 1
+    grouped = normalized["findings"][0]
+    assert grouped["host_count"] == 2
+    assert grouped["affected_hosts"] == ["192.0.2.20", "192.0.2.21"]
+    assert {
+        (asset["host"], asset["mac_address"])
+        for asset in grouped["affected_assets"]
+    } == {
+        ("192.0.2.20", "00:11:22:33:44:55"),
+        ("192.0.2.21", "00:11:22:33:44:66"),
+    }
+    assert grouped["protocols"] == ["tcp", "udp"]
+    assert grouped["ports"] == [53, 443, 8443]
+    assert grouped["severity_label"] == "high"
+
+
+def test_stored_findings_are_displayed_as_one_name_group_with_separate_asset_columns():
+    grouped = group_stored_findings([
+        {
+            "id": "F001",
+            "title": "Microsoft SQL Server Unsupported Version Detection (remote check)",
+            "severity": 4,
+            "severity_label": "critical",
+            "status": "pending",
+            "affected_hosts": ["172.16.116.40"],
+            "mac_address": "74:56:3C:2F:6E:DA",
+            "port": 1433,
+            "protocol": "tcp",
+        },
+        {
+            "id": "F002",
+            "title": "Microsoft SQL Server Unsupported Version Detection (remote check)",
+            "severity": 4,
+            "severity_label": "critical",
+            "status": "pending",
+            "affected_hosts": ["172.16.116.36"],
+            "mac_address": "84:A9:3E:78:C4:8F",
+            "port": 1434,
+            "protocol": "tcp",
+        },
+    ])
+
+    assert len(grouped) == 1
+    assert grouped[0]["affected_hosts"] == ["172.16.116.36", "172.16.116.40"]
+    assert {asset["mac_address"] for asset in grouped[0]["affected_assets"]} == {
+        "84:A9:3E:78:C4:8F",
+        "74:56:3C:2F:6E:DA",
+    }
+    assert grouped[0]["mac_address"] == "74:56:3C:2F:6E:DA, 84:A9:3E:78:C4:8F"
+    assert grouped[0]["ports"] == [1433, 1434]
+    assert grouped[0]["protocols"] == ["tcp"]
+    assert grouped[0]["host_count"] == 2
+    assert grouped[0]["grouped_finding_ids"] == ["F001", "F002"]
+
+
+def test_updating_grouped_legacy_finding_updates_each_underlying_row():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-group-status",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            total_findings=2,
+            unique_hosts=2,
+            risk_score=50,
+            severity="high",
+            findings=[
+                {
+                    "id": "F001",
+                    "title": "Same named issue",
+                    "severity_label": "high",
+                    "status": "pending",
+                    "affected_hosts": ["192.0.2.10"],
+                    "port": 80,
+                    "protocol": "tcp",
+                },
+                {
+                    "id": "F002",
+                    "title": "Same named issue",
+                    "severity_label": "high",
+                    "status": "pending",
+                    "affected_hosts": ["192.0.2.11"],
+                    "port": 443,
+                    "protocol": "tcp",
+                },
+            ],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        update_vapt_finding_status(
+            str(record.import_id),
+            "F001",
+            VaptFindingStatusUpdate(status="solved", comment="Fixed across the grouped assets"),
+            db=db,
+            current_user=SimpleNamespace(org_id="org-group-status", user_id="test-user"),
+        )
+
+        db.refresh(record)
+        assert [finding["status"] for finding in record.findings] == ["solved", "solved"]
+        assert [finding["comment"] for finding in record.findings] == [
+            "Fixed across the grouped assets",
+            "Fixed across the grouped assets",
+        ]
+        detail = _to_detail(record)
+        assert len(detail["findings"]) == 1
+        assert detail["findings"][0]["host_count"] == 2
+        assert detail["findings"][0]["ports"] == [80, 443]
+        assert detail["findings"][0]["status"] == "solved"
+    finally:
+        db.close()
+
+
+def test_normalized_informational_findings_remain_visible_without_changing_risk_score():
+    low_finding = {
+        "title": "Low severity issue",
+        "description": "A low severity test finding.",
+        "severity": 1,
+        "severity_label": "low",
+        "host": "10.0.0.1",
+    }
+    info_finding = {
+        "title": "Informational service",
+        "description": "A service is listening.",
+        "severity": 0,
+        "severity_label": "info",
+        "host": "10.0.0.2",
+    }
+
+    low_only = normalize_import([low_finding], "nessus")
+    with_info = normalize_import([low_finding, info_finding], "nessus")
+
+    assert [finding["severity_label"] for finding in with_info["findings"]] == ["low", "info"]
+    assert with_info["summary"]["excluded_info_findings"] == 0
+    assert with_info["summary"]["report_findings"] == 2
+    assert with_info["risk_score"] == low_only["risk_score"]
 
 
 def test_closed_vapt_cycle_cannot_schedule_verification():
@@ -457,6 +809,115 @@ def test_update_vapt_finding_status_persists_comment_and_status():
         db.close()
 
 
+def test_only_critical_high_and_medium_findings_require_triage():
+    assert _requires_vapt_finding_triage({"severity_label": "critical"})
+    assert _requires_vapt_finding_triage({"severity_label": "HIGH"})
+    assert _requires_vapt_finding_triage({"severity_label": "medium"})
+    assert not _requires_vapt_finding_triage({"severity_label": "low"})
+    assert not _requires_vapt_finding_triage({"severity_label": "info"})
+    assert not _requires_vapt_finding_triage({"severity_label": "informational"})
+
+
+def test_low_finding_cannot_be_status_updated():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-low-triage",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            total_findings=1,
+            unique_hosts=1,
+            risk_score=10,
+            severity="low",
+            findings=[{"id": "low-1", "severity_label": "low", "status": "pending"}],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        try:
+            update_vapt_finding_status(
+                str(record.import_id),
+                "low-1",
+                VaptFindingStatusUpdate(status="solved"),
+                db=db,
+                current_user=SimpleNamespace(org_id="org-low-triage"),
+            )
+            raise AssertionError("expected low-severity findings to reject triage updates")
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "do not require triage" in error.detail
+    finally:
+        db.close()
+
+
+def test_low_finding_does_not_block_report_submission():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-low-submit",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            total_findings=1,
+            unique_hosts=1,
+            risk_score=10,
+            severity="low",
+            findings=[{"id": "low-1", "severity_label": "low", "status": "pending"}],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        response = asyncio.run(
+            submit_vapt_import(
+                str(record.import_id),
+                db=db,
+                current_user=SimpleNamespace(org_id="org-low-submit"),
+            )
+        )
+
+        assert response["success"] is True
+        assert record.status == "client_completed"
+    finally:
+        db.close()
+
+
+def test_medium_finding_still_blocks_report_submission():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-medium-submit",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            total_findings=1,
+            unique_hosts=1,
+            risk_score=40,
+            severity="medium",
+            findings=[{"id": "medium-1", "severity_label": "medium", "status": "pending"}],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        try:
+            asyncio.run(
+                submit_vapt_import(
+                    str(record.import_id),
+                    db=db,
+                    current_user=SimpleNamespace(org_id="org-medium-submit"),
+                )
+            )
+            raise AssertionError("expected pending medium findings to block submission")
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "1 finding(s) still pending" in error.detail
+    finally:
+        db.close()
+
+
 def test_vapt_import_submit_sets_status_submitted():
     db = Session(bind=engine)
     try:
@@ -560,11 +1021,13 @@ def test_request_vapt_access_rejects_region_only_submission():
 
 def test_manual_verification_marks_all_fixed_as_completed():
     original = [{"title": "TLS issue", "plugin_id": "100", "status": "solved"}]
-    status, error, fixed, remaining = _evaluate_manual_verification(original, [])
+    status, error, fixed, remaining, new, unverified = _evaluate_manual_verification(original, [])
     assert status == "completed"
     assert error is None
-    assert fixed == original
+    assert fixed[0]["title"] == original[0]["title"]
     assert remaining == []
+    assert new == []
+    assert unverified == []
 
 
 def test_manual_verification_marks_partial_fix_as_completed_with_errors():
@@ -572,20 +1035,139 @@ def test_manual_verification_marks_partial_fix_as_completed_with_errors():
         {"title": "TLS issue", "plugin_id": "100", "status": "solved"},
         {"title": "SSH issue", "plugin_id": "200", "status": "solved"},
     ]
-    status, error, fixed, remaining = _evaluate_manual_verification(original, [original[1]])
+    status, error, fixed, remaining, new, unverified = _evaluate_manual_verification(original, [original[1]])
     assert status == "completed_with_errors"
     assert error
-    assert fixed == [original[0]]
-    assert remaining == [original[1]]
+    assert [finding["title"] for finding in fixed] == [original[0]["title"]]
+    assert [finding["title"] for finding in remaining] == [original[1]["title"]]
+    assert new == []
+    assert unverified == []
 
 
 def test_manual_verification_marks_no_confirmed_fix_as_failed():
     original = [{"title": "TLS issue", "plugin_id": "100", "status": "solved"}]
-    status, error, fixed, remaining = _evaluate_manual_verification(original, [original[0]])
+    status, error, fixed, remaining, new, unverified = _evaluate_manual_verification(original, [original[0]])
     assert status == "failed"
     assert error
     assert fixed == []
-    assert remaining == original
+    assert [finding["title"] for finding in remaining] == [finding["title"] for finding in original]
+    assert new == []
+    assert unverified == []
+
+
+def test_manual_verification_exposes_new_actionable_findings_for_client_triage():
+    original = [{"title": "TLS issue", "plugin_id": "100", "severity_label": "high", "status": "solved"}]
+    unexpected = {"title": "Open admin port", "plugin_id": "200", "severity_label": "critical"}
+
+    status, error, fixed, remaining, new, unverified = _evaluate_manual_verification(
+        original,
+        [unexpected],
+        original,
+    )
+
+    assert status == "completed_with_errors"
+    assert "new actionable finding" in error
+    assert [finding["title"] for finding in fixed] == [original[0]["title"]]
+    assert remaining == []
+    assert new == [{**unexpected, "status": "pending", "comment": ""}]
+    assert [finding["plugin_id"] for finding in _new_findings_requiring_follow_up(new)] == ["200"]
+    assert unverified == []
+
+
+def test_manual_verification_keeps_new_low_findings_visible_without_blocking():
+    original = [{"title": "TLS issue", "plugin_id": "100", "status": "solved"}]
+    informational = {"title": "Informational banner", "plugin_id": "200", "severity_label": "info"}
+
+    status, error, fixed, remaining, new, unverified = _evaluate_manual_verification(
+        original,
+        [informational],
+        original,
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert [finding["title"] for finding in fixed] == [original[0]["title"]]
+    assert remaining == []
+    assert new == [{**informational, "status": "pending", "comment": ""}]
+    assert _new_findings_requiring_follow_up(new) == []
+    assert unverified == []
+
+
+def test_manual_verification_reports_grouped_partial_host_fix():
+    original = [{
+        "title": "TLS issue",
+        "plugin_id": "100",
+        "port": 443,
+        "protocol": "tcp",
+        "description": "Weak TLS configuration",
+        "severity_label": "high",
+        "status": "solved",
+        "affected_hosts": ["host-a", "host-b", "host-c"],
+        "host_count": 3,
+    }]
+    detected = {
+        "title": "TLS issue",
+        "plugin_id": "100",
+        "port": 443,
+        "protocol": "tcp",
+        "description": "Weak TLS configuration",
+        "severity_label": "high",
+        "affected_hosts": ["host-b"],
+    }
+
+    status, error, fixed, remaining, new, unverified = _evaluate_manual_verification(
+        original,
+        [detected],
+        original,
+        ["host-a", "host-b"],
+    )
+
+    assert status == "completed_with_errors"
+    assert "remain on 1 asset" in error
+    assert fixed == []
+    assert remaining[0]["affected_hosts"] == ["host-b"]
+    assert remaining[0]["verified_fixed_hosts"] == ["host-a"]
+    assert remaining[0]["unverified_hosts"] == ["host-c"]
+    assert remaining[0]["original_host_count"] == 3
+    assert new == []
+    assert unverified == []
+
+
+def test_manual_verification_lists_hosts_outside_selected_scan_scope():
+    original = [{
+        "title": "TLS issue",
+        "plugin_id": "100",
+        "status": "solved",
+        "affected_hosts": ["host-a", "host-b"],
+    }]
+
+    status, error, fixed, remaining, new, unverified = _evaluate_manual_verification(
+        original,
+        [],
+        original,
+        ["host-a"],
+    )
+
+    assert status == "completed_with_errors"
+    assert "not included in this scan" in error
+    assert fixed == []
+    assert remaining == []
+    assert unverified[0]["affected_hosts"] == ["host-b"]
+    assert unverified[0]["verified_fixed_hosts"] == ["host-a"]
+
+
+def test_new_actionable_findings_block_closure_until_follow_up_verification():
+    findings = [
+        {"id": "pending", "severity_label": "critical", "status": "pending"},
+        {"id": "solved", "severity_label": "high", "status": "solved"},
+        {"id": "ignored", "severity_label": "medium", "status": "ignore"},
+        {"id": "low", "severity_label": "low", "status": "pending"},
+    ]
+
+    assert [finding["id"] for finding in _new_findings_requiring_follow_up(findings)] == [
+        "pending",
+        "solved",
+    ]
 
 
 def test_severity_gated_closure_allows_ignored_items_but_blocks_pending_and_redetected():
@@ -760,17 +1342,16 @@ def test_vapt_report_cycles_are_scoped_to_region():
         ])
         db.commit()
 
-        vapt_routes.parse_upload = lambda content, filename: ([{"finding": "sample"}], "generic", "csv")
-        vapt_routes.normalize_import = lambda findings, source_tool: {
-            "total_findings": 1,
-            "unique_hosts": 1,
-            "risk_score": 10,
-            "severity": "low",
-            "severity_distribution": {"low": 1},
-            "category_distribution": {},
-            "summary": {},
-            "findings": [{"id": "sample-finding"}],
-        }
+        vapt_routes.parse_upload = lambda content, filename: (
+            [{
+                "host": "10.0.1.15" if "one" in filename else "10.0.2.15",
+                "title": f"Finding from {filename}",
+                "severity": 3,
+                "severity_label": "high",
+            }],
+            "nessus",
+            "nessus",
+        )
 
         try:
             _run(upload_vapt_report(
@@ -810,7 +1391,10 @@ def test_vapt_report_cycles_are_scoped_to_region():
         db.add(region_b_checklist)
         db.commit()
         uploaded = _run(upload_vapt_report(
-            file=UploadFile(file=io.BytesIO(b"sample"), filename="region-b.csv"),
+            files=[
+                UploadFile(file=io.BytesIO(b"sample one"), filename="floor-one.nessus"),
+                UploadFile(file=io.BytesIO(b"sample two"), filename="floor-two.nessus"),
+            ],
             org_id="org-region-cycle",
             region="CYCLE-B",
             db=db,
@@ -818,6 +1402,13 @@ def test_vapt_report_cycles_are_scoped_to_region():
         ))
         assert uploaded["region"] == "CYCLE-B"
         assert uploaded["cycle_number"] == 1
+        assert uploaded["file_name"] == "Combined report (2 files)"
+        assert uploaded["summary"]["source_files"] == ["floor-one.nessus", "floor-two.nessus"]
+        assert {
+            host
+            for finding in uploaded["findings"]
+            for host in finding["affected_hosts"]
+        } == {"10.0.1.15", "10.0.2.15"}
 
         try:
             _run(upload_vapt_report(

@@ -73,6 +73,8 @@ from reportlab.platypus import (
 )
 from reportlab.platypus.tableofcontents import TableOfContents
 
+from app.api.vapt.normalizer import group_stored_findings
+
 # ─────────────────────────────────────────────────────────────────────────
 # Brand palette
 # ─────────────────────────────────────────────────────────────────────────
@@ -110,6 +112,8 @@ _TOOL_LABELS = {"nessus": "Nessus", "openvas": "OpenVAS", "qualys": "Qualys", "g
 
 
 def _tool_label(tool):
+    if (tool or "").lower() == "combined":
+        return "Combined assessment"
     return _TOOL_LABELS.get((tool or "").lower(), tool or "—")
 
 
@@ -631,7 +635,7 @@ def _build_back_cover_pdf(back_logo_path, version, assessment_date):
 # Header / footer for interior pages
 # ─────────────────────────────────────────────────────────────────────────
 
-def _make_header_footer(report_title, client_name, version, assessment_date):
+def _make_header_footer(report_title, client_name, version, assessment_date, region_display=None):
     def _draw(canvas_, doc):
         canvas_.saveState()
         # header
@@ -650,10 +654,15 @@ def _make_header_footer(report_title, client_name, version, assessment_date):
         # identifies the region on every page (Initial VAPT, verification,
         # and closure reports all stay consistent).
         if region_display:
-            _region_display = (str(region_display) if len(str(region_display)) <= 40 else region_display[:37].rsplit(" ", 1)[0] + "...")
+            region_text = str(region_display)
+            _region_display = (
+                region_text
+                if len(region_text) <= 40
+                else region_text[:37].rsplit(" ", 1)[0] + "..."
+            )
             canvas_.setFont(_font(), 7.5)
             canvas_.setFillColor(PRIMARY)
-            canvas_.drawRightString(PAGE_W - MARGIN - 12 * mm, PAGE_H - 10.6 * mm, _region_display)
+            canvas_.drawRightString(PAGE_W - MARGIN, PAGE_H - 16 * mm, _region_display)
 
         # footer
         canvas_.setStrokeColor(BORDER)
@@ -893,6 +902,16 @@ def _clip_line(line, max_len=130):
     return line if len(line) <= max_len else line[: max_len - 1] + "…"
 
 
+def _asset_labels(finding):
+    assets = finding.get("affected_assets") or []
+    if assets:
+        return [
+            asset.get("host") or asset.get("hostname") or "Unknown asset"
+            for asset in assets
+        ]
+    return finding.get("affected_hosts") or []
+
+
 def _finding_card(finding, index, styles):
     sev = (finding.get("severity_label") or "info").lower()
     color = SEVERITY_COLORS.get(sev, SEVERITY_COLORS["info"])
@@ -926,10 +945,14 @@ def _finding_card(finding, index, styles):
         meta_rows.append(("CWE", finding["cwe"]))
     if finding.get("owasp_category"):
         meta_rows.append(("OWASP", finding["owasp_category"]))
-    hosts = finding.get("affected_hosts") or []
-    meta_rows.append(("Asset(s)", ", ".join(hosts[:3]) + (f" +{len(hosts) - 3}" if len(hosts) > 3 else "") or "—"))
-    if finding.get("port") is not None:
-        meta_rows.append(("Port", str(finding["port"])))
+    assets = _asset_labels(finding)
+    meta_rows.append(("Asset(s)", ", ".join(assets[:3]) + (f" +{len(assets) - 3}" if len(assets) > 3 else "") or "—"))
+    protocols = finding.get("protocols") or ([finding["protocol"]] if finding.get("protocol") else [])
+    ports = finding.get("ports") or ([finding["port"]] if finding.get("port") is not None else [])
+    if protocols:
+        meta_rows.append(("Protocol(s)", ", ".join(map(str, protocols))))
+    if ports:
+        meta_rows.append(("Port(s)", ", ".join(map(str, ports))))
     status = (finding.get("remediation_status") or "Open").replace("_", " ").title()
     meta_rows.append(("Status", status))
     meta_table = _kv_table(meta_rows, styles, key_w=20 * mm)
@@ -1101,11 +1124,22 @@ def _section_appendix(record, styles):
     findings = record.findings or []
 
     story.append(Paragraph("Scanner Information", styles["h3"]))
+    source_files = (record.summary or {}).get("source_files") or []
     story.append(_kv_table([
         ("Source Tool", _tool_label(record.source_tool)),
         ("File Format", (record.file_format or "—").upper()),
+        ("Source Files", ", ".join(str(name) for name in source_files) if source_files else record.file_name),
         ("Raw Entries Parsed", str((record.summary or {}).get("raw_findings_parsed") or "—")),
     ], styles, key_w=40 * mm))
+    summary = record.summary or {}
+    if "verification_findings" in summary:
+        story.append(_kv_table([
+            ("Verification Findings", str(summary.get("verification_findings", 0))),
+            ("Confirmed Fixed", str(summary.get("confirmed_fixed", 0))),
+            ("Still Present", str(summary.get("still_present", 0))),
+            ("New Findings", str(summary.get("new_findings", 0))),
+            ("Not Verified", str(summary.get("unverified_findings", 0))),
+        ], styles, key_w=40 * mm))
     story.append(Spacer(1, 6))
 
     story.append(Paragraph("CVSS Scoring", styles["h3"]))
@@ -1162,14 +1196,28 @@ def _section_appendix(record, styles):
 # ─────────────────────────────────────────────────────────────────────────
 
 def _reported_only(record, findings_override=None):
-    findings = [f for f in (findings_override if findings_override is not None else (record.findings or []))
-                if (f.get("severity_label") or "").lower() in _REPORTED_SEVERITIES]
+    source_findings = findings_override if findings_override is not None else (record.findings or [])
+    findings = [
+        finding for finding in group_stored_findings(source_findings)
+        if (finding.get("severity_label") or "").lower() in _REPORTED_SEVERITIES
+    ]
     findings.sort(key=lambda f: (-SEVERITY_RANK.get((f.get("severity_label") or "").lower(), 0),
                                   -(f.get("cvss_score") or 0)))
     hosts = sorted({h for f in findings for h in f.get("affected_hosts", [])})
+    severity_distribution = {severity: 0 for severity in SEVERITY_ORDER}
+    category_distribution = {}
+    for finding in findings:
+        severity = (finding.get("severity_label") or "").lower()
+        if severity in severity_distribution:
+            severity_distribution[severity] += 1
+        category = finding.get("category") or "Other"
+        category_distribution[category] = category_distribution.get(category, 0) + 1
     return SimpleNamespace(
         import_id=record.import_id,
         org_id=getattr(record, "org_id", ""),
+        region=getattr(record, "region", ""),
+        region_code=getattr(record, "region_code", ""),
+        _region=getattr(record, "_region", None),
         file_name=record.file_name,
         file_format=record.file_format,
         source_tool=record.source_tool,
@@ -1179,8 +1227,8 @@ def _reported_only(record, findings_override=None):
         unique_hosts=len(hosts),
         risk_score=record.risk_score,
         severity=record.severity,
-        severity_distribution={k: (record.severity_distribution or {}).get(k, 0) for k in SEVERITY_ORDER},
-        category_distribution=record.category_distribution,
+        severity_distribution=severity_distribution,
+        category_distribution=category_distribution,
         summary=record.summary,
         findings=findings,
         created_at=record.created_at,
@@ -1246,12 +1294,6 @@ def generate_vapt_report_pdf(
         _region = getattr(record, "_region", None)
         if _region is None:
             _region = getattr(record, "region_row", None)
-        if _region is None:
-            try:
-                from sqlalchemy.orm import Session
-                _region = db.query(Region).filter(Region.code == region_code).first() if db is not None else None
-            except Exception:
-                _region = None
         region_display = (_region.name if _region is not None and hasattr(_region, "name") else region_code)
     engagement_start = engagement_start or created.strftime("%d %b %Y")
     engagement_end = engagement_end or created.strftime("%d %b %Y")
@@ -1269,7 +1311,13 @@ def generate_vapt_report_pdf(
 
     # ── body: TOC + all interior sections (TOC needs a two-pass build) ──
     body_buf = BytesIO()
-    header_footer = _make_header_footer(report_title, client_name, version, assessment_date)
+    header_footer = _make_header_footer(
+        report_title,
+        client_name,
+        version,
+        assessment_date,
+        region_display=region_display,
+    )
     doc = _ReportDoc(
         body_buf, header_footer, pagesize=A4,
         leftMargin=MARGIN, rightMargin=MARGIN, topMargin=20 * mm, bottomMargin=18 * mm,
@@ -1316,19 +1364,32 @@ def generate_vapt_verification_report_pdf(schedule, original_record, prepared_fo
     findings = result_data.get("findings", []) if isinstance(result_data, dict) else []
     fixed_findings = result_data.get("fixed_findings", []) if isinstance(result_data, dict) else []
     remaining_findings = result_data.get("remaining_findings", []) if isinstance(result_data, dict) else []
+    new_findings = result_data.get("new_findings", []) if isinstance(result_data, dict) else []
+    unverified_findings = result_data.get("unverified_findings", []) if isinstance(result_data, dict) else []
     if not isinstance(findings, list):
         findings = []
     if not isinstance(fixed_findings, list):
         fixed_findings = []
     if not isinstance(remaining_findings, list):
         remaining_findings = []
+    if not isinstance(new_findings, list):
+        new_findings = []
+    if not isinstance(unverified_findings, list):
+        unverified_findings = []
     prepared_for = prepared_for or getattr(original_record, "region", None) or "Not specified"
     # Optional SOC-supplied name for this verification report (set at upload time).
     display_name = None
     if isinstance(result_data, dict):
         display_name = " ".join(str(result_data.get("display_name") or "").split()).strip() or None
     if not findings:
-        findings = fixed_findings + remaining_findings
+        findings = remaining_findings + new_findings
+    findings = findings + [
+        {**finding, "remediation_status": "fixed"}
+        for finding in fixed_findings
+    ] + [
+        {**finding, "remediation_status": "not_scanned"}
+        for finding in unverified_findings
+    ]
     severity_distribution = {severity: 0 for severity in SEVERITY_ORDER}
     category_distribution = {}
     for finding in findings:
@@ -1349,7 +1410,14 @@ def generate_vapt_verification_report_pdf(schedule, original_record, prepared_fo
         severity=max(severity_distribution, key=severity_distribution.get) if findings else "none",
         severity_distribution=severity_distribution,
         category_distribution=category_distribution,
-        summary={"raw_findings_parsed": len(findings), "verification_findings": len(findings)},
+        summary={
+            "raw_findings_parsed": len(findings),
+            "verification_findings": len(findings),
+            "confirmed_fixed": len(fixed_findings),
+            "still_present": len(remaining_findings),
+            "new_findings": len(new_findings),
+            "unverified_findings": len(unverified_findings),
+        },
         findings=findings,
         created_at=getattr(schedule, "uploaded_at", None) or getattr(original_record, "created_at", None),
         unique_hosts=len({host for finding in findings for host in (finding.get("affected_hosts") or [])}),
@@ -1403,7 +1471,7 @@ def _build_findings_xlsx_sheet(wb, findings, sheet_name="Findings"):
 
     headers = [
         "ID", "Title", "Severity", "CVSS", "Host(s)",
-        "Port", "Category", "CWE", "CVE(s)", "Status",
+        "MAC Address(es)", "Protocol(s)", "Port(s)", "Category", "CWE", "CVE(s)", "Status",
         "Description", "Recommendation", "Business Impact",
     ]
 
@@ -1427,16 +1495,20 @@ def _build_findings_xlsx_sheet(wb, findings, sheet_name="Findings"):
     ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
 
     for row_idx, finding in enumerate(findings, 2):
-        hosts = finding.get("affected_hosts") or []
+        hosts = _asset_labels(finding)
         cves = finding.get("cves") or []
         status = (finding.get("remediation_status") or finding.get("status") or "open").replace("_", " ").title()
+        protocols = finding.get("protocols") or ([finding["protocol"]] if finding.get("protocol") else [])
+        ports = finding.get("ports") or ([finding["port"]] if finding.get("port") is not None else [])
         values = [
             finding.get("id", ""),
             finding.get("title", ""),
             (finding.get("severity_label") or "info").title(),
             finding.get("cvss_score", ""),
             ", ".join(hosts) if hosts else "",
-            finding.get("port", ""),
+            finding.get("mac_address", ""),
+            ", ".join(map(str, protocols)),
+            ", ".join(map(str, ports)),
             finding.get("category", ""),
             finding.get("cwe", ""),
             ", ".join(cves) if cves else "",
@@ -1448,10 +1520,10 @@ def _build_findings_xlsx_sheet(wb, findings, sheet_name="Findings"):
         for col_idx, value in enumerate(values, 1):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.border = thin_border
-            cell.alignment = Alignment(vertical="top", wrap_text=col_idx in (11, 12, 13))
+            cell.alignment = Alignment(vertical="top", wrap_text=col_idx in (13, 14, 15))
 
     # Column widths (approximate)
-    widths = [8, 30, 12, 8, 30, 8, 20, 12, 25, 14, 40, 40, 30]
+    widths = [8, 30, 12, 8, 40, 25, 16, 16, 20, 12, 25, 14, 40, 40, 30]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -1481,6 +1553,7 @@ def generate_vapt_report_xlsx(record, findings_override=None) -> bytes:
         ["File Name", record.file_name],
         ["Source Tool", _tool_label(record.source_tool)],
         ["File Format", (record.file_format or "").upper()],
+        ["Source Files", ", ".join(str(name) for name in ((record.summary or {}).get("source_files") or [])) or record.file_name],
         ["Total Findings (excl. info)", filtered.total_findings],
         ["Informational (excluded)", raw_info_count],
         ["Unique Hosts", filtered.unique_hosts],
@@ -1527,17 +1600,30 @@ def generate_vapt_verification_report_xlsx(schedule, original_record, prepared_f
     findings = result_data.get("findings", []) if isinstance(result_data, dict) else []
     fixed_findings = result_data.get("fixed_findings", []) if isinstance(result_data, dict) else []
     remaining_findings = result_data.get("remaining_findings", []) if isinstance(result_data, dict) else []
+    new_findings = result_data.get("new_findings", []) if isinstance(result_data, dict) else []
+    unverified_findings = result_data.get("unverified_findings", []) if isinstance(result_data, dict) else []
     if not isinstance(findings, list):
         findings = []
     if not isinstance(fixed_findings, list):
         fixed_findings = []
     if not isinstance(remaining_findings, list):
         remaining_findings = []
+    if not isinstance(new_findings, list):
+        new_findings = []
+    if not isinstance(unverified_findings, list):
+        unverified_findings = []
     prepared_for = prepared_for or getattr(original_record, "region", None) or "Not specified"
     # Optional SOC-supplied name for this verification report (set at upload time).
     display_name = None
     if isinstance(result_data, dict):
         display_name = " ".join(str(result_data.get("display_name") or "").split()).strip() or None
+    findings = findings + [
+        {**finding, "remediation_status": "fixed"}
+        for finding in fixed_findings
+    ] + [
+        {**finding, "remediation_status": "not_scanned"}
+        for finding in unverified_findings
+    ]
 
     wb = Workbook()
     wb.properties.title = display_name or "VAPT Verification Report"
@@ -1545,7 +1631,10 @@ def generate_vapt_verification_report_xlsx(schedule, original_record, prepared_f
     # ── Sheet 1: Verification Findings ──
     ws = wb.active
     ws.title = "Verification Findings"
-    headers = ["ID", "Title", "Severity", "CVSS", "Host(s)", "Category", "Status"]
+    headers = [
+        "ID", "Title", "Severity", "CVSS", "Host(s)", "Category", "Status",
+        "MAC Address(es)", "Protocol(s)", "Port(s)",
+    ]
     header_font = Font(bold=True, color="FFFFFF", size=10)
     header_fill = PatternFill(start_color="800080", end_color="800080", fill_type="solid")
     thin_border = Border(
@@ -1564,7 +1653,9 @@ def generate_vapt_verification_report_xlsx(schedule, original_record, prepared_f
         cell.border = thin_border
 
     for row_idx, finding in enumerate(findings, 2):
-        hosts = finding.get("affected_hosts") or []
+        hosts = _asset_labels(finding)
+        protocols = finding.get("protocols") or ([finding["protocol"]] if finding.get("protocol") else [])
+        ports = finding.get("ports") or ([finding["port"]] if finding.get("port") is not None else [])
         values = [
             finding.get("id", ""),
             finding.get("title", ""),
@@ -1573,13 +1664,16 @@ def generate_vapt_verification_report_xlsx(schedule, original_record, prepared_f
             ", ".join(hosts) if hosts else "",
             finding.get("category", ""),
             (finding.get("remediation_status") or finding.get("status") or "open").replace("_", " ").title(),
+            finding.get("mac_address", ""),
+            ", ".join(map(str, protocols)),
+            ", ".join(map(str, ports)),
         ]
         for col_idx, value in enumerate(values, 1):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.border = thin_border
             cell.alignment = Alignment(vertical="top")
 
-    widths = [8, 30, 12, 8, 30, 20, 14]
+    widths = [8, 30, 12, 8, 40, 20, 14, 25, 16, 16]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -1594,6 +1688,8 @@ def generate_vapt_verification_report_xlsx(schedule, original_record, prepared_f
         ["Findings in Verification Export", len(findings)],
         ["Confirmed Fixed", len(fixed_findings)],
         ["Still Present", len(remaining_findings)],
+        ["New Findings", len(new_findings)],
+        ["Affected Findings Not Verified", len(unverified_findings)],
     ]
     for row_idx, row in enumerate(summary_data, 1):
         for col_idx, value in enumerate(row, 1):

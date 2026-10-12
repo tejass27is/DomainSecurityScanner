@@ -21,7 +21,7 @@ from app.api.vapt.parser import (
     MAX_FILE_SIZE,
     parse_upload,
 )
-from app.api.vapt.normalizer import normalize_import
+from app.api.vapt.normalizer import finding_group_key, group_stored_findings, normalize_import
 from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_closure_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
 from app.api.vapt.schemas import (
     VaptFindingStatusUpdate,
@@ -406,6 +406,8 @@ CHECKLIST_UPLOAD_QUESTIONS: dict[str, dict] = {
     },
 }
 MAX_ATTACHMENT_SIZE = MAX_FILE_SIZE
+MAX_REPORT_FILES = 25
+MAX_COMBINED_REPORT_SIZE = 100 * 1024 * 1024
 
 
 def _attachment_dir() -> str:
@@ -1480,8 +1482,8 @@ def list_approved_vapt_onboarding(
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async def _read_upload(file: UploadFile) -> bytes:
-    """Read an uploaded file enforcing the 25 MB size limit."""
+async def _read_upload(file: UploadFile, max_size: int = MAX_FILE_SIZE) -> bytes:
+    """Read an uploaded file without exceeding its remaining upload budget."""
     chunks: list[bytes] = []
     total = 0
     while True:
@@ -1489,13 +1491,38 @@ async def _read_upload(file: UploadFile) -> bytes:
         if not chunk:
             break
         total += len(chunk)
-        if total > MAX_FILE_SIZE:
+        if total > max_size:
+            if max_size == MAX_FILE_SIZE:
+                detail = f"File exceeds the {MAX_FILE_SIZE // (1024 * 1024)} MB size limit."
+            else:
+                detail = f"Combined report files exceed the {MAX_COMBINED_REPORT_SIZE // (1024 * 1024)} MB total size limit."
             raise HTTPException(
                 status_code=413,
-                detail=f"File exceeds the {MAX_FILE_SIZE // (1024 * 1024)} MB size limit.",
+                detail=detail,
             )
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _parse_report_files(uploaded_files: list[tuple[str, bytes]]) -> tuple[list[dict], str, str, list[str], list[str]]:
+    """Parse multiple scanner exports as one source report."""
+    raw_findings: list[dict] = []
+    source_tools: list[str] = []
+    file_formats: list[str] = []
+    file_names: list[str] = []
+
+    for filename, content in uploaded_files:
+        findings, source_tool, file_format = parse_upload(content, filename)
+        raw_findings.extend(findings)
+        if source_tool not in source_tools:
+            source_tools.append(source_tool)
+        if file_format not in file_formats:
+            file_formats.append(file_format)
+        file_names.append(filename)
+
+    source_tool = source_tools[0] if len(source_tools) == 1 else "combined"
+    file_format = file_formats[0] if len(file_formats) == 1 else "mixed"
+    return raw_findings, source_tool, file_format, file_names, source_tools
 
 
 def _get_org_import_or_404(db: Session, import_id: str, org_id: str) -> VaptImport:
@@ -1604,11 +1631,36 @@ def _to_list_item(record: VaptImport, uploader_email: str | None = None) -> dict
 
 
 def _to_detail(record: VaptImport, uploader_email: str | None = None) -> dict:
+    findings = group_stored_findings(record.findings or [])
+    severity_distribution = {severity: 0 for severity in ("critical", "high", "medium", "low", "info")}
+    category_distribution = {}
+    for finding in findings:
+        severity = str(finding.get("severity_label") or "info").lower()
+        if severity in severity_distribution:
+            severity_distribution[severity] += 1
+        category = finding.get("category") or "Other"
+        category_distribution[category] = category_distribution.get(category, 0) + 1
+    unique_hosts = {
+        host
+        for finding in findings
+        for host in finding.get("affected_hosts") or []
+    }
+    summary = {
+        **(record.summary or {}),
+        "report_findings": len(findings),
+        "real_findings": sum(
+            finding.get("severity_label") != "info" for finding in findings
+        ),
+        "unique_hosts": len(unique_hosts),
+    }
     return {
         **_to_list_item(record, uploader_email=uploader_email),
-        "category_distribution": record.category_distribution or {},
-        "summary": record.summary or {},
-        "findings": record.findings or [],
+        "total_findings": len(findings),
+        "unique_hosts": len(unique_hosts),
+        "severity_distribution": severity_distribution,
+        "category_distribution": category_distribution,
+        "summary": summary,
+        "findings": findings,
     }
 
 
@@ -2210,13 +2262,14 @@ def has_completed_scans(
 
 @router.post("/upload", response_model=VaptUploadResponse)
 async def upload_vapt_report(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    files: list[UploadFile] | None = File(None),
     org_id: str | None = Form(None),
     region: str | None = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_soc_analyst),
 ):
-    """Upload a .nessus / .xml / .csv / .xlsx export — parses, scores, stores.
+    """Upload one or more .nessus / .xml / .csv / .xlsx exports as one report.
 
     Only SOC analysts upload reports (platform admins manage users and approvals).
     The report is published to the selected organization (``org_id`` form field)
@@ -2272,6 +2325,17 @@ async def upload_vapt_report(
     else:
         raise HTTPException(status_code=400, detail="An approved region is required for every VAPT report.")
 
+    upload_files = list(files) if isinstance(files, list) else []
+    if isinstance(file, UploadFile):
+        upload_files.insert(0, file)
+    if not upload_files:
+        raise HTTPException(status_code=400, detail="Select at least one scanner export to upload.")
+    if len(upload_files) > MAX_REPORT_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"A combined report can contain at most {MAX_REPORT_FILES} files.",
+        )
+
     latest_record = db.query(VaptImport).filter(
         VaptImport.org_id == target_org_id,
         VaptImport.region == region,
@@ -2281,25 +2345,33 @@ async def upload_vapt_report(
             status_code=409,
             detail="The current VAPT cycle for this region must be closed by SOC before the next full report can be uploaded.",
         )
+    uploaded_data: list[tuple[str, bytes]] = []
+    total_upload_size = 0
+    for upload in upload_files:
+        raw_filename = (upload.filename or "unnamed").replace("\\", "/")
+        filename = raw_filename.rsplit("/", 1)[-1]
+        ext = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported file type '{ext}'. Upload a .nessus, .xml, .csv, "
+                    f".xls or .xlsx export (max {MAX_FILE_SIZE // (1024 * 1024)} MB each)."
+                ),
+            )
 
-    filename = file.filename or "unnamed"
-    ext = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unsupported file type '{ext}'. Upload a .nessus, .xml, .csv, "
-                f".xls or .xlsx export (max {MAX_FILE_SIZE // (1024 * 1024)} MB)."
-            ),
-        )
-
-    content = await _read_upload(file)
+        remaining_size = MAX_COMBINED_REPORT_SIZE - total_upload_size
+        content = await _read_upload(upload, max_size=min(MAX_FILE_SIZE, remaining_size))
+        total_upload_size += len(content)
+        if not content:
+            raise HTTPException(status_code=400, detail=f"The uploaded file '{filename}' is empty.")
+        uploaded_data.append((filename, content))
 
     try:
         # Parsing + normalization are CPU-bound; run off the event loop so a
         # large export never stalls the rest of the API.
-        raw_findings, source_tool, file_format = await asyncio.to_thread(
-            parse_upload, content, filename
+        raw_findings, source_tool, file_format, source_files, source_tools = await asyncio.to_thread(
+            _parse_report_files, uploaded_data
         )
         normalized = await asyncio.to_thread(normalize_import, raw_findings, source_tool)
     except ValueError as exc:
@@ -2311,11 +2383,14 @@ async def upload_vapt_report(
             detail="No findings could be parsed from this file. Please check the "
             "export format and try again.",
         )
+    normalized["summary"]["source_files"] = source_files
+    normalized["summary"]["source_tools"] = source_tools
 
     cycle_number = db.query(VaptImport).filter(
         VaptImport.org_id == target_org_id,
         VaptImport.region == region,
     ).count() + 1
+    filename = source_files[0] if len(source_files) == 1 else f"Combined report ({len(source_files)} files)"
     record = VaptImport(
         org_id=target_org_id,
         uploaded_by=current_user.user_id,
@@ -2393,22 +2468,180 @@ def list_vapt_imports(
 
 
 def _verification_finding_key(finding: dict) -> tuple:
-    """Build a stable identity for comparing an original and retest finding."""
-    title = " ".join(str(finding.get("title") or "").lower().split())
-    plugin_id = str(finding.get("plugin_id") or "").strip().lower()
-    cves = tuple(sorted(str(cve).strip().lower() for cve in (finding.get("cves") or []) if cve))
-    return (plugin_id or title, finding.get("port"), str(finding.get("protocol") or "").lower(), cves)
+    """Use the parser's asset-independent scanner-check identity."""
+    return finding_group_key(finding)
 
 
-def _evaluate_manual_verification(original_solved: list[dict], verification_findings: list[dict]) -> tuple[str, str | None, list[dict], list[dict]]:
-    verification_keys = {_verification_finding_key(finding) for finding in verification_findings}
-    fixed_findings = [finding for finding in original_solved if _verification_finding_key(finding) not in verification_keys]
-    remaining_findings = [finding for finding in original_solved if _verification_finding_key(finding) in verification_keys]
-    if not fixed_findings:
-        return "failed", "The verification upload did not confirm any previously solved findings as fixed.", fixed_findings, remaining_findings
-    if remaining_findings:
-        return "completed_with_errors", f"{len(remaining_findings)} previously solved finding(s) remain present in the verification export.", fixed_findings, remaining_findings
-    return "completed", None, fixed_findings, remaining_findings
+def _finding_hosts(finding: dict) -> list[str]:
+    hosts = finding.get("affected_hosts") or ([finding.get("host")] if finding.get("host") else [])
+    return sorted({str(host).strip() for host in hosts if str(host).strip()})
+
+
+def _with_verification_hosts(
+    finding: dict,
+    *,
+    affected_hosts: list[str],
+    verified_fixed_hosts: list[str],
+    unverified_hosts: list[str] | None = None,
+    original_hosts: list[str] | None = None,
+) -> dict:
+    return {
+        **finding,
+        "affected_hosts": affected_hosts,
+        "host_count": len(affected_hosts),
+        "original_host_count": len(original_hosts or []),
+        "verified_fixed_hosts": verified_fixed_hosts,
+        "unverified_hosts": unverified_hosts or [],
+    }
+
+
+def _evaluate_manual_verification(
+    original_solved: list[dict],
+    verification_findings: list[dict],
+    original_findings: list[dict] | None = None,
+    scanned_hosts: list[str] | None = None,
+) -> tuple[str, str | None, list[dict], list[dict], list[dict], list[dict]]:
+    """Compare findings by scanner check and retain per-host verification results."""
+    verification_by_key: dict[tuple, list[dict]] = {}
+    for finding in verification_findings:
+        verification_by_key.setdefault(_verification_finding_key(finding), []).append(finding)
+    original_keys = {
+        _verification_finding_key(finding)
+        for finding in (original_findings if original_findings is not None else original_solved)
+    }
+    fixed_findings = []
+    remaining_findings = []
+    unverified_findings = []
+    scan_scope = {
+        str(host).strip().lower()
+        for host in (scanned_hosts or [])
+        if str(host).strip()
+    }
+
+    for original in original_solved:
+        key = _verification_finding_key(original)
+        original_hosts = _finding_hosts(original)
+        original_by_normalized = {host.casefold(): host for host in original_hosts}
+        scope_hosts = (
+            [host for normalized, host in original_by_normalized.items() if normalized in scan_scope]
+            if scan_scope else original_hosts
+        )
+        scope_keys = {host.casefold() for host in scope_hosts}
+        unverified_hosts = (
+            [host for host in original_hosts if host.casefold() not in scope_keys]
+            if scan_scope else []
+        )
+        matches = verification_by_key.get(key, [])
+        observed_hosts = {
+            host
+            for finding in matches
+            for host in _finding_hosts(finding)
+        }
+        if matches and not observed_hosts and scope_hosts:
+            observed_hosts = set(scope_hosts)
+        observed_by_normalized = {host.casefold(): host for host in observed_hosts}
+        still_present_keys = (
+            (set(observed_by_normalized) & scope_keys)
+            | (set(observed_by_normalized) - set(original_by_normalized))
+        )
+        still_present_hosts = sorted(observed_by_normalized[key] for key in still_present_keys)
+        fixed_hosts = sorted(
+            host for host in scope_hosts
+            if host.casefold() not in still_present_keys
+        )
+        if still_present_hosts or (matches and not original_hosts):
+            remaining_findings.append(_with_verification_hosts(
+                original,
+                affected_hosts=still_present_hosts,
+                verified_fixed_hosts=fixed_hosts,
+                unverified_hosts=unverified_hosts,
+                original_hosts=original_hosts,
+            ))
+        elif unverified_hosts:
+            unverified_findings.append(_with_verification_hosts(
+                original,
+                affected_hosts=unverified_hosts,
+                verified_fixed_hosts=fixed_hosts,
+                unverified_hosts=unverified_hosts,
+                original_hosts=original_hosts,
+            ))
+        elif original_hosts:
+            fixed_findings.append(_with_verification_hosts(
+                original,
+                affected_hosts=original_hosts,
+                verified_fixed_hosts=original_hosts,
+                original_hosts=original_hosts,
+            ))
+        else:
+            fixed_findings.append(_with_verification_hosts(
+                original,
+                affected_hosts=[],
+                verified_fixed_hosts=[],
+                original_hosts=[],
+            ))
+
+    new_findings = [
+        {**finding, "status": "pending", "comment": ""}
+        for finding in verification_findings
+        if _verification_finding_key(finding) not in original_keys
+    ]
+    confirmed_host_count = sum(
+        len(finding.get("verified_fixed_hosts") or [])
+        or (1 if not _finding_hosts(finding) else 0)
+        for finding in fixed_findings
+    ) + sum(
+        len(finding.get("verified_fixed_hosts") or [])
+        for finding in [*remaining_findings, *unverified_findings]
+    )
+    if not confirmed_host_count:
+        if unverified_findings:
+            return (
+                "failed",
+                "The verification upload did not confirm any previously solved findings as fixed; some affected assets were not included in the scan.",
+                fixed_findings,
+                remaining_findings,
+                new_findings,
+                unverified_findings,
+            )
+        return (
+            "failed",
+            "The verification upload did not confirm any previously solved findings as fixed.",
+            fixed_findings,
+            remaining_findings,
+            new_findings,
+            unverified_findings,
+        )
+    if remaining_findings or unverified_findings:
+        remaining_host_count = sum(len(_finding_hosts(finding)) for finding in remaining_findings)
+        message = (
+            f"{len(remaining_findings)} previously solved finding(s) remain on "
+            f"{remaining_host_count} asset(s) in the verification export."
+        )
+        unverified_host_count = sum(
+            len(_finding_hosts(finding))
+            for finding in unverified_findings
+        ) + sum(
+            len(finding.get("unverified_hosts") or [])
+            for finding in remaining_findings
+        )
+        if unverified_host_count:
+            message += f" {unverified_host_count} affected asset(s) were not included in this scan."
+        if any(_requires_vapt_finding_triage(finding) for finding in new_findings):
+            message += f" {sum(_requires_vapt_finding_triage(finding) for finding in new_findings)} new actionable finding(s) also need client review."
+        return "completed_with_errors", message, fixed_findings, remaining_findings, new_findings, unverified_findings
+    actionable_new_count = sum(
+        _requires_vapt_finding_triage(finding) for finding in new_findings
+    )
+    if actionable_new_count:
+        return (
+            "completed_with_errors",
+            f"Previously solved findings were confirmed fixed; {actionable_new_count} new actionable finding(s) need client review.",
+            fixed_findings,
+            remaining_findings,
+            new_findings,
+            unverified_findings,
+        )
+    return "completed", None, fixed_findings, remaining_findings, new_findings, unverified_findings
 
 
 _CLOSURE_BLOCKING_SEVERITIES = {"critical", "high", "medium"}
@@ -2416,6 +2649,19 @@ _CLOSURE_BLOCKING_SEVERITIES = {"critical", "high", "medium"}
 
 def _finding_severity(finding: dict) -> str:
     return str(finding.get("severity_label") or finding.get("severity") or "").strip().lower()
+
+
+def _requires_vapt_finding_triage(finding: dict) -> bool:
+    return _finding_severity(finding) in {"critical", "high", "medium"}
+
+
+def _new_findings_requiring_follow_up(findings: list[dict]) -> list[dict]:
+    return [
+        finding
+        for finding in findings
+        if _requires_vapt_finding_triage(finding)
+        and (finding.get("status") or "pending") in {"pending", "solved"}
+    ]
 
 
 def _closure_blockers(record: VaptImport, remaining_findings: list[dict] | None = None) -> list[dict]:
@@ -2459,6 +2705,35 @@ def _reopen_unresolved_findings(record: VaptImport, verification_data: dict | No
     ]
 
 
+def _merge_verification_hosts(findings: list[dict], verification_findings: list[dict]) -> list[dict]:
+    """Retain newly observed assets on existing grouped issues after reopening."""
+    updated = [dict(finding) for finding in findings]
+    positions = {
+        _verification_finding_key(finding): index
+        for index, finding in enumerate(updated)
+    }
+    for verification_finding in verification_findings:
+        index = positions.get(_verification_finding_key(verification_finding))
+        if index is None:
+            continue
+        finding = updated[index]
+        hosts = sorted(set(_finding_hosts(finding)) | set(_finding_hosts(verification_finding)))
+        host_outputs = list(finding.get("host_outputs") or [])
+        for host_output in verification_finding.get("host_outputs") or []:
+            if host_output not in host_outputs:
+                host_outputs.append(host_output)
+        finding["affected_hosts"] = hosts
+        finding["host_count"] = len(hosts)
+        finding["host_outputs"] = host_outputs
+        if host_outputs:
+            finding["evidence"] = "\n\n".join(
+                str(output.get("output") or "")
+                for output in host_outputs
+                if output.get("output")
+            )
+    return updated
+
+
 @router.post("/admin/rescan-requests/{schedule_id}/upload")
 async def upload_vapt_verification(
     schedule_id: str,
@@ -2499,11 +2774,48 @@ async def upload_vapt_verification(
 
     original_solved = [finding for finding in (record.findings or []) if (finding.get("status") or "") == "solved"]
     verification_findings = normalized["findings"]
-    status, error_message, fixed_findings, remaining_findings = _evaluate_manual_verification(original_solved, verification_findings)
-    remaining_findings = [
-        {**finding, "status": "pending", "comment": ""}
-        for finding in remaining_findings
-    ]
+    status, error_message, fixed_findings, remaining_findings, new_findings, unverified_findings = _evaluate_manual_verification(
+        original_solved,
+        verification_findings,
+        record.findings or [],
+        schedule.hosts or [],
+    )
+    remaining_keys = {_verification_finding_key(finding) for finding in remaining_findings}
+    new_keys = {_verification_finding_key(finding) for finding in new_findings}
+    unverified_keys = {_verification_finding_key(finding) for finding in unverified_findings}
+    original_keys = {
+        _verification_finding_key(finding)
+        for finding in (record.findings or [])
+    }
+    annotated_verification_findings = []
+    for finding in verification_findings:
+        key = _verification_finding_key(finding)
+        host_result = next(
+            (
+                grouped
+                for grouped in (*fixed_findings, *remaining_findings, *unverified_findings)
+                if _verification_finding_key(grouped) == key
+            ),
+            None,
+        )
+        result = (
+            "new_finding" if key in new_keys
+            else "still_present" if key in remaining_keys
+            else "not_scanned" if key in unverified_keys
+            else "previously_reported" if key in original_keys
+            else "new_finding"
+        )
+        annotated_verification_findings.append({
+            **finding,
+            "verification_result": result,
+            "remediation_status": result,
+            **({
+                "verified_fixed_hosts": host_result.get("verified_fixed_hosts") or [],
+                "unverified_hosts": host_result.get("unverified_hosts") or [],
+                "original_host_count": host_result.get("original_host_count") or 0,
+            } if host_result else {}),
+        })
+    verification_findings = annotated_verification_findings
 
     schedule.status = status
     schedule.error_message = error_message
@@ -2520,6 +2832,8 @@ async def upload_vapt_verification(
         "previously_solved": original_solved,
         "fixed_findings": fixed_findings,
         "remaining_findings": remaining_findings,
+        "new_findings": new_findings,
+        "unverified_findings": unverified_findings,
     }
     record.lifecycle_status = "revalidation_verification_pending"
     db.add(schedule)
@@ -2565,6 +2879,7 @@ async def upload_vapt_verification(
         "lifecycle_status": record.lifecycle_status,
         "fixed_count": len(fixed_findings),
         "remaining_count": len(remaining_findings),
+        "new_count": len(new_findings),
     }
 
 
@@ -2713,28 +3028,44 @@ def update_vapt_finding_status(
         )
 
     findings = record.findings or []
-    updated_finding = None
+    target_finding = next(
+        (finding for finding in findings if str(finding.get("id")) == finding_id),
+        None,
+    )
+    if target_finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found in this import.")
+    target_key = _verification_finding_key(target_finding)
+    matching_findings = [
+        finding for finding in findings
+        if _verification_finding_key(finding) == target_key
+    ]
+    if not any(_requires_vapt_finding_triage(finding) for finding in matching_findings):
+        raise HTTPException(
+            status_code=400,
+            detail="Low and Informational findings do not require triage.",
+        )
+
     updated_findings = []
     for finding in findings:
-        if str(finding.get("id")) == finding_id:
-            updated_finding = {
+        if _verification_finding_key(finding) == target_key:
+            updated_findings.append({
                 **finding,
                 "status": normalized_status,
                 "comment": comment,
-            }
-            updated_findings.append(updated_finding)
+            })
         else:
             updated_findings.append(finding)
-
-    if updated_finding is None:
-        raise HTTPException(status_code=404, detail="Finding not found in this import.")
 
     record.findings = updated_findings
     db.add(record)
     db.commit()
     db.refresh(record)
     _record_audit_log(db, current_user, "VAPT_FINDING_UPDATED", "vapt_import", str(record.import_id), {"finding_id": finding_id, "status": normalized_status, "comment": comment})
-    return {"success": True, "finding": updated_finding}
+    grouped_finding = next(
+        finding for finding in group_stored_findings(updated_findings)
+        if str(target_finding.get("id")) in finding.get("grouped_finding_ids", [])
+    )
+    return {"success": True, "finding": grouped_finding}
 
 
 @router.post("/imports/{import_id}/submit")
@@ -2743,9 +3074,10 @@ async def submit_vapt_import(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_vapt_access),
 ):
-    """User submits a VAPT report after triaging all findings.
+    """User submits a VAPT report after triaging actionable findings.
 
-    Requires every finding to be marked (no pending left).
+    Critical, High, and Medium findings must be marked; Low and Informational
+    findings remain in the report but do not require triage.
     Status flips to client_completed and SOC gets a live notification.
     """
     if not current_user.org_id:
@@ -2757,13 +3089,18 @@ async def submit_vapt_import(
     _require_open_vapt_cycle(record)
     findings = record.findings or []
 
-    # Completion gate: all findings must be triaged
+    # Completion gate: only Critical, High, and Medium findings require triage.
     VALID_TRIAGED = {"solved", "ignore", "false_positive"}
-    pending = [f for f in findings if (f.get("status") or "pending") not in VALID_TRIAGED]
+    pending = [
+        finding
+        for finding in findings
+        if _requires_vapt_finding_triage(finding)
+        and (finding.get("status") or "pending") not in VALID_TRIAGED
+    ]
     if pending:
         raise HTTPException(
             status_code=400,
-            detail=f"All findings must be triaged before submitting. {len(pending)} finding(s) still pending.",
+            detail=f"All actionable findings must be triaged before submitting. {len(pending)} finding(s) still pending.",
         )
 
     # Count solved findings for the completion summary
@@ -2998,8 +3335,12 @@ async def close_vapt_without_verification(
     _require_open_vapt_cycle(record)
     if record.status != "client_completed" or record.remediation_review_status != "approved":
         raise HTTPException(status_code=400, detail="The client must complete the report review before closure.")
-    if any((finding.get("status") or "pending") == "pending" for finding in (record.findings or [])):
-        raise HTTPException(status_code=400, detail="All findings must be triaged before closure.")
+    if any(
+        _requires_vapt_finding_triage(finding)
+        and (finding.get("status") or "pending") == "pending"
+        for finding in (record.findings or [])
+    ):
+        raise HTTPException(status_code=400, detail="All actionable findings must be triaged before closure.")
     if any((finding.get("status") or "") == "solved" for finding in (record.findings or [])):
         raise HTTPException(status_code=400, detail="A verification schedule is required when any finding is Solved.")
     blockers = _closure_blockers(record)
@@ -3044,12 +3385,40 @@ async def decide_vapt_verification(
     next_due = None
     if outcome == "closed":
         verification_data = schedule.result_data or {}
-        blockers = _closure_blockers(record, verification_data.get("remaining_findings") or [])
+        unverified = verification_data.get("unverified_findings") or []
+        unverified_host_count = sum(
+            len(_finding_hosts(finding))
+            for finding in unverified
+        ) + sum(
+            len(finding.get("unverified_hosts") or [])
+            for finding in (verification_data.get("remaining_findings") or [])
+        )
+        if unverified_host_count:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Verification did not cover {unverified_host_count} affected asset(s). Scan those assets before closing the cycle.",
+            )
+        blockers = _closure_blockers(
+            record,
+            [
+                *(verification_data.get("remaining_findings") or []),
+                *unverified,
+            ],
+        )
         if blockers:
             raise HTTPException(status_code=409, detail=_closure_block_message(blockers))
-        verification_data = schedule.result_data or {}
         remaining = verification_data.get("remaining_findings") or []
-        if remaining and verification_data.get("client_review_status") != "client_completed":
+        new_findings = verification_data.get("new_findings") or []
+        actionable_new = [
+            finding for finding in new_findings
+            if _requires_vapt_finding_triage(finding)
+        ]
+        if _new_findings_requiring_follow_up(actionable_new):
+            raise HTTPException(
+                status_code=409,
+                detail="New actionable findings must be remediated and verified in a follow-up scan before closure.",
+            )
+        if (remaining or actionable_new) and verification_data.get("client_review_status") != "client_completed":
             raise HTTPException(status_code=409, detail="The client must review and submit all unresolved verification findings before closure.")
 
     schedule.verification_outcome = outcome
@@ -3058,10 +3427,39 @@ async def decide_vapt_verification(
     if body.note is not None:
         schedule.note = body.note.strip() or schedule.note
     if outcome == "closed":
+        verification_data = schedule.result_data or {}
+        existing_keys = {
+            _verification_finding_key(finding)
+            for finding in record.findings or []
+        }
+        for finding in verification_data.get("new_findings") or []:
+            finding_key = _verification_finding_key(finding)
+            if finding_key not in existing_keys:
+                record.findings.append({
+                    **finding,
+                    "verification_result": "new_finding",
+                })
+                existing_keys.add(finding_key)
         record.lifecycle_status = "closure_pending_client_due_date"
     else:
         verification_data = schedule.result_data or {}
         record.findings = _reopen_unresolved_findings(record, verification_data)
+        record.findings = _merge_verification_hosts(
+            record.findings,
+            verification_data.get("findings") or [],
+        )
+        existing_keys = {
+            _verification_finding_key(finding)
+            for finding in record.findings
+        }
+        for finding in verification_data.get("new_findings") or []:
+            finding_key = _verification_finding_key(finding)
+            if finding_key not in existing_keys:
+                record.findings.append({
+                    **finding,
+                    "verification_result": "new_finding",
+                })
+                existing_keys.add(finding_key)
         record.status = "open"
         record.remediation_review_status = "pending"
         record.lifecycle_status = "remediation_required"
@@ -3129,21 +3527,32 @@ def update_verification_finding_status(
     if normalized_status in {"ignore", "false_positive"} and not comment:
         raise HTTPException(status_code=400, detail="A comment is required when the status is ignore or false positive.")
     result_data = dict(schedule.result_data or {})
-    remaining = list(result_data.get("remaining_findings") or [])
-    updated = None
-    for index, finding in enumerate(remaining):
-        if str(finding.get("id")) == finding_id:
-            updated = {**finding, "status": normalized_status, "comment": comment}
-            remaining[index] = updated
+    target_findings = None
+    target_collection = None
+    for collection_name in ("remaining_findings", "new_findings"):
+        collection = list(result_data.get(collection_name) or [])
+        for index, finding in enumerate(collection):
+            if str(finding.get("id")) == finding_id:
+                if not _requires_vapt_finding_triage(finding):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Low and Informational findings do not require triage.",
+                    )
+                updated = {**finding, "status": normalized_status, "comment": comment}
+                collection[index] = updated
+                target_findings = collection
+                target_collection = collection_name
+                break
+        if target_findings is not None:
             break
-    if updated is None:
-        raise HTTPException(status_code=404, detail="Unresolved verification finding not found")
-    result_data["remaining_findings"] = remaining
+    if target_findings is None or target_collection is None:
+        raise HTTPException(status_code=404, detail="Verification finding not found")
+    result_data[target_collection] = target_findings
     result_data["client_review_status"] = "in_progress"
     schedule.result_data = result_data
     db.add(schedule)
     db.commit()
-    _record_audit_log(db, current_user, "VAPT_VERIFICATION_FINDING_UPDATED", "vapt_rescan_schedule", str(schedule.id), {"finding_id": finding_id, "status": normalized_status, "comment": comment})
+    _record_audit_log(db, current_user, "VAPT_VERIFICATION_FINDING_UPDATED", "vapt_rescan_schedule", str(schedule.id), {"finding_id": finding_id, "collection": target_collection, "status": normalized_status, "comment": comment})
     return {"success": True, "finding": updated, "schedule_id": str(schedule.id)}
 
 
@@ -3161,11 +3570,25 @@ async def submit_verification_review(
     if not schedule:
         raise HTTPException(status_code=404, detail="Verification schedule not found")
     result_data = dict(schedule.result_data or {})
-    remaining = list(result_data.get("remaining_findings") or [])
-    pending = [finding for finding in remaining if (finding.get("status") or "pending") == "pending"]
-    invalid = [finding for finding in remaining if (finding.get("status") or "pending") in {"ignore", "false_positive"} and not (finding.get("comment") or "").strip()]
+    review_findings = [
+        *(result_data.get("remaining_findings") or []),
+        *(result_data.get("new_findings") or []),
+    ]
+    pending = [
+        finding
+        for finding in review_findings
+        if _requires_vapt_finding_triage(finding)
+        and (finding.get("status") or "pending") == "pending"
+    ]
+    invalid = [
+        finding
+        for finding in review_findings
+        if _requires_vapt_finding_triage(finding)
+        and (finding.get("status") or "pending") in {"ignore", "false_positive"}
+        and not (finding.get("comment") or "").strip()
+    ]
     if pending:
-        raise HTTPException(status_code=400, detail=f"All unresolved verification findings must be triaged before submitting. {len(pending)} still pending.")
+        raise HTTPException(status_code=400, detail=f"All actionable verification findings must be triaged before submitting. {len(pending)} still pending.")
     if invalid:
         raise HTTPException(status_code=400, detail="Ignore and False positive verification decisions require comments.")
     result_data["client_review_status"] = "client_completed"
@@ -3173,7 +3596,7 @@ async def submit_verification_review(
     schedule.result_data = result_data
     db.add(schedule)
     db.commit()
-    _record_audit_log(db, current_user, "VAPT_VERIFICATION_REVIEW_COMPLETED", "vapt_rescan_schedule", str(schedule.id), {"remaining_count": len(remaining)})
+    _record_audit_log(db, current_user, "VAPT_VERIFICATION_REVIEW_COMPLETED", "vapt_rescan_schedule", str(schedule.id), {"reviewed_count": len(review_findings)})
     payload = {"event": "vapt_verification_review_completed", "import_id": str(record.import_id), "schedule_id": str(schedule.id), "org_id": record.org_id}
     try:
         await ws_manager.send("platform", payload)

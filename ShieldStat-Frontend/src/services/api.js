@@ -893,7 +893,10 @@ export function reportIssue({ domain, subdomain, rule, severity, issueType, mess
 
 export async function uploadVaptReport(file, token, orgId = null, region = null) {
   const formData = new FormData();
-  formData.append("file", file);
+  const files = Array.isArray(file) ? file : [file];
+  for (const [index, selected] of files.entries()) {
+    formData.append(files.length > 1 ? "files" : "file", selected, selected.name || `scanner-export-${index + 1}`);
+  }
   if (orgId) {
     formData.append("org_id", orgId);
   }

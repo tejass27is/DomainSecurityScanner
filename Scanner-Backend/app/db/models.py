@@ -468,7 +468,7 @@ class VaptImport(Base):
     severity = Column(String(20), nullable=False, default="none")
     severity_distribution = Column(JSON, nullable=True)
     category_distribution = Column(JSON, nullable=True)
-    summary = Column(JSON, nullable=True)  # also carries excluded_info_findings + raw_findings_parsed
+    summary = Column(JSON, nullable=True)  # also carries report parsing metadata
     findings = Column(JSON, nullable=True)
     # Immutable snapshot of the first SOC-published report.
     initial_findings = Column(JSON, nullable=True)

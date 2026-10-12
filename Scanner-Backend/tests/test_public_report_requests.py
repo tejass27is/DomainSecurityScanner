@@ -7,8 +7,14 @@ from sqlalchemy.orm import Session
 
 from app.db.base import Base, engine
 from app.api.admin.service import create_public_report_request
-from app.api.public.routes import _build_report_data, _clear_existing_public_scan_results, public_scan_status, redis_client
-from app.db.models import ActiveScan, ScanSummary
+from app.api.public.routes import (
+    PUBLIC_ORG_ID,
+    _build_report_data,
+    _clear_existing_public_scan_results,
+    public_scan_status,
+    redis_client,
+)
+from app.db.models import ActiveScan, PortFixRequest, ScanSummary
 
 
 def test_create_public_report_request_persists_summary():
@@ -48,7 +54,7 @@ def test_clear_existing_public_scan_results_removes_stale_summary():
     try:
         stale_summary = ScanSummary(
             domain="example.com",
-            org_id="org-1",
+            org_id=PUBLIC_ORG_ID,
             domain_score=55,
             severity="medium",
         )
@@ -58,6 +64,46 @@ def test_clear_existing_public_scan_results_removes_stale_summary():
         _clear_existing_public_scan_results(db, "example.com")
 
         assert db.query(ScanSummary).filter(ScanSummary.domain == "example.com").first() is None
+    finally:
+        db.close()
+
+
+def test_clear_existing_public_scan_results_preserves_other_org_records():
+    Base.metadata.drop_all(bind=engine, checkfirst=True)
+    Base.metadata.create_all(bind=engine)
+
+    db = Session(bind=engine)
+    try:
+        db.add(
+            ScanSummary(
+                domain="example.com",
+                org_id=PUBLIC_ORG_ID,
+                domain_score=55,
+                severity="medium",
+            )
+        )
+        public_fix = PortFixRequest(
+            scan_id="public-fix",
+            org_id=PUBLIC_ORG_ID,
+            domain="example.com",
+            host="www.example.com",
+            port_number=443,
+        )
+        client_fix = PortFixRequest(
+            scan_id="client-fix",
+            org_id="client-org",
+            domain="example.com",
+            host="www.example.com",
+            port_number=443,
+        )
+        db.add_all([public_fix, client_fix])
+        db.commit()
+
+        _clear_existing_public_scan_results(db, "example.com")
+
+        assert db.query(PortFixRequest).filter_by(scan_id="public-fix").first() is None
+        assert db.query(PortFixRequest).filter_by(scan_id="client-fix").first() is not None
+        assert db.query(ScanSummary).filter_by(domain="example.com").first() is not None
     finally:
         db.close()
 

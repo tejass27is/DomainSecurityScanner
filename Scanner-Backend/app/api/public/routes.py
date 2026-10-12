@@ -167,10 +167,27 @@ def _clear_existing_public_scan_results(db: Session, domain: str) -> None:
         # Otherwise the DELETE below violates the FK constraint on Postgres
         # and the old summary survives — scan-status then reports "complete"
         # with the previous score while the new scan is still running.
-        for model in (PortFixRequest, HeaderFixRequest, TlsFixRequest, ResolvedFinding):
-            db.query(model).filter(model.domain == normalized_domain).delete(synchronize_session=False)
+        child_models = (PortFixRequest, HeaderFixRequest, TlsFixRequest, ResolvedFinding)
+        for model in child_models:
+            db.query(model).filter(
+                model.domain == normalized_domain,
+                model.org_id == PUBLIC_ORG_ID,
+            ).delete(synchronize_session=False)
 
-        db.query(ScanSummary).filter(ScanSummary.domain == normalized_domain).delete(synchronize_session=False)
+        has_other_org_references = any(
+            db.query(model.id).filter(
+                model.domain == normalized_domain,
+                model.org_id != PUBLIC_ORG_ID,
+            ).first()
+            is not None
+            for model in child_models
+        )
+        if not has_other_org_references:
+            db.query(ScanSummary).filter(
+                ScanSummary.domain == normalized_domain,
+                ScanSummary.org_id == PUBLIC_ORG_ID,
+            ).delete(synchronize_session=False)
+
         db.query(ActiveScan).filter(
             ActiveScan.domain == normalized_domain,
             ActiveScan.org_id == PUBLIC_ORG_ID,

@@ -2,9 +2,8 @@
 VAPT normalizer — turns raw parsed findings into a clean, report-ready structure.
 
 Pipeline:
-1. ``filter_real_issues`` — drop informational noise (severity "info") and
-   empty rows, so real vulnerabilities (Critical / High / Medium / Low) reach
-   the report & risk score.
+1. ``filter_reportable_findings`` — keep titled findings, including informational
+   entries, while dropping empty rows.
 2. ``categorize`` — auto-classify each finding (Web App, TLS/SSL, DNS,
    Network, Mail Security, OS/Host, Application).
 3. ``consolidate_issues`` — merge the same issue found on multiple hosts into
@@ -74,18 +73,10 @@ def categorize(finding: dict) -> str:
 
 # ─── Real issues only ─────────────────────────────────────────────────────────
 
-def filter_real_issues(raw_findings: list[dict]) -> list[dict]:
-    """Keep only findings that represent a real vulnerability.
-
-    Informational ("info") entries — open ports with no risk, fine TLS versions,
-    "secure web service running", etc. — are excluded, as are completely empty
-    rows that carry no title / description / CVE. Low and above are kept so
-    even a clean scan still produces a report.
-    """
+def filter_reportable_findings(raw_findings: list[dict]) -> list[dict]:
+    """Keep all titled findings and discard only empty parser rows."""
     kept: list[dict] = []
     for finding in raw_findings:
-        if finding.get("severity", 0) <= 0:
-            continue
         title = (finding.get("title") or "").strip()
         description = (finding.get("description") or "").strip()
         if not title and not description and not finding.get("cves"):
@@ -96,22 +87,20 @@ def filter_real_issues(raw_findings: list[dict]) -> list[dict]:
 
 # ─── Consolidation ────────────────────────────────────────────────────────────
 
-def _consolidation_key(finding: dict) -> tuple:
-    """Group key — preserve each distinct finding row while still allowing host grouping.
+def finding_group_key(finding: dict) -> tuple:
+    """Group findings by normalized name, independent of asset and transport."""
+    title = re_normalize_title(str(finding.get("title") or "")).casefold()
+    if title:
+        return (title,)
 
-    The previous implementation merged everything with the same plugin/port/protocol,
-    which caused many distinct Nessus/XLSX entries to disappear from the report.
-    We now use a more specific key so each parsed row stays visible and only truly
-    identical findings are grouped.
-    """
-    title = re_normalize_title(str(finding.get("title") or "")).lower()
-    plugin_id = str(finding.get("plugin_id") or "").strip().lower()
+    plugin_id = str(finding.get("plugin_id") or finding.get("vuln_id") or "").strip().lower()
     description = re_normalize_title(str(finding.get("description") or "")).lower()
-    host = re_normalize_title(str(finding.get("host") or "")).lower()
-    protocol = (finding.get("protocol") or "").lower()
-    port = finding.get("port")
-    cve = ",".join(finding.get("cves") or [])
-    return (plugin_id or title, port, protocol, host, description, cve)
+    cves = tuple(sorted(
+        str(cve).strip().lower()
+        for cve in (finding.get("cves") or [])
+        if cve
+    ))
+    return (plugin_id, description, cves)
 
 
 def re_normalize_title(title: str) -> str:
@@ -120,16 +109,12 @@ def re_normalize_title(title: str) -> str:
 
 
 def consolidate_issues(filtered: list[dict]) -> list[dict]:
-    """Merge the same issue found on multiple hosts into one normalized entry.
-
-    The merged entry keeps the full list of affected addresses in
-    ``affected_hosts`` and a ``host_count`` — the classic Nessus layout.
-    """
+    """Merge same-name findings while retaining all asset and transport details."""
     groups: dict[tuple, dict] = {}
     order: list[tuple] = []
 
     for finding in filtered:
-        key = _consolidation_key(finding)
+        key = finding_group_key(finding)
         if key not in groups:
             groups[key] = {
                 "title": (finding.get("title") or "Untitled finding").strip(),
@@ -142,7 +127,9 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
                 "cvss_vector": finding.get("cvss_vector") or "",
                 "category": finding.get("category") or categorize(finding),
                 "port": finding.get("port"),
+                "ports": [],
                 "protocol": finding.get("protocol") or "",
+                "protocols": [],
                 "service": finding.get("service") or "",
                 "plugin_id": finding.get("plugin_id") or "",
                 "plugin_family": finding.get("plugin_family") or "",
@@ -157,11 +144,14 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
                 "references": [],
                 "cves": [],
                 "affected_hosts": [],
+                "affected_assets": [],
+                "mac_addresses": [],
                 "host_outputs": [],
                 "evidence": "",
                 "status": (finding.get("status") or "pending").strip() or "pending",
+                "_statuses": set(),
                 "comment": (finding.get("comment") or "").strip(),
-                "mac_address": (finding.get("mac_address") or "").strip(),
+                "mac_address": "",
                 "hostname": (finding.get("hostname") or "").strip(),
                 "operating_system": (finding.get("operating_system") or "").strip(),
                 "remarks": (finding.get("remarks") or "").strip(),
@@ -176,9 +166,72 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
             order.append(key)
 
         entry = groups[key]
+        entry["_statuses"].add(
+            (finding.get("status") or "pending").strip() or "pending"
+        )
         host = (finding.get("host") or "").strip()
         if host and host not in entry["affected_hosts"]:
             entry["affected_hosts"].append(host)
+
+        mac_address = (finding.get("mac_address") or "").strip()
+        hostname = (finding.get("hostname") or "").strip()
+        operating_system = (
+            finding.get("operating_system") or finding.get("os") or ""
+        ).strip()
+        asset_identity = host.casefold() or mac_address.casefold()
+        if asset_identity:
+            asset = next(
+                (
+                    item for item in entry["affected_assets"]
+                    if (item["host"].casefold() or item["mac_address"].casefold()) == asset_identity
+                ),
+                None,
+            )
+            if asset is None:
+                asset = {
+                    "host": host,
+                    "mac_address": mac_address,
+                    "hostname": hostname,
+                    "operating_system": operating_system,
+                    "protocols": [],
+                    "ports": [],
+                }
+                entry["affected_assets"].append(asset)
+            elif not asset["operating_system"] and operating_system:
+                asset["operating_system"] = operating_system
+            if not asset["hostname"] and hostname:
+                asset["hostname"] = hostname
+            existing_macs = [
+                value.strip()
+                for value in str(asset["mac_address"] or "").split(",")
+                if value.strip()
+            ]
+            if mac_address and mac_address.casefold() not in {
+                value.casefold() for value in existing_macs
+            }:
+                asset["mac_address"] = ", ".join([*existing_macs, mac_address])
+
+            protocol = str(finding.get("protocol") or "").strip()
+            if protocol and protocol.casefold() not in {
+                value.casefold() for value in asset["protocols"]
+            }:
+                asset["protocols"].append(protocol)
+            port = finding.get("port")
+            if port is not None and port not in asset["ports"]:
+                asset["ports"].append(port)
+
+        if mac_address and mac_address.casefold() not in {
+            value.casefold() for value in entry["mac_addresses"]
+        }:
+            entry["mac_addresses"].append(mac_address)
+        protocol = str(finding.get("protocol") or "").strip()
+        if protocol and protocol.casefold() not in {
+            value.casefold() for value in entry["protocols"]
+        }:
+            entry["protocols"].append(protocol)
+        port = finding.get("port")
+        if port is not None and port not in entry["ports"]:
+            entry["ports"].append(port)
 
         for ref in finding.get("references") or []:
             if ref and ref not in entry["references"]:
@@ -193,12 +246,8 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
             if host_output not in entry["host_outputs"]:
                 entry["host_outputs"].append(host_output)
 
-        if not entry.get("status") or entry.get("status") == "pending":
-            entry["status"] = (finding.get("status") or "pending").strip() or "pending"
         if not entry.get("comment") and (finding.get("comment") or "").strip():
             entry["comment"] = (finding.get("comment") or "").strip()
-        if not entry.get("mac_address") and (finding.get("mac_address") or "").strip():
-            entry["mac_address"] = (finding.get("mac_address") or "").strip()
         if not entry.get("hostname") and (finding.get("hostname") or "").strip():
             entry["hostname"] = (finding.get("hostname") or "").strip()
         if not entry.get("operating_system") and (finding.get("operating_system") or "").strip():
@@ -217,6 +266,21 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
             if not entry.get(field) and finding.get(field):
                 entry[field] = finding[field]
 
+        if finding.get("severity", 0) > entry.get("severity", 0):
+            entry["severity"] = finding["severity"]
+            entry["severity_label"] = (
+                finding.get("severity_label")
+                or SEVERITY_LABELS.get(finding["severity"], "info")
+            )
+        if (
+            isinstance(finding.get("cvss_score"), (int, float))
+            and (
+                not isinstance(entry.get("cvss_score"), (int, float))
+                or finding["cvss_score"] > entry["cvss_score"]
+            )
+        ):
+            entry["cvss_score"] = finding["cvss_score"]
+
         # Prefer the most detailed description/solution we've seen.
         if len(entry["description"]) < len(finding.get("description") or ""):
             entry["description"] = finding.get("description") or ""
@@ -232,7 +296,18 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
 
     for index, finding in enumerate(consolidated, start=1):
         finding["id"] = f"F{index:03d}"
-        finding["host_count"] = len(finding["affected_hosts"])
+        finding["host_count"] = len(finding["affected_hosts"] or finding["affected_assets"])
+        finding["mac_address"] = ", ".join(finding.pop("mac_addresses"))
+        if len(finding["_statuses"]) != 1:
+            finding["status"] = "pending"
+        else:
+            finding["status"] = next(iter(finding["_statuses"]))
+        del finding["_statuses"]
+        finding["protocols"].sort(key=str.casefold)
+        finding["ports"].sort(key=lambda value: (str(type(value)), value))
+        for asset in finding["affected_assets"]:
+            asset["protocols"].sort(key=str.casefold)
+            asset["ports"].sort(key=lambda value: (str(type(value)), value))
         finding["evidence"] = "\n\n".join(
             o.get("output", "") for o in finding["host_outputs"]
         ).strip()
@@ -241,6 +316,143 @@ def consolidate_issues(filtered: list[dict]) -> list[dict]:
             finding["evidence"] = finding["synopsis"]
 
     return consolidated
+
+
+def group_stored_findings(findings: list[dict]) -> list[dict]:
+    """Group previously stored per-asset rows for consistent report display."""
+    grouped: dict[tuple, dict] = {}
+    order: list[tuple] = []
+
+    for finding in findings:
+        key = finding_group_key(finding)
+        if key not in grouped:
+            grouped[key] = {
+                **finding,
+                "affected_hosts": [],
+                "affected_assets": [],
+                "mac_addresses": [],
+                "protocols": [],
+                "ports": [],
+                "grouped_finding_ids": [],
+                "_statuses": set(),
+            }
+            order.append(key)
+
+        entry = grouped[key]
+        entry["_statuses"].add(
+            str(finding.get("status") or "pending").strip().lower()
+        )
+        if finding.get("id") is not None:
+            entry["grouped_finding_ids"].append(str(finding["id"]))
+        entry["severity"] = max(
+            entry.get("severity") or 0,
+            finding.get("severity") or 0,
+        )
+        severity_labels = {
+            "info": 0,
+            "low": 1,
+            "medium": 2,
+            "high": 3,
+            "critical": 4,
+        }
+        if severity_labels.get(str(finding.get("severity_label") or "").lower(), 0) > severity_labels.get(
+            str(entry.get("severity_label") or "").lower(), 0
+        ):
+            entry["severity_label"] = finding.get("severity_label")
+        score = finding.get("cvss_score")
+        if isinstance(score, (int, float)) and (
+            not isinstance(entry.get("cvss_score"), (int, float))
+            or score > entry["cvss_score"]
+        ):
+            entry["cvss_score"] = score
+
+        hosts = finding.get("affected_hosts") or ([finding.get("host")] if finding.get("host") else [])
+        existing_assets = finding.get("affected_assets") or []
+        if existing_assets:
+            assets = existing_assets
+        else:
+            macs = [
+                mac.strip()
+                for mac in str(finding.get("mac_address") or "").split(",")
+                if mac.strip()
+            ]
+            assets = [
+                {
+                    "host": str(host or "").strip(),
+                    "mac_address": macs[index] if len(hosts) == len(macs) else (macs[0] if len(hosts) == 1 and macs else ""),
+                    "hostname": finding.get("hostname") or "",
+                    "operating_system": finding.get("operating_system") or finding.get("os") or "",
+                    "protocols": [],
+                    "ports": [],
+                }
+                for index, host in enumerate(hosts)
+                if str(host or "").strip()
+            ]
+
+        for host in hosts:
+            host = str(host or "").strip()
+            if host and host.casefold() not in {value.casefold() for value in entry["affected_hosts"]}:
+                entry["affected_hosts"].append(host)
+        for asset in assets:
+            host = str(asset.get("host") or "").strip()
+            mac = str(asset.get("mac_address") or "").strip()
+            identity = host.casefold() or mac.casefold()
+            existing = next(
+                (
+                    item for item in entry["affected_assets"]
+                    if (item["host"].casefold() or item["mac_address"].casefold()) == identity
+                ),
+                None,
+            )
+            if existing is None:
+                existing = {
+                    "host": host,
+                    "mac_address": mac,
+                    "hostname": asset.get("hostname") or "",
+                    "operating_system": asset.get("operating_system") or "",
+                    "protocols": [],
+                    "ports": [],
+                }
+                entry["affected_assets"].append(existing)
+            elif mac and mac.casefold() not in {
+                value.strip().casefold()
+                for value in str(existing["mac_address"] or "").split(",")
+                if value.strip()
+            }:
+                existing["mac_address"] = ", ".join(
+                    value.strip()
+                    for value in [existing["mac_address"], mac]
+                    if value and value.strip()
+                )
+            for protocol in asset.get("protocols") or []:
+                if protocol and protocol.casefold() not in {value.casefold() for value in existing["protocols"]}:
+                    existing["protocols"].append(protocol)
+            for port in asset.get("ports") or []:
+                if port not in existing["ports"]:
+                    existing["ports"].append(port)
+
+        for mac in str(finding.get("mac_address") or "").split(","):
+            mac = mac.strip()
+            if mac and mac.casefold() not in {value.casefold() for value in entry["mac_addresses"]}:
+                entry["mac_addresses"].append(mac)
+        for protocol in finding.get("protocols") or ([finding.get("protocol")] if finding.get("protocol") else []):
+            if protocol and protocol.casefold() not in {value.casefold() for value in entry["protocols"]}:
+                entry["protocols"].append(protocol)
+        for port in finding.get("ports") or ([finding.get("port")] if finding.get("port") is not None else []):
+            if port not in entry["ports"]:
+                entry["ports"].append(port)
+
+    results = []
+    for entry in grouped.values():
+        statuses = entry.pop("_statuses")
+        entry["status"] = next(iter(statuses)) if len(statuses) == 1 else "pending"
+        entry["affected_hosts"].sort(key=str.casefold)
+        entry["host_count"] = len(entry["affected_hosts"] or entry["affected_assets"])
+        entry["mac_address"] = ", ".join(entry.pop("mac_addresses"))
+        entry["protocols"].sort(key=str.casefold)
+        entry["ports"].sort(key=lambda value: (str(type(value)), value))
+        results.append(entry)
+    return results
 
 
 # ─── Risk scoring (0-100) ─────────────────────────────────────────────────────
@@ -258,13 +470,22 @@ def compute_risk_score(findings: list[dict]) -> tuple[int, str]:
     - ``18 * worst_severity`` anchors the score to the most severe finding
       (a single critical finding alone scores 72).
     - ``10 * average_density`` (0-40) reflects how many high-severity findings
-      are present — a critical-heavy report approaches 100.
+      are present — a critical-heavy report approaches 100. Informational
+      findings remain in the report but do not affect the risk score.
     """
-    if not findings:
+    scored_findings = [
+        finding
+        for finding in findings
+        if finding.get("severity_label") in SEVERITY_DENSITY
+    ]
+    if not scored_findings:
         return 0, "none"
 
-    worst = max(f["severity"] for f in findings)
-    avg_density = sum(SEVERITY_DENSITY.get(f.get("severity_label"), 0) for f in findings) / len(findings)
+    worst = max(f["severity"] for f in scored_findings)
+    avg_density = sum(
+        SEVERITY_DENSITY[finding["severity_label"]]
+        for finding in scored_findings
+    ) / len(scored_findings)
 
     score = min(100, round(18 * worst + 10 * avg_density))
 
@@ -285,8 +506,8 @@ def compute_risk_score(findings: list[dict]) -> tuple[int, str]:
 
 def normalize_import(raw_findings: list[dict], source_tool: str = "generic") -> dict:
     """Normalize raw findings into the full report payload stored on the import."""
-    filtered = filter_real_issues(raw_findings)
-    excluded_info = len(raw_findings) - len(filtered)
+    filtered = filter_reportable_findings(raw_findings)
+    excluded_empty_rows = len(raw_findings) - len(filtered)
 
     for finding in filtered:
         finding["category"] = categorize(finding)
@@ -332,15 +553,20 @@ def normalize_import(raw_findings: list[dict], source_tool: str = "generic") -> 
         "file_name": "",
         "source_tool": source_tool,
         "raw_findings_parsed": len(raw_findings),
-        "excluded_info_findings": excluded_info,
-        "real_findings": len(findings),
+        "excluded_info_findings": 0,
+        "excluded_empty_rows": excluded_empty_rows,
+        "real_findings": sum(
+            finding["severity_label"] != "info"
+            for finding in findings
+        ),
+        "report_findings": len(findings),
         "unique_hosts": len(hosts),
         "hosts": host_list,
         "risk_score": risk_score,
         "severity": overall_severity,
         "note": (
-            "Informational findings are excluded automatically so the report "
-            "focuses on real vulnerabilities."
+            "Informational findings are included for reference and do not "
+            "require triage or affect the risk score."
         ),
     }
 

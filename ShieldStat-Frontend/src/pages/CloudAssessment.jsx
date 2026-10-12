@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Cloud, Download, LoaderCircle, Play, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, CheckCircle2, Cloud, Download, Filter, LoaderCircle, Play, Search, ShieldCheck } from "lucide-react";
 import isecurifyLogoUrl from "../assets/iSecurify Logo - Full Colour - Transparent (2).png";
 import {
   createCloudAssessment,
@@ -7,6 +7,16 @@ import {
   getCloudAssessmentAccessStatus,
   listCloudAssessments,
 } from "../services/api";
+import {
+  aggregateCloudFindings,
+  buildCloudFindingCounts,
+  buildCloudComplianceSummary,
+  buildCloudReportMetrics,
+  cleanCloudReportText,
+  compareCloudFindings,
+  formatCloudRiskImpact,
+  sortCloudFindingsForReport,
+} from "../utils/cloudComplianceSummary";
 
 const inputClass =
   "mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:ring-indigo-950";
@@ -16,6 +26,44 @@ const cloudProviders = [
   { id: "aws", name: "Amazon Web Services", shortName: "AWS", description: "Access key and secret key" },
   { id: "azure", name: "Microsoft Azure", shortName: "Azure", description: "App registration and subscription" },
   { id: "gcp", name: "Google Cloud Platform", shortName: "GCP", description: "Service account key and projects" },
+];
+const awsRegions = [
+  "af-south-1",
+  "ap-east-1",
+  "ap-east-2",
+  "ap-northeast-1",
+  "ap-northeast-2",
+  "ap-northeast-3",
+  "ap-south-1",
+  "ap-south-2",
+  "ap-southeast-1",
+  "ap-southeast-2",
+  "ap-southeast-3",
+  "ap-southeast-4",
+  "ap-southeast-5",
+  "ap-southeast-6",
+  "ap-southeast-7",
+  "ca-central-1",
+  "ca-west-1",
+  "eu-central-1",
+  "eu-central-2",
+  "eu-north-1",
+  "eu-south-1",
+  "eu-south-2",
+  "eu-west-1",
+  "eu-west-2",
+  "eu-west-3",
+  "il-central-1",
+  "me-central-1",
+  "me-south-1",
+  "mx-central-1",
+  "sa-east-1",
+  "us-east-1",
+  "us-east-2",
+  "us-west-1",
+  "us-west-2",
+  "us-gov-east-1",
+  "us-gov-west-1",
 ];
 
 function formatDate(value) {
@@ -63,6 +111,34 @@ function unavailableCheckCount(summary) {
     || (Number(summary?.errored_checks) || 0) + (Number(summary?.skipped_checks) || 0);
 }
 
+function complianceFramework(reference) {
+  return String(reference).split(":", 1)[0].trim();
+}
+
+function scanScopeKey(scan) {
+  const scope = scan.scope || {};
+  return Object.keys(scope).sort().map((key) => (
+    `${key}:${[...(Array.isArray(scope[key]) ? scope[key] : [scope[key]])].sort().join(",")}`
+  )).join("|");
+}
+
+function sameCloudAssessmentTarget(left, right) {
+  if (left.provider !== right.provider) return false;
+  const leftAccountId = String(left.summary?.account_id || "");
+  const rightAccountId = String(right.summary?.account_id || "");
+  if (left.provider === "aws") {
+    return Boolean(
+      leftAccountId
+      && rightAccountId
+      && leftAccountId === rightAccountId
+      && scanScopeKey(left) === scanScopeKey(right),
+    );
+  }
+  const leftScope = scanScopeKey(left);
+  if (leftScope) return leftScope === scanScopeKey(right);
+  return Boolean(leftAccountId && rightAccountId && leftAccountId === rightAccountId);
+}
+
 async function loadPdfLogo() {
   const response = await fetch(isecurifyLogoUrl);
   if (!response.ok) throw new Error("Could not load the iSecurify logo for the report.");
@@ -88,6 +164,8 @@ function CloudAssessment() {
     serviceAccountJson: "",
     projectIds: "",
   });
+  const [awsAllRegions, setAwsAllRegions] = useState(true);
+  const [selectedAwsRegions, setSelectedAwsRegions] = useState([]);
   const [scans, setScans] = useState([]);
   const [selectedScan, setSelectedScan] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -95,6 +173,10 @@ function CloudAssessment() {
   const [scanQuota, setScanQuota] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [findingSearch, setFindingSearch] = useState("");
+  const [findingStatus, setFindingStatus] = useState("all");
+  const [findingSeverity, setFindingSeverity] = useState("all");
+  const [findingFramework, setFindingFramework] = useState("all");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -157,11 +239,12 @@ function CloudAssessment() {
   useEffect(() => {
     if (!selectedScan) return;
     const latestScan = scans.find((scan) => scan.scan_id === selectedScan.scan_id);
-    if (!latestScan || latestScan.status === selectedScan.status) return;
+    if (!latestScan) return;
     if (latestScan.status !== "completed") {
       setSelectedScan(latestScan);
       return;
     }
+    if (selectedScan.status === "completed") return;
     getCloudAssessment(latestScan.scan_id, localStorage.getItem("token"))
       .then(setSelectedScan)
       .catch((requestError) => {
@@ -177,6 +260,10 @@ function CloudAssessment() {
     event.preventDefault();
     setError("");
     setNotice("");
+    if (provider === "aws" && !awsAllRegions && selectedAwsRegions.length === 0) {
+      setError("Select at least one AWS region, or choose all enabled regions.");
+      return;
+    }
     setSubmitting(true);
     const token = localStorage.getItem("token");
     let body;
@@ -186,6 +273,9 @@ function CloudAssessment() {
         access_key_id: form.accessKeyId.trim(),
         secret_access_key: form.secretAccessKey,
         ...(form.sessionToken ? { session_token: form.sessionToken } : {}),
+        ...(!awsAllRegions && selectedAwsRegions.length
+          ? { aws_regions: selectedAwsRegions }
+          : {}),
       };
     } else if (provider === "azure") {
       body = {
@@ -253,13 +343,40 @@ function CloudAssessment() {
       const logoData = await loadPdfLogo();
       const summary = selectedScan.summary || {};
       const severityCounts = summary.severity_counts || {};
+      const reportCounts = buildCloudFindingCounts(findings);
+      const reportMetrics = buildCloudReportMetrics(findings);
+      const reportRows = sortCloudFindingsForReport(aggregateCloudFindings(findings));
+      const regionsInResults = [...new Set(findings.map((finding) => String(finding.region || "").trim()).filter(Boolean))]
+        .sort((left, right) => left.localeCompare(right));
+      const accountId = String(
+        selectedScan.summary?.account_id
+        || Object.values(selectedScan.scope || {}).flat().join(", ")
+        || "Not available from scan results",
+      );
+      const previousScan = scans
+        .filter((scan) => (
+          scan.scan_id !== selectedScan.scan_id
+          && scan.status === "completed"
+          && sameCloudAssessmentTarget(scan, selectedScan)
+        ))
+        .sort((left, right) => new Date(right.completed_at || right.created_at) - new Date(left.completed_at || left.created_at))[0];
+      const previousScanDetails = previousScan
+        ? await getCloudAssessment(previousScan.scan_id, localStorage.getItem("token"))
+        : null;
+      const comparison = previousScanDetails
+        ? compareCloudFindings(previousScanDetails.findings || [], findings)
+        : null;
       const unavailableChecks = unavailableCheckCount(summary);
-      const scopeText = Object.values(selectedScan.scope || {}).flat().join(", ") || "Cloud account from credentials";
       const generatedAt = new Date();
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
       const margin = 13;
       const providerName = String(selectedScan.provider || "Cloud").toUpperCase();
+      const accountIdentifierLabel = {
+        aws: "AWS account ID",
+        azure: "Azure subscription ID",
+        gcp: "GCP project ID",
+      }[selectedScan.provider] || "Account / scope ID";
       const assessmentDate = formatDate(selectedScan.completed_at);
       const drawPageHeader = (isFirstPage) => {
         doc.setFillColor(37, 16, 55);
@@ -281,7 +398,7 @@ function CloudAssessment() {
           doc.text(`${providerName}  |  Completed ${assessmentDate}`, 61, 32);
           doc.setFontSize(8);
           doc.text(`REPORT  ${String(selectedScan.scan_id).slice(0, 8).toUpperCase()}`, pageWidth - margin, 18, { align: "right" });
-          doc.text("POWERED BY PROWLER", pageWidth - margin, 26, { align: "right" });
+          doc.text("POWERED BY iSecurify", pageWidth - margin, 26, { align: "right" });
         } else {
           doc.setFillColor(255, 255, 255);
           doc.roundedRect(margin, 3, 29, 12, 1, 1, "F");
@@ -305,25 +422,54 @@ function CloudAssessment() {
       doc.setTextColor(51, 51, 61);
       doc.setFont("helvetica", "bold");
       doc.setFontSize(8);
-      doc.text("ASSESSMENT SCOPE", margin, 48);
+      doc.text("CLIENT / ACCOUNT", margin, 48);
       doc.setFont("helvetica", "normal");
       doc.setFontSize(9);
       doc.setTextColor(79, 70, 88);
-      const scopeLines = doc.splitTextToSize(scopeText, pageWidth - margin * 2 - 83);
-      doc.text(scopeLines.slice(0, 2), margin, 54);
+      doc.text(`Client name not provided  |  ${accountIdentifierLabel}: ${accountId}`, margin, 54, {
+        maxWidth: pageWidth - margin * 2 - 83,
+      });
       doc.setFontSize(8);
       doc.setTextColor(107, 102, 112);
       doc.text(`Generated ${generatedAt.toLocaleString()}`, pageWidth - margin, 49, { align: "right" });
-      doc.text(`Completed ${assessmentDate}`, pageWidth - margin, 55, { align: "right" });
+      doc.text(`Scanned ${assessmentDate}`, pageWidth - margin, 55, { align: "right" });
       doc.setDrawColor(228, 222, 232);
-      doc.line(margin, 62, pageWidth - margin, 62);
+      doc.setFontSize(7);
+      const selectedAwsRegions = selectedScan.scope?.regions
+        || (selectedScan.scope?.region ? [selectedScan.scope.region] : []);
+      const regionsText = selectedAwsRegions.length
+        ? `Selected AWS region${selectedAwsRegions.length === 1 ? "" : "s"}: ${selectedAwsRegions.join(", ")}`
+        : selectedScan.provider === "aws"
+          ? `Selected scope: all enabled AWS regions. Regions represented in returned findings: ${regionsInResults.join(", ") || "None returned"}`
+          : `Regions represented in returned findings: ${regionsInResults.join(", ") || "Not specified"}`;
+      doc.text(
+        regionsText,
+        margin,
+        62,
+        {
+        maxWidth: pageWidth - margin * 2,
+        },
+      );
+      doc.line(margin, 66, pageWidth - margin, 66);
 
+      const gradeColors = {
+        A: [22, 130, 91],
+        B: [16, 166, 120],
+        C: [245, 158, 11],
+        D: [234, 88, 12],
+        F: [190, 45, 61],
+        "N/A": [79, 70, 88],
+      };
       const cards = [
+        {
+          label: `POSTURE SCORE · GRADE ${reportMetrics.grade}`,
+          value: reportMetrics.postureScore === null ? "N/A" : `${reportMetrics.postureScore}%`,
+          color: gradeColors[reportMetrics.grade] || gradeColors["N/A"],
+        },
         { label: "TOTAL CHECKS", value: summary.total_checks ?? 0, color: [79, 70, 88] },
         { label: "FAILED", value: summary.failed_checks ?? 0, color: [190, 45, 61] },
         { label: "PASSED", value: summary.passed_checks ?? 0, color: [22, 130, 91] },
         { label: "COULDN'T RUN", value: unavailableChecks, color: unavailableChecks ? [174, 111, 19] : [79, 70, 88] },
-        { label: "MANUAL", value: summary.manual_checks ?? 0, color: [78, 91, 164] },
       ];
       const cardGap = 5;
       const cardWidth = (pageWidth - margin * 2 - cardGap * (cards.length - 1)) / cards.length;
@@ -331,71 +477,451 @@ function CloudAssessment() {
         const x = margin + index * (cardWidth + cardGap);
         doc.setFillColor(248, 246, 250);
         doc.setDrawColor(235, 230, 239);
-        doc.roundedRect(x, 67, cardWidth, 20, 2, 2, "FD");
+        doc.roundedRect(x, 72, cardWidth, 23, 2, 2, "FD");
         doc.setFont("helvetica", "bold");
         doc.setFontSize(7);
         doc.setTextColor(112, 105, 119);
-        doc.text(card.label, x + 4, 73);
+        doc.text(card.label, x + 4, 79);
         doc.setFontSize(14);
         doc.setTextColor(...card.color);
-        doc.text(String(card.value), x + 4, 82);
+        doc.text(String(card.value), x + 4, 90);
       });
 
-      const severityText = `Severity of failed checks: Critical ${severityCounts.critical ?? 0}  |  High ${severityCounts.high ?? 0}  |  Medium ${severityCounts.medium ?? 0}  |  Low ${severityCounts.low ?? 0}  |  Informational ${severityCounts.informational ?? 0}`;
+      const chartY = 103;
+      const chartHeight = 57;
+      const chartGap = 6;
+      const severityChartWidth = 126;
+      const serviceChartX = margin + severityChartWidth + chartGap;
+      const serviceChartWidth = pageWidth - margin - serviceChartX;
+      const severityColors = {
+        critical: [143, 17, 52],
+        high: [239, 68, 68],
+        medium: [245, 158, 11],
+        low: [59, 130, 246],
+        informational: [100, 116, 139],
+      };
+      const severityEntries = Object.entries(severityColors).map(([severity, color]) => ({
+        severity,
+        color,
+        count: Number(severityCounts[severity] || 0),
+      }));
+      const failedSeverityCount = severityEntries.reduce((total, entry) => total + entry.count, 0);
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(228, 222, 232);
+      doc.roundedRect(margin, chartY, severityChartWidth, chartHeight, 2, 2, "FD");
+      doc.roundedRect(serviceChartX, chartY, serviceChartWidth, chartHeight, 2, 2, "FD");
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(8);
+      doc.setFontSize(8.5);
       doc.setTextColor(74, 65, 82);
-      doc.text(severityText, margin, 95, { maxWidth: pageWidth - margin * 2 });
+      doc.text("Failed checks by severity", margin + 4, chartY + 8);
+      doc.text("Top failing services", serviceChartX + 4, chartY + 8);
+
+      const severityBarX = margin + 4;
+      const severityBarY = chartY + 13;
+      const severityBarWidth = severityChartWidth - 8;
+      doc.setFillColor(235, 230, 239);
+      doc.roundedRect(severityBarX, severityBarY, severityBarWidth, 6, 2, 2, "F");
+      let severityOffset = 0;
+      severityEntries.forEach(({ color, count }) => {
+        if (!failedSeverityCount || !count) return;
+        const segmentWidth = severityBarWidth * count / failedSeverityCount;
+        doc.setFillColor(...color);
+        doc.rect(severityBarX + severityOffset, severityBarY, segmentWidth, 6, "F");
+        severityOffset += segmentWidth;
+      });
+      severityEntries.forEach(({ severity, color, count }, index) => {
+        const column = index % 2;
+        const row = Math.floor(index / 2);
+        const x = margin + 5 + column * 59;
+        const y = chartY + 24 + row * 10;
+        doc.setFillColor(248, 246, 250);
+        doc.setDrawColor(235, 230, 239);
+        doc.roundedRect(x - 1, y - 5, 55, 9, 1, 1, "FD");
+        doc.setFillColor(...color);
+        doc.circle(x + 2, y - 0.5, 1.3, "F");
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(74, 65, 82);
+        doc.text(`${severity[0].toUpperCase()}${severity.slice(1)}: ${count}`, x + 6, y);
+      });
+
+      const failingServices = reportMetrics.breakdowns.service
+        .filter((group) => group.failed > 0)
+        .sort((left, right) => right.failed - left.failed || left.label.localeCompare(right.label))
+        .slice(0, 4);
+      if (failingServices.length) {
+        const maxServiceFailures = Math.max(...failingServices.map((group) => group.failed), 1);
+        const serviceLabelWidth = 42;
+        const serviceBarX = serviceChartX + serviceLabelWidth + 5;
+        const serviceBarWidth = serviceChartWidth - serviceLabelWidth - 19;
+        failingServices.forEach((group, index) => {
+          const y = chartY + 15 + index * 9;
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(7);
+          doc.setTextColor(74, 65, 82);
+          doc.text(doc.splitTextToSize(group.label, serviceLabelWidth - 2).slice(0, 1), serviceChartX + 4, y + 3);
+          doc.setFillColor(235, 230, 239);
+          doc.roundedRect(serviceBarX, y, serviceBarWidth, 4, 2, 2, "F");
+          doc.setFillColor(239, 68, 68);
+          doc.roundedRect(serviceBarX, y, serviceBarWidth * group.failed / maxServiceFailures, 4, 2, 2, "F");
+          doc.setFont("helvetica", "bold");
+          doc.text(String(group.failed), serviceBarX + serviceBarWidth + 3, y + 3);
+        });
+      } else {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(100, 95, 106);
+        doc.text("No failing services", serviceChartX + 4, chartY + 25);
+      }
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(107, 102, 112);
+      doc.text(
+        `Severity-weighted score across ${reportMetrics.denominator} distinct issues (critical 10, high 5, medium 2, low 1; informational excluded; repeated regions counted once): ${reportMetrics.weightedPassed} / ${reportMetrics.weightedTotal} weighted points. Grade bands: ${reportMetrics.gradeBands}.`,
+        margin,
+        165,
+        { maxWidth: pageWidth - margin * 2 },
+      );
 
       if (unavailableChecks > 0) {
         doc.setFillColor(255, 247, 225);
         doc.setDrawColor(239, 212, 153);
-        doc.roundedRect(margin, 99, pageWidth - margin * 2, 11, 1.5, 1.5, "FD");
+        doc.roundedRect(margin, 169, pageWidth - margin * 2, 11, 1.5, 1.5, "FD");
         doc.setFont("helvetica", "normal");
         doc.setFontSize(8);
         doc.setTextColor(125, 78, 14);
         doc.text(
           `${unavailableChecks} checks could not run (${summary.errored_checks ?? 0} errors, ${summary.skipped_checks ?? 0} skipped). Review permissions and check details before relying on coverage.`,
           margin + 4,
-          106,
+          176,
           { maxWidth: pageWidth - margin * 2 - 8 },
         );
       }
 
-      const findings = Array.isArray(selectedScan.findings) ? selectedScan.findings : [];
+      const complianceSummary = buildCloudComplianceSummary(findings);
       if (findings.length === 0) {
         doc.setFont("helvetica", "normal");
         doc.setFontSize(9);
         doc.setTextColor(100, 95, 106);
-        doc.text("No individual check results were included in this report.", margin, unavailableChecks > 0 ? 118 : 108);
+        doc.text("No individual check results were included in this report.", margin, 172);
       }
+
+      doc.addPage();
+      drawPageHeader(false);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(14);
+      doc.setTextColor(51, 51, 61);
+      doc.text("Executive summary", margin, 28);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(74, 65, 82);
+      doc.text(
+        `The scan returned ${reportCounts.total} check results: ${reportCounts.passed} PASS, ${reportCounts.failed} FAIL, ${reportCounts.manual} MANUAL, ${reportCounts.muted} MUTED/SUPPRESSED, ${reportCounts.not_applicable} NOT APPLICABLE, ${reportCounts.errored} ERROR, ${reportCounts.skipped} SKIPPED, and ${reportCounts.other} other. These categories add up to the total.`,
+        margin,
+        35,
+        { maxWidth: pageWidth - margin * 2 },
+      );
+      doc.text(
+        "Identical service/check IDs are grouped; a regional failure is counted once in the posture score.",
+        margin,
+        44,
+        { maxWidth: pageWidth - margin * 2 },
+      );
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text("Previous scan comparison", margin, 54);
+      if (comparison) {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.text(
+          `Compared with scan ${String(previousScan.scan_id).slice(0, 8)} completed ${formatDate(previousScan.completed_at)}: ${comparison.improved.length} improved, ${comparison.stillOpen.length} still open, ${comparison.newOpen.length} newly open.`,
+          margin,
+          60,
+          { maxWidth: pageWidth - margin * 2 },
+        );
+        autoTable(doc, {
+          startY: 64,
+          margin: { left: margin, right: margin, bottom: 16 },
+          head: [["Change", "Issues"]],
+          body: [
+            ["Improved", comparison.improved.slice(0, 3).map((finding) => finding.title || finding.check_id).join("\n") || "None"],
+            ["Still open", comparison.stillOpen.slice(0, 3).map((finding) => finding.title || finding.check_id).join("\n") || "None"],
+            ["Newly open", comparison.newOpen.slice(0, 3).map((finding) => finding.title || finding.check_id).join("\n") || "None"],
+          ],
+          theme: "grid",
+          styles: { font: "helvetica", fontSize: 7, cellPadding: 2, overflow: "linebreak", valign: "top" },
+          headStyles: { fillColor: [76, 30, 94], textColor: [255, 255, 255], fontStyle: "bold" },
+          columnStyles: { 0: { cellWidth: 30, fontStyle: "bold" }, 1: { cellWidth: "auto" } },
+          didDrawPage: () => drawPageHeader(false),
+        });
+      } else {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.text(
+          "No earlier completed scan for the same provider, account, and scope is available to compare.",
+          margin,
+          60,
+          { maxWidth: pageWidth - margin * 2 },
+        );
+      }
+
+      const topRisks = reportRows.filter((finding) => finding.status === "FAIL").slice(0, 8);
+      const topRisksStartY = comparison ? doc.lastAutoTable.finalY + 8 : 69;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text("Fix these first", margin, topRisksStartY);
       autoTable(doc, {
-        startY: unavailableChecks > 0 ? 114 : 101,
+        startY: topRisksStartY + 4,
+        margin: { left: margin, right: margin, bottom: 16 },
+        head: [["Severity", "Service", "Failed check", "Failed regions", "Risk impact"]],
+        body: topRisks.length
+          ? topRisks.map((finding) => [
+            finding.severity.toUpperCase(),
+            finding.service,
+            cleanCloudReportText(finding.title || finding.check_id),
+            `${finding.failed_region_count}/${finding.assessed_region_count}: ${finding.failed_regions.join(", ") || "Region not specified"}`,
+            cleanCloudReportText(formatCloudRiskImpact(finding)),
+          ])
+          : [["—", "—", "No failed issues were returned.", "—", "—"]],
+        theme: "grid",
+        styles: { font: "helvetica", fontSize: 7, cellPadding: 2, overflow: "linebreak", valign: "top", textColor: [55, 50, 60] },
+        headStyles: { fillColor: [76, 30, 94], textColor: [255, 255, 255], fontStyle: "bold" },
+        alternateRowStyles: { fillColor: [249, 248, 251] },
+        columnStyles: {
+          0: { cellWidth: 19, fontStyle: "bold" },
+          1: { cellWidth: 24 },
+          2: { cellWidth: 48 },
+          3: { cellWidth: 53 },
+          4: { cellWidth: "auto" },
+        },
+        didDrawPage: () => drawPageHeader(false),
+      });
+
+      const definitionsStartY = doc.lastAutoTable.finalY + 7;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text("How to read the results", margin, definitionsStartY);
+      autoTable(doc, {
+        startY: definitionsStartY + 3,
+        margin: { left: margin, right: margin, bottom: 16 },
+        head: [["Status", "Meaning"]],
+        body: [
+          ["PASS", "The check passed for the assessed resources and regions."],
+          ["FAIL", "The check found a configuration that does not meet the security control."],
+          ["MANUAL", "The control needs human review; the scanner cannot determine pass or fail automatically."],
+          ["MUTED / SUPPRESSED", "The result was muted or suppressed by scan policy; review it before treating it as resolved."],
+          ["NOT APPLICABLE", "The check does not apply to the assessed resource or scope."],
+          ["ERROR / SKIPPED", "The check could not be completed; verify permissions and scan coverage."],
+          ["OTHER", "A status not recognized by the report is included in the totals but not scored."],
+        ],
+        theme: "grid",
+        styles: { font: "helvetica", fontSize: 7, cellPadding: 2, overflow: "linebreak", valign: "top" },
+        headStyles: { fillColor: [76, 30, 94], textColor: [255, 255, 255], fontStyle: "bold" },
+        columnStyles: { 0: { cellWidth: 40, fontStyle: "bold" }, 1: { cellWidth: "auto" } },
+        didDrawPage: () => drawPageHeader(false),
+      });
+
+      if (findings.length > 0) {
+        doc.addPage();
+        drawPageHeader(false);
+        const complianceTitleY = 28;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.setTextColor(51, 51, 61);
+        doc.text("Regulatory & Compliance Framework Alignment", margin, complianceTitleY);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(107, 102, 112);
+        doc.text(
+          "Unique mapped controls; a control is failed if any resource fails. Compliance % = passed / (passed + failed); not-assessed controls are excluded.",
+          margin,
+          complianceTitleY + 5,
+          { maxWidth: pageWidth - margin * 2 },
+        );
+        if (complianceSummary.length === 0) {
+          doc.setFontSize(9);
+          doc.setTextColor(100, 95, 106);
+          doc.text(
+            "Prowler did not return framework mappings for these findings. No CIS, SOC 2, NIST, or GDPR controls have been inferred or fabricated.",
+            margin,
+            complianceTitleY + 16,
+            { maxWidth: pageWidth - margin * 2 },
+          );
+        } else {
+        autoTable(doc, {
+          startY: complianceTitleY + 10,
+          margin: { top: 22, bottom: 16, left: margin, right: margin },
+          head: [["Framework", "Total rules", "Passed", "Failed", "Not assessed", "Compliance %", "Progress"]],
+          body: complianceSummary.map((framework) => [
+            framework.framework,
+            framework.totalRules,
+            framework.passed,
+            framework.failed,
+            framework.notAssessed,
+            framework.compliancePercent === null
+              ? "N/A"
+              : `${framework.compliancePercent}% · ${framework.grade}`,
+            "",
+          ]),
+          theme: "grid",
+          styles: { font: "helvetica", fontSize: 7.5, cellPadding: 2.4, overflow: "linebreak", valign: "middle", textColor: [39, 48, 65], lineColor: [210, 219, 230], lineWidth: 0.2 },
+          headStyles: { fillColor: [245, 248, 252], textColor: [54, 67, 84], fontStyle: "bold", fontSize: 7.5, cellPadding: 3 },
+          alternateRowStyles: { fillColor: [250, 252, 255] },
+          columnStyles: {
+            0: { cellWidth: 67, fontStyle: "bold" },
+            1: { cellWidth: 24, halign: "center" },
+            2: { cellWidth: 19, halign: "center", textColor: [0, 166, 120], fontStyle: "bold" },
+            3: { cellWidth: 19, halign: "center", textColor: [239, 68, 68], fontStyle: "bold" },
+            4: { cellWidth: 27, halign: "center" },
+            5: { cellWidth: 28, halign: "center", fontStyle: "bold" },
+          },
+          didParseCell: (data) => {
+            if (data.section !== "body" || data.column.index !== 5) return;
+            const percent = Number.parseFloat(data.cell.raw);
+            data.cell.styles.textColor = !Number.isFinite(percent)
+              ? [100, 95, 106]
+              : percent >= 90
+              ? [0, 166, 120]
+              : percent >= 70
+                ? [245, 158, 11]
+                : percent >= 50
+                  ? [234, 88, 12]
+                  : [239, 68, 68];
+          },
+          didDrawCell: (data) => {
+            if (data.section !== "body" || data.column.index !== 6) return;
+            const percent = complianceSummary[data.row.index]?.compliancePercent || 0;
+            const barX = data.cell.x + 3;
+            const barY = data.cell.y + data.cell.height / 2 - 1.5;
+            const barWidth = Math.max(0, (data.cell.width - 6) * percent / 100);
+            const color = percent >= 90
+              ? [16, 185, 129]
+              : percent >= 70
+                ? [245, 158, 11]
+                : percent >= 50
+                  ? [234, 88, 12]
+                  : [239, 68, 68];
+            doc.setFillColor(232, 237, 243);
+            doc.roundedRect(barX, barY, data.cell.width - 6, 3, 1.5, 1.5, "F");
+            if (barWidth > 0) {
+              doc.setFillColor(...color);
+              doc.roundedRect(barX, barY, barWidth, 3, 1.5, 1.5, "F");
+            }
+          },
+          didDrawPage: (data) => {
+            if (data.pageNumber > 1) drawPageHeader(false);
+          },
+        });
+        }
+      }
+
+      const breakdownTitles = {
+        severity: "Findings by severity",
+        service: "Findings by service",
+        region: "Findings by region",
+      };
+      Object.entries(reportMetrics.breakdowns).forEach(([dimension, groups]) => {
+        if (groups.length === 0) return;
+        const rowsPerPage = 12;
+        for (let start = 0; start < groups.length; start += rowsPerPage) {
+          doc.addPage();
+          drawPageHeader(false);
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(14);
+          doc.setTextColor(51, 51, 61);
+          doc.text(
+            `${breakdownTitles[dimension]}${start ? " (continued)" : ""}`,
+            margin,
+            28,
+          );
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(8);
+          doc.setTextColor(107, 102, 112);
+          doc.text("Bars show all checks; the red portion represents failed checks.", margin, 35);
+
+          const visibleGroups = groups.slice(start, start + rowsPerPage);
+          const maxTotal = Math.max(...visibleGroups.map((group) => group.total), 1);
+          const labelWidth = 78;
+          const chartX = margin + labelWidth;
+          const chartWidth = pageWidth - chartX - margin - 32;
+          const rowHeight = 11;
+          visibleGroups.forEach((group, index) => {
+            const y = 47 + index * rowHeight;
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(8);
+            doc.setTextColor(55, 50, 60);
+            doc.text(doc.splitTextToSize(group.label, labelWidth - 4).slice(0, 1), margin, y + 3);
+            doc.setFillColor(233, 237, 243);
+            doc.roundedRect(chartX, y, chartWidth, 4, 2, 2, "F");
+            const totalWidth = chartWidth * group.total / maxTotal;
+            const failedWidth = totalWidth * group.failed / group.total;
+            const successWidth = totalWidth - failedWidth;
+            if (successWidth > 0) {
+              doc.setFillColor(76, 30, 94);
+              doc.roundedRect(chartX, y, successWidth, 4, 2, 2, "F");
+            }
+            if (failedWidth > 0) {
+              doc.setFillColor(239, 68, 68);
+              doc.roundedRect(chartX + successWidth, y, failedWidth, 4, 2, 2, "F");
+            }
+            doc.setFontSize(7);
+            doc.setTextColor(74, 65, 82);
+            doc.text(`${group.total} checks · ${group.failed} failed`, chartX + chartWidth + 3, y + 3.5);
+          });
+          const legendY = 47 + visibleGroups.length * rowHeight + 4;
+          doc.setFillColor(76, 30, 94);
+          doc.rect(margin, legendY, 4, 4, "F");
+          doc.setFontSize(7);
+          doc.setTextColor(74, 65, 82);
+          doc.text("Non-failed checks", margin + 6, legendY + 3.2);
+          doc.setFillColor(239, 68, 68);
+          doc.rect(margin + 45, legendY, 4, 4, "F");
+          doc.text("Failed checks", margin + 51, legendY + 3.2);
+        }
+      });
+
+      doc.addPage();
+      drawPageHeader(false);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(14);
+      doc.setTextColor(51, 51, 61);
+        doc.text("Detailed findings — failures first, grouped by service and check", margin, 28);
+        autoTable(doc, {
+        startY: 34,
         margin: { top: 22, bottom: 16, left: margin, right: margin },
-        head: [["Status", "Severity", "Check", "Service", "Resource", "Region", "Details", "Remediation"]],
-        body: findings.map((finding) => [
+          head: [["Status", "Severity", "Check", "Service", "Resources affected", "Regional results", "Compliance", "Tags", "Risk impact / details", "Remediation"]],
+        body: reportRows.map((finding) => [
           finding.status || "",
           finding.severity || "",
-          [finding.title, finding.check_id].filter(Boolean).join("\n"),
+        cleanCloudReportText([finding.title, finding.check_id].filter(Boolean).join("\n")),
           finding.service || "",
-          [finding.resource_name, finding.resource_id, finding.resource_type].filter(Boolean).join("\n"),
-          finding.region || "",
-          finding.status_extended || finding.description || "",
-          [finding.remediation, finding.remediation_url].filter(Boolean).join("\n"),
+        `${finding.resources.length} resource(s)\n${finding.resources.slice(0, 6).join(", ")}${finding.resources.length > 6 ? `, and ${finding.resources.length - 6} more` : ""}`,
+        `${finding.region_summary}\nFailed regions: ${finding.failed_regions.join(", ") || "None"}\nObserved regions: ${finding.regions.join(", ") || "Not specified"}`,
+        finding.compliance.join("\n") || "Not mapped by Prowler",
+          Object.entries(finding.resource_tags || {}).map(([key, value]) => `${key}=${value}`).join("\n"),
+        cleanCloudReportText([
+          formatCloudRiskImpact(finding),
+            finding.status_extended || finding.description,
+        ].filter(Boolean).join("\n\n")),
+        cleanCloudReportText([finding.remediation, finding.remediation_url].filter(Boolean).join("\n")),
         ]),
         theme: "grid",
         styles: { font: "helvetica", fontSize: 7, cellPadding: 2.2, overflow: "linebreak", valign: "top", textColor: [55, 50, 60], lineColor: [232, 228, 235], lineWidth: 0.15 },
         headStyles: { fillColor: [76, 30, 94], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5, cellPadding: 3 },
         alternateRowStyles: { fillColor: [249, 248, 251] },
         columnStyles: {
-          0: { cellWidth: 19, fontStyle: "bold" },
-          1: { cellWidth: 20 },
-          2: { cellWidth: 38 },
-          3: { cellWidth: 24 },
-          4: { cellWidth: 36 },
-          5: { cellWidth: 20 },
-          6: { cellWidth: 52 },
-          7: { cellWidth: 65 },
+          0: { cellWidth: 14, fontStyle: "bold" },
+          1: { cellWidth: 16 },
+          2: { cellWidth: 34 },
+          3: { cellWidth: 18 },
+          4: { cellWidth: 23 },
+          5: { cellWidth: 38 },
+          6: { cellWidth: 29 },
+          7: { cellWidth: 20 },
+          8: { cellWidth: 43 },
+          9: { cellWidth: 48 },
         },
         didParseCell: (data) => {
           if (data.section !== "body") return;
@@ -415,7 +941,7 @@ function CloudAssessment() {
         didDrawPage: (data) => {
           if (data.pageNumber > 1) drawPageHeader(false);
         },
-      });
+        });
 
       const pageCount = doc.internal.getNumberOfPages();
       for (let page = 1; page <= pageCount; page += 1) {
@@ -460,6 +986,50 @@ function CloudAssessment() {
       serviceAccountJson: "",
     }));
   };
+
+  const findings = useMemo(
+    () => Array.isArray(selectedScan?.findings) ? selectedScan.findings : [],
+    [selectedScan?.findings],
+  );
+  const currentReportMetrics = useMemo(
+    () => buildCloudReportMetrics(findings),
+    [findings],
+  );
+  const currentFindingCounts = useMemo(
+    () => buildCloudFindingCounts(findings),
+    [findings],
+  );
+  const complianceFrameworks = [...new Set(findings.flatMap((finding) => (
+    Array.isArray(finding.compliance) ? finding.compliance.map(complianceFramework) : []
+  )).filter(Boolean))].sort();
+  const filteredFindings = useMemo(() => {
+    const search = findingSearch.trim().toLowerCase();
+    return findings.filter((finding) => {
+      const compliance = Array.isArray(finding.compliance) ? finding.compliance : [];
+      const tags = Object.entries(finding.resource_tags || {}).flat();
+      const searchableText = [
+        finding.title,
+        finding.check_id,
+        finding.service,
+        finding.resource_name,
+        finding.resource_id,
+        finding.resource_type,
+        finding.region,
+        finding.description,
+        finding.risk,
+        finding.status_extended,
+        finding.remediation,
+        ...compliance,
+        ...tags,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return (!search || searchableText.includes(search))
+        && (findingStatus === "all" || finding.status === findingStatus)
+        && (findingSeverity === "all" || finding.severity === findingSeverity)
+        && (findingFramework === "all" || compliance.some(
+          (reference) => complianceFramework(reference) === findingFramework,
+        ));
+    });
+  }, [findings, findingFramework, findingSearch, findingSeverity, findingStatus]);
 
   if (loading && accessApproved === null) {
     return <div className="p-8 text-center text-slate-600 dark:text-slate-300">Checking Cloud Assessment access…</div>;
@@ -575,6 +1145,51 @@ function CloudAssessment() {
               <div className="sm:col-span-2">
                 <Field label="Session token (optional)" type="password" value={form.sessionToken} onChange={updateField("sessionToken")} required={false} autoComplete="off" />
               </div>
+              <div className="sm:col-span-2">
+                <p className={labelClass}>AWS regions</p>
+                <label className="mt-2 flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={awsAllRegions}
+                    onChange={(event) => {
+                      const scanAllRegions = event.target.checked;
+                      setAwsAllRegions(scanAllRegions);
+                      if (scanAllRegions) setSelectedAwsRegions([]);
+                    }}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  Scan all enabled regions
+                </label>
+                {!awsAllRegions && (
+                  <div className="mt-3 grid max-h-52 grid-cols-2 gap-2 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-950 sm:grid-cols-3">
+                    {awsRegions.map((region) => (
+                      <label key={region} className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={selectedAwsRegions.includes(region)}
+                          onChange={(event) => {
+                            setSelectedAwsRegions((current) => (
+                              event.target.checked
+                                ? [...current, region]
+                                : current.filter((item) => item !== region)
+                            ));
+                          }}
+                          className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        {region}
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <span className="mt-1 block text-xs font-normal text-slate-500 dark:text-slate-400">
+                  Select all enabled regions or turn this off and choose one or more regions to scan.
+                </span>
+                {!awsAllRegions && selectedAwsRegions.length === 0 && (
+                  <span role="alert" className="mt-1 block text-xs font-semibold text-rose-600 dark:text-rose-400">
+                    Select at least one region, or choose all enabled regions.
+                  </span>
+                )}
+              </div>
               <p className="text-xs leading-5 text-slate-500 dark:text-slate-400 sm:col-span-2">
                 The supplied AWS identity defines the account and resources assessed. Temporary STS credentials are recommended.
               </p>
@@ -616,7 +1231,7 @@ function CloudAssessment() {
 
           <button
             type="submit"
-            disabled={submitting || scanLimitReached}
+            disabled={submitting || scanLimitReached || (provider === "aws" && !awsAllRegions && selectedAwsRegions.length === 0)}
             className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
           >
             {submitting ? <LoaderCircle className="animate-spin" size={18} /> : <Play size={17} />}
@@ -673,12 +1288,17 @@ function CloudAssessment() {
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {scans.map((scan) => {
                   const scopeValues = Object.values(scan.scope || {}).flat();
+                  const scopeLabel = scan.provider === "aws"
+                    ? (scan.scope?.regions || (scan.scope?.region ? [scan.scope.region] : [])).join(", ") || "All enabled regions"
+                    : scopeValues.length
+                      ? scopeValues.join(", ")
+                      : "Account from supplied credentials";
                   return (
                     <tr key={scan.scan_id} className="bg-white dark:bg-slate-900">
                       <td className="px-4 py-3">
                         <div className="font-bold uppercase text-slate-900 dark:text-white">{scan.provider}</div>
-                        <div className="mt-1 max-w-64 truncate text-xs text-slate-500 dark:text-slate-400" title={scopeValues.join(", ")}>
-                          {scopeValues.length ? scopeValues.join(", ") : "Account from supplied credentials"}
+                        <div className="mt-1 max-w-64 truncate text-xs text-slate-500 dark:text-slate-400" title={scopeLabel}>
+                          {scopeLabel}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{formatDate(scan.created_at)}</td>
@@ -728,7 +1348,21 @@ function CloudAssessment() {
           </div>
 
           {selectedScan.status === "running" && (
-            <p className="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-300"><LoaderCircle className="animate-spin" size={17} /> Prowler is assessing this cloud account.</p>
+            <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+              <p className="flex items-center gap-2 font-semibold"><LoaderCircle className="animate-spin" size={17} /> {selectedScan.summary?.progress?.message || "Prowler is assessing this cloud account."}</p>
+              {selectedScan.summary?.progress?.updated_at && (
+                <p className="mt-1 text-xs opacity-80">Last update: {formatDate(selectedScan.summary.progress.updated_at)}</p>
+              )}
+              {selectedScan.summary?.progress?.events?.length > 0 && (
+                <ol aria-label="Assessment activity" className="mt-3 space-y-1 border-l border-blue-300 pl-3 text-xs dark:border-blue-700">
+                  {selectedScan.summary.progress.events.slice(-5).map((event, index) => (
+                    <li key={`${event.timestamp}-${index}`}>
+                      <span className="font-semibold">{formatDate(event.timestamp)}:</span> {event.message}
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
           )}
           {selectedScan.status === "failed" && (
             <p role="alert" className="rounded-xl bg-rose-50 p-4 text-sm text-rose-800 dark:bg-rose-950/40 dark:text-rose-200">{selectedScan.error || "Assessment failed."}</p>
@@ -746,8 +1380,14 @@ function CloudAssessment() {
                   </p>
                 </div>
               )}
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-7">
                 {[
+                  [
+                    "Posture score",
+                    currentReportMetrics.postureScore === null
+                      ? "N/A"
+                      : `${currentReportMetrics.postureScore}% · Grade ${currentReportMetrics.grade}`,
+                  ],
                   ["Failed checks", selectedScan.summary?.failed_checks ?? 0],
                   ["Couldn’t run", unavailableCheckCount(selectedScan.summary)],
                   ["Critical", selectedScan.summary?.severity_counts?.critical ?? 0],
@@ -761,10 +1401,78 @@ function CloudAssessment() {
                   </div>
                 ))}
               </div>
+              <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">
+                Results: {currentFindingCounts.total} total = {currentFindingCounts.passed} PASS + {currentFindingCounts.failed} FAIL + {currentFindingCounts.manual} MANUAL + {currentFindingCounts.muted} MUTED/SUPPRESSED + {currentFindingCounts.not_applicable} NOT APPLICABLE + {currentFindingCounts.errored} ERROR + {currentFindingCounts.skipped} SKIPPED + {currentFindingCounts.other} other.
+                {" "}Score uses distinct service/check issues weighted by severity; repeated regional results are counted once. Grade bands: {currentReportMetrics.gradeBands}.
+              </p>
               {selectedScan.findings?.length ? (
                 <div className="space-y-3">
-                  <h3 className="font-bold text-slate-900 dark:text-white">Prowler checks</h3>
-                  {selectedScan.findings.map((finding, index) => (
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="font-bold text-slate-900 dark:text-white">Prowler checks</h3>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      Showing {filteredFindings.length} of {findings.length} checks
+                    </span>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <label className={labelClass}>
+                      Search findings
+                      <span className="relative mt-1 block">
+                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          className={`${inputClass} pl-9`}
+                          type="search"
+                          value={findingSearch}
+                          onChange={(event) => setFindingSearch(event.target.value)}
+                          placeholder="Check, resource, tag, compliance…"
+                        />
+                      </span>
+                    </label>
+                    <label className={labelClass}>
+                      Status
+                      <select className={inputClass} value={findingStatus} onChange={(event) => setFindingStatus(event.target.value)}>
+                        <option value="all">All statuses</option>
+                        {[...new Set(findings.map((finding) => finding.status).filter(Boolean))].sort().map((status) => (
+                          <option key={status} value={status}>{status}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className={labelClass}>
+                      Severity
+                      <select className={inputClass} value={findingSeverity} onChange={(event) => setFindingSeverity(event.target.value)}>
+                        <option value="all">All severities</option>
+                        {[...new Set(findings.map((finding) => finding.severity).filter(Boolean))].sort().map((severity) => (
+                          <option key={severity} value={severity}>{severity}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className={labelClass}>
+                      Compliance framework
+                      <select className={inputClass} value={findingFramework} onChange={(event) => setFindingFramework(event.target.value)}>
+                        <option value="all">All frameworks</option>
+                        {complianceFrameworks.map((framework) => (
+                          <option key={framework} value={framework}>{framework}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+                      <Filter size={14} /> PDF export includes the currently matching findings.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFindingSearch("");
+                        setFindingStatus("all");
+                        setFindingSeverity("all");
+                        setFindingFramework("all");
+                      }}
+                      className="text-xs font-semibold text-indigo-700 hover:underline dark:text-indigo-300"
+                    >
+                      Clear filters
+                    </button>
+                  </div>
+                  {filteredFindings.length ? filteredFindings.map((finding, index) => (
                     <article key={`${finding.check_id}-${finding.resource_id}-${index}`} className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div>
@@ -783,6 +1491,29 @@ function CloudAssessment() {
                         </div>
                       </div>
                       {finding.status_extended && <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">{finding.status_extended}</p>}
+                      {finding.risk && (
+                        <p className="mt-3 rounded-lg border-l-2 border-rose-300 bg-rose-50/70 px-3 py-2 text-sm text-rose-900 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200">
+                          <span className="font-semibold">Risk impact: </span>{finding.risk}
+                        </p>
+                      )}
+                      {finding.compliance?.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {finding.compliance.map((reference) => (
+                            <span key={reference} className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200">
+                              {reference}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {Object.keys(finding.resource_tags || {}).length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {Object.entries(finding.resource_tags).map(([key, value]) => (
+                            <span key={key} className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                              {key}: {value}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       {finding.remediation && (
                         <p className="mt-3 border-l-2 border-indigo-300 pl-3 text-sm text-slate-600 dark:border-indigo-700 dark:text-slate-300">
                           <span className="font-semibold">Remediation: </span>{finding.remediation}
@@ -790,7 +1521,11 @@ function CloudAssessment() {
                         </p>
                       )}
                     </article>
-                  ))}
+                  )) : (
+                    <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600 dark:bg-slate-950 dark:text-slate-300">
+                      No checks match the current search and filters.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <p className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">

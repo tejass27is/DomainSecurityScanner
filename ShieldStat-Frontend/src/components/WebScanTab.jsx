@@ -103,6 +103,10 @@ function FindingRow({ finding }) {
   const [open, setOpen] = useState(false);
   const urlBased = isUrlBasedFinding(finding);
   const detail = formatAffectedDetail(finding.affected_detail);
+  const isSemgrepFinding = finding.source === "semgrep" || finding.plugin_family === "Semgrep";
+  const findingTitle = isSemgrepFinding
+    ? finding.name || finding.description || "Semgrep finding"
+    : finding.title || "Untitled finding";
 
   return (
     <>
@@ -118,11 +122,13 @@ function FindingRow({ finding }) {
             </span>
             <span>
               <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
-                {finding.title || "Untitled finding"}
+                {findingTitle}
               </span>
               <span className="mt-1 block text-[11px] uppercase tracking-widest text-slate-400">
-                {finding.id}
-                {finding.plugin_id ? ` · ${finding.plugin_id}` : ""}
+                {isSemgrepFinding ? "Semgrep" : finding.id}
+                {!isSemgrepFinding && finding.plugin_id
+                  ? ` · ${finding.plugin_id}`
+                  : ""}
                 {finding.category ? ` · ${finding.category}` : ""}
               </span>
             </span>
@@ -221,26 +227,46 @@ function FindingRow({ finding }) {
 function SeverityTiles({ distribution, total }) {
   const counts = distribution || {};
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      {SEVERITY_ORDER.map((severity) => {
-        const style = SEVERITY_STYLES[severity];
-        return (
-          <div
-            key={severity}
-            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4"
-          >
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
-                {style.label}
-              </span>
-              <span className={`h-2 w-2 rounded-full ${style.bar}`} />
+    <div>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h4 className="text-xs font-extrabold uppercase tracking-widest text-slate-600 dark:text-slate-300">
+          Findings by severity
+        </h4>
+        <span className="text-xs font-medium text-slate-400">
+          {total} total
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {SEVERITY_ORDER.map((severity) => {
+          const style = SEVERITY_STYLES[severity];
+          const count = Number(counts[severity]) || 0;
+          const share = total > 0 ? Math.min(100, (count / total) * 100) : 0;
+          return (
+            <div
+              key={severity}
+              className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 transition-shadow hover:shadow-md dark:border-slate-800 dark:bg-slate-900"
+            >
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                  {style.label}
+                </span>
+                <span className={`h-2.5 w-2.5 rounded-full ${style.bar}`} />
+              </div>
+              <p className="text-2xl font-extrabold leading-none text-slate-900 dark:text-white">
+                {count}
+              </p>
+              <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                <div
+                  className={`h-full rounded-full ${style.bar} transition-all`}
+                  style={{ width: `${share}%` }}
+                />
+              </div>
             </div>
-            <p className="text-2xl font-extrabold text-slate-900 dark:text-white">{counts[severity] || 0}</p>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
       {total === 0 && (
-        <p className="col-span-2 text-sm text-slate-500 dark:text-slate-400 sm:col-span-4">
+        <p className="mt-3 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
           No real findings were reported for this scan.
         </p>
       )}
@@ -963,28 +989,31 @@ function WebScanTab() {
       {/* ── Results ── */}
       {activeScan && !isActive && (
         <div className="flex flex-col gap-6">
-          <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-8 shadow-lg">
-            <div className="flex flex-wrap items-start justify-between gap-6 mb-6">
-              <div className="min-w-0">
+          <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900/50">
+            <div className="p-6 sm:p-8">
+              <div className="mb-7 flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
                 <StatusChip status={activeScan.status} />
-                <h3 className="mt-3 break-all text-2xl font-extrabold text-slate-900 dark:text-white">
+                <h3 className="mt-3 break-all text-xl font-extrabold leading-tight text-slate-900 dark:text-white sm:text-2xl">
                   {activeScan.target_url}
                 </h3>
-                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                  {activeScan.message || formatTimestamp(activeScan.created_at)}
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  {activeScan.message || `${activeScan.scan_type === "static" ? "Static repository" : "Dynamic website"} scan completed`}
                 </p>
+                </div>
               </div>
 
-              <div className="flex flex-wrap items-end justify-end gap-3">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="flex flex-col justify-center gap-2 sm:col-span-2 xl:col-span-1">
                 {activeScan.scan_type === "dynamic" && (
-                  <label className="text-left">
-                    <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                  <label>
+                    <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
                       Report format
                     </span>
                     <select
                       value={reportType}
                       onChange={(event) => setReportType(event.target.value)}
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                     >
                       <option value="developer">Developer Report</option>
                       <option value="executive">Executive Summary Report</option>
@@ -997,48 +1026,72 @@ function WebScanTab() {
                   type="button"
                   onClick={handleDownloadReport}
                   disabled={downloadingReport}
-                  className="inline-flex items-center gap-2 rounded-xl border border-purple-200 px-4 py-2.5 text-xs font-bold text-purple-700 transition-colors hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-purple-900/60 dark:text-purple-300 dark:hover:bg-purple-950/30"
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-purple-200 px-4 py-2.5 text-sm font-bold text-purple-700 transition-colors hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-purple-900/60 dark:text-purple-300 dark:hover:bg-purple-950/30"
                 >
                   <span className="material-symbols-outlined text-base">
                     {downloadingReport ? "progress_activity" : "download"}
                   </span>
                   {downloadingReport ? "Preparing…" : activeScan.scan_type === "dynamic" ? "Download Report" : "Download PDF"}
                 </button>
-                <div className="text-right">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
-                    Risk score
-                  </p>
-                  <p className={`text-4xl font-extrabold ${severityTone.chip.split(" ")[1]}`}>
-                    {activeScan.risk_score ?? 0}
-                    <span className="text-base text-slate-400">/100</span>
-                  </p>
                 </div>
-                <div className="text-right">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
-                    Findings
-                  </p>
-                  <p className="text-4xl font-extrabold text-slate-900 dark:text-white">
-                    {activeScan.total_findings ?? 0}
-                  </p>
+
+                <div className="rounded-2xl border border-rose-100 bg-gradient-to-br from-rose-50 to-white p-4 dark:border-rose-900/40 dark:from-rose-950/30 dark:to-slate-900">
+                <div className="mb-2 flex items-center gap-2 text-rose-700 dark:text-rose-300">
+                  <span className="material-symbols-outlined text-lg">shield</span>
+                  <p className="text-[10px] font-bold uppercase tracking-widest">Risk score</p>
                 </div>
-                <div className="text-right">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
-                    Affected URLs
-                  </p>
-                  <p className="text-4xl font-extrabold text-slate-900 dark:text-white">
-                    {activeScan.unique_urls ?? 0}
-                  </p>
+                <p className={`text-3xl font-extrabold leading-none ${severityTone.chip.split(" ")[1]}`}>
+                  {activeScan.risk_score ?? 0}
+                  <span className="ml-1 text-sm font-bold text-slate-400">/100</span>
+                </p>
+                <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-rose-100 dark:bg-slate-800">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-amber-500 to-rose-600 transition-all"
+                    style={{ width: `${Math.max(0, Math.min(100, Number(activeScan.risk_score) || 0))}%` }}
+                  />
+                </div>
+                <p className="mt-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                  {severityTone.label} risk
+                </p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900">
+                <div className="mb-2 flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                  <span className="material-symbols-outlined text-lg">bug_report</span>
+                  <p className="text-[10px] font-bold uppercase tracking-widest">Findings</p>
+                </div>
+                <p className="text-3xl font-extrabold leading-none text-slate-900 dark:text-white">
+                  {activeScan.total_findings ?? 0}
+                </p>
+                <p className="mt-3 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  Security issues detected
+                </p>
+                </div>
+
+                <div className="rounded-2xl border border-purple-100 bg-purple-50/60 p-4 dark:border-purple-900/40 dark:bg-purple-950/20">
+                <div className="mb-2 flex items-center gap-2 text-purple-700 dark:text-purple-300">
+                  <span className="material-symbols-outlined text-lg">link</span>
+                  <p className="text-[10px] font-bold uppercase tracking-widest">Affected URLs</p>
+                </div>
+                <p className="text-3xl font-extrabold leading-none text-slate-900 dark:text-white">
+                  {activeScan.unique_urls ?? 0}
+                </p>
+                <p className="mt-3 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  Unique locations impacted
+                </p>
                 </div>
               </div>
+
+              {activeScan.error_message && (
+                <div className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 dark:border-rose-900/50 dark:bg-rose-950/30">
+                <p className="text-sm font-medium text-rose-700 dark:text-rose-300">{activeScan.error_message}</p>
+                </div>
+              )}
             </div>
 
-            {activeScan.error_message && (
-              <div className="mb-6 rounded-xl border border-rose-200 dark:border-rose-900/50 bg-rose-50 dark:bg-rose-950/30 px-4 py-3">
-                <p className="text-sm font-medium text-rose-700 dark:text-rose-300">{activeScan.error_message}</p>
-              </div>
-            )}
-
-            <SeverityTiles distribution={activeScan.severity_distribution} total={activeScan.total_findings || 0} />
+            <div className="border-t border-slate-200 bg-slate-50/70 p-6 dark:border-slate-800 dark:bg-slate-950/20 sm:px-8">
+              <SeverityTiles distribution={activeScan.severity_distribution} total={activeScan.total_findings || 0} />
+            </div>
           </div>
 
           <div className="overflow-hidden rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 shadow-lg">

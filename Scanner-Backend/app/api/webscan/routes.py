@@ -267,15 +267,29 @@ def _semgrep_payload_to_findings(payload: dict) -> list[dict]:
         line_range = line if not end_line or end_line == start_line else f"{line}-{end_line}"
         severity_label = _semgrep_severity_label(str(extra.get("severity") or metadata.get("severity") or "info"))
         message = str(extra.get("message") or "Semgrep finding").strip() or "Semgrep finding"
-        rule_id = str(result.get("check_id") or metadata.get("rule_id") or f"semgrep-{index + 1}").strip()
+        finding_name = str(
+            metadata.get("name")
+            or metadata.get("shortDescription")
+            or metadata.get("short_description")
+            or message
+        ).strip()
+        recommendation = (
+            metadata.get("remediation")
+            or metadata.get("recommendation")
+            or metadata.get("solution")
+            or "Review the matched code and remediate the insecure pattern."
+        )
+        evidence = str(extra.get("lines") or "").strip()
 
         findings.append({
             "id": f"semgrep-{index + 1}",
-            "title": rule_id,
+            "name": finding_name,
+            "title": finding_name,
             "severity": severity_label,
             "severity_label": severity_label,
             "description": message,
-            "solution": "Review the flagged code path and apply the recommended remediation for this rule.",
+            "solution": str(recommendation),
+            "autofix": str(extra.get("fix") or "").strip(),
             "references": [str(metadata.get("source") or "")] if metadata.get("source") else [],
             "cwe": metadata.get("cwe") or metadata.get("cwe_id") or "",
             "affected_url": path,
@@ -287,11 +301,11 @@ def _semgrep_payload_to_findings(payload: dict) -> list[dict]:
             "line_range": line_range,
             "host": path,
             "source": "semgrep",
-            "plugin_id": rule_id,
+            "plugin_id": "Semgrep",
             "plugin_family": "Semgrep",
             "category": "static-analysis",
             "status": "pending",
-            "evidence": f"{rule_id} at {path}",
+            "evidence": evidence or "Semgrep identified a potentially insecure pattern at this location; source excerpt was not included.",
         })
     return findings
 
@@ -492,60 +506,227 @@ def _finalize_static_scan(db: Session, record: WebScan, result: dict) -> None:
 def _build_static_webscan_pdf(record: WebScan) -> bytes:
     buffer = BytesIO()
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("ReportTitle", parent=styles["Title"], alignment=TA_CENTER, textColor=colors.HexColor("#53154d"), spaceAfter=8)
-    small_style = ParagraphStyle("Small", parent=styles["BodyText"], fontSize=7.5, leading=9)
-    heading_style = ParagraphStyle("Heading", parent=styles["Heading2"], textColor=colors.HexColor("#53154d"), spaceBefore=10, spaceAfter=6)
+    title_style = ParagraphStyle(
+        "StaticReportTitle", parent=styles["Title"], fontSize=20, leading=24,
+        alignment=0, textColor=colors.HexColor("#53154d"), spaceAfter=4,
+    )
+    subtitle_style = ParagraphStyle(
+        "StaticReportSubtitle", parent=styles["BodyText"], fontSize=9,
+        leading=12, textColor=colors.HexColor("#64748b"),
+    )
+    small_style = ParagraphStyle(
+        "StaticReportSmall", parent=styles["BodyText"], fontSize=8,
+        leading=11, textColor=colors.HexColor("#334155"),
+    )
+    body_style = ParagraphStyle(
+        "StaticReportBody", parent=styles["BodyText"], fontSize=9,
+        leading=13, textColor=colors.HexColor("#1e293b"),
+    )
+    heading_style = ParagraphStyle(
+        "StaticReportHeading", parent=styles["Heading2"], fontSize=13,
+        leading=16, textColor=colors.HexColor("#53154d"),
+        spaceBefore=12, spaceAfter=7,
+    )
+    detail_heading_style = ParagraphStyle(
+        "StaticReportDetailHeading", parent=styles["Heading3"], fontSize=9,
+        leading=12, textColor=colors.HexColor("#53154d"),
+        spaceBefore=7, spaceAfter=3,
+    )
+    code_style = ParagraphStyle(
+        "StaticReportCode", parent=styles["BodyText"], fontName="Courier",
+        fontSize=7, leading=9, textColor=colors.HexColor("#334155"),
+    )
 
-    document = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=14 * mm, leftMargin=14 * mm, topMargin=14 * mm, bottomMargin=14 * mm)
-    story = [
-        Paragraph("Static Repository Security Scan", title_style),
-        Paragraph(f"<b>Repository:</b> {record.target_url}", styles["BodyText"]),
-        Paragraph(f"<b>Status:</b> {record.status.title()} &nbsp;&nbsp; <b>Generated:</b> {datetime.now(timezone.utc).strftime('%d %b %Y, %H:%M UTC')}", small_style),
-        Spacer(1, 8),
-    ]
-
+    document = SimpleDocTemplate(
+        buffer, pagesize=A4, rightMargin=14 * mm, leftMargin=14 * mm,
+        topMargin=13 * mm, bottomMargin=19 * mm,
+    )
+    findings = record.findings or []
     distribution = record.severity_distribution or {}
-    summary_data = [
-        ["Total findings", "Critical", "High", "Medium", "Low", "Info", "Risk score"],
-        [str(record.total_findings or 0), str(distribution.get("critical", 0)), str(distribution.get("high", 0)), str(distribution.get("medium", 0)), str(distribution.get("low", 0)), str(distribution.get("info", 0)), str(record.risk_score or 0)],
+    generated_at = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+    story = [
+        _report_logo(),
+        Spacer(1, 5),
+        Paragraph("Static Repository Security Report", title_style),
+        Paragraph("Semgrep source-code assessment", subtitle_style),
+        Spacer(1, 8),
+        Paragraph(f"<b>Repository</b><br/>{_report_markup(record.target_url)}", body_style),
+        Spacer(1, 5),
     ]
-    summary_table = Table(summary_data, colWidths=[25 * mm] * 7)
+
+    summary_data = [
+        ["STATUS", "FINDINGS", "CRITICAL", "HIGH", "MEDIUM", "LOW", "RISK SCORE"],
+        [
+            str(record.status or "unknown").replace("_", " ").upper(),
+            str(record.total_findings or 0),
+            str(distribution.get("critical", 0)),
+            str(distribution.get("high", 0)),
+            str(distribution.get("medium", 0)),
+            str(distribution.get("low", 0)),
+            f"{record.risk_score or 0}/100",
+        ],
+    ]
+    summary_table = Table(summary_data, colWidths=[26 * mm] * 7, repeatRows=1)
     summary_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8eaf3")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#53154d")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#53154d")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#f8fafc")),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d9cbd8")),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#e2e8f0")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#e2e8f0")),
+        ("FONTSIZE", (0, 0), (-1, 0), 6.5),
+        ("FONTSIZE", (0, 1), (-1, 1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
     ]))
-    story.extend([summary_table, Spacer(1, 10), Paragraph("Detailed Findings", heading_style)])
+    metadata = Table(
+        [[
+            Paragraph(f"<b>Generated</b><br/>{_report_markup(generated_at)}", small_style),
+            Paragraph("<b>Scanner</b><br/>Semgrep (auto ruleset)", small_style),
+            Paragraph(f"<b>Risk level</b><br/>{_report_markup(record.severity or 'unknown')}", small_style),
+        ]],
+        colWidths=[60.6 * mm] * 3,
+    )
+    metadata.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#e2e8f0")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([summary_table, Spacer(1, 7), metadata, Spacer(1, 5)])
 
-    rows = [["Severity", "Rule", "File", "Line", "CWE", "Recommendation"]]
-    for finding in record.findings or []:
-        rows.append([
-            Paragraph(str(finding.get("severity_label") or finding.get("severity") or "Info").upper(), small_style),
-            Paragraph(str(finding.get("title") or finding.get("plugin_id") or "Finding"), small_style),
-            Paragraph(str(finding.get("file") or finding.get("affected_url") or "-"), small_style),
-            Paragraph(str(finding.get("line_range") or finding.get("line") or "-"), small_style),
-            Paragraph(str(finding.get("cwe") or "-"), small_style),
-            Paragraph(str(finding.get("description") or finding.get("solution") or "Review this finding."), small_style),
+    if not findings:
+        story.extend([
+            Paragraph("Detailed Findings", heading_style),
+            Paragraph("Semgrep did not report any findings for the scanned repository.", body_style),
         ])
+    else:
+        story.append(Paragraph("Detailed Findings", heading_style))
+        severity_colors = {
+            "CRITICAL": colors.HexColor("#991b1b"),
+            "HIGH": colors.HexColor("#c2410c"),
+            "MEDIUM": colors.HexColor("#a16207"),
+            "LOW": colors.HexColor("#1d4ed8"),
+            "INFO": colors.HexColor("#475569"),
+        }
+        for index, finding in enumerate(findings, start=1):
+            severity_label = str(finding.get("severity_label") or finding.get("severity") or "Info").upper()
+            if finding.get("source") == "semgrep" or finding.get("plugin_family") == "Semgrep":
+                title = (
+                    finding.get("name")
+                    or finding.get("display_name")
+                    or finding.get("description")
+                    or "Semgrep finding"
+                )
+            else:
+                title = finding.get("title") or finding.get("plugin_id") or "Finding"
+            header = Table(
+                [[
+                    Paragraph(f"F{index:03d}  {_report_markup(title)}", ParagraphStyle(
+                        f"StaticFindingTitle{index}", parent=styles["Heading3"],
+                        fontSize=10, leading=13, textColor=colors.white, spaceAfter=0,
+                    )),
+                    Paragraph(
+                        escape(severity_label),
+                        ParagraphStyle(
+                            f"StaticFindingSeverity{index}", parent=small_style,
+                            fontName="Helvetica-Bold", textColor=colors.white,
+                            alignment=TA_CENTER,
+                        ),
+                    ),
+                ]],
+                colWidths=[140 * mm, 42 * mm],
+            )
+            header.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#53154d")),
+                ("BACKGROUND", (1, 0), (1, 0), severity_colors.get(severity_label, colors.HexColor("#475569"))),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]))
+            location = Table(
+                [[
+                    Paragraph(f"<b>File</b><br/>{_report_markup(finding.get('file') or finding.get('affected_url'), '-')}", small_style),
+                    Paragraph(f"<b>Line(s)</b><br/>{_report_markup(finding.get('line_range') or finding.get('line'), '-')}", small_style),
+                    Paragraph(f"<b>CWE</b><br/>{_report_markup(_report_cwe(finding.get('cwe')), '-')}", small_style),
+                ]],
+                colWidths=[95 * mm, 35 * mm, 52 * mm],
+            )
+            location.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                ("BOX", (0, 0), (-1, -1), 0.45, colors.HexColor("#e2e8f0")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#e2e8f0")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            story.extend([
+                header,
+                location,
+                Paragraph("Description", detail_heading_style),
+                Paragraph(_report_markup(finding.get("description"), "No description was supplied by the Semgrep rule."), body_style),
+            ])
 
-    findings_table = Table(rows, colWidths=[18 * mm, 38 * mm, 45 * mm, 14 * mm, 22 * mm, 47 * mm], repeatRows=1)
-    findings_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8eaf3")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#53154d")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d9cbd8")),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
-    story.append(findings_table)
-    document.build(story)
+            evidence = str(finding.get("evidence") or "").strip()
+            if evidence:
+                evidence_markup = "<br/>".join(escape(line) for line in evidence.splitlines())
+                evidence_panel = Table([[Paragraph(evidence_markup, code_style)]], colWidths=[182 * mm])
+                evidence_panel.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                    ("BOX", (0, 0), (-1, -1), 0.45, colors.HexColor("#e2e8f0")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ]))
+                story.extend([Paragraph("Evidence — matched source lines", detail_heading_style), evidence_panel])
+
+            recommendation = finding.get("solution") or "Review the matched code against this Semgrep rule and remediate the insecure pattern."
+            recommendation_panel = Table(
+                [[Paragraph(f"<b>Recommended action</b><br/>{_report_markup(recommendation)}", body_style)]],
+                colWidths=[182 * mm],
+            )
+            recommendation_panel.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f5f3ff")),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#ddd6fe")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]))
+            story.append(recommendation_panel)
+
+            autofix = str(finding.get("autofix") or "").strip()
+            if autofix:
+                autofix_panel = Table(
+                    [[Paragraph("<br/>".join(escape(line) for line in autofix.splitlines()), code_style)]],
+                    colWidths=[182 * mm],
+                )
+                autofix_panel.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f0fdf4")),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#bbf7d0")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ]))
+                story.extend([Paragraph("Semgrep autofix suggestion", detail_heading_style), autofix_panel])
+            story.append(Spacer(1, 10))
+
+    document.build(
+        story,
+        onFirstPage=_draw_dynamic_webscan_footer,
+        onLaterPages=_draw_dynamic_webscan_footer,
+    )
     return buffer.getvalue()
 
 

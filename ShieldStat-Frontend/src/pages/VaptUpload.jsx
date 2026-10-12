@@ -39,6 +39,9 @@ import {
   MAX_FILE_SIZE,
 } from "../utils/vaptReport";
 
+const MAX_REPORT_FILES = 25;
+const MAX_COMBINED_REPORT_SIZE = 100 * 1024 * 1024;
+
 function toDatetimeLocal(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -47,7 +50,7 @@ function toDatetimeLocal(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function DropZone({ onFile, error, isUploading }) {
+function DropZone({ onFiles, error, isUploading, allowMultiple }) {
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
 
@@ -55,10 +58,10 @@ function DropZone({ onFile, error, isUploading }) {
     (e) => {
       e.preventDefault();
       setDragging(false);
-      const file = e.dataTransfer?.files?.[0];
-      if (file) onFile(file);
+      const files = Array.from(e.dataTransfer?.files || []);
+      if (files.length) onFiles(allowMultiple ? files : files.slice(0, 1));
     },
-    [onFile],
+    [allowMultiple, onFiles],
   );
 
   return (
@@ -88,11 +91,12 @@ function DropZone({ onFile, error, isUploading }) {
         ref={inputRef}
         type="file"
         accept=".nessus,.xml,.csv,.xls,.xlsx"
+        multiple={allowMultiple}
         className="hidden"
         disabled={isUploading}
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) onFile(file);
+          const files = Array.from(e.target.files || []);
+          if (files.length) onFiles(allowMultiple ? files : files.slice(0, 1));
           e.target.value = "";
         }}
       />
@@ -105,9 +109,10 @@ function DropZone({ onFile, error, isUploading }) {
         Drag &amp; drop your scanner export
       </h3>
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500 dark:text-slate-400">
-        or <span className="font-semibold text-purple-600 dark:text-purple-400">browse</span>{" "}
-        — Nessus (.nessus / .xml), CSV or Excel (.xls / .xlsx) exports up to{" "}
-        {formatBytes(MAX_FILE_SIZE)}.
+        or <span className="font-semibold text-purple-600 dark:text-purple-400">browse</span>
+        {" "}— {allowMultiple ? "select up to 10 Nessus, CSV or Excel exports" : "select one Nessus, CSV or Excel export"}.
+        Each file can be up to {formatBytes(MAX_FILE_SIZE)}.
+        {allowMultiple && " Files are combined into one report (100 MB total maximum)."}
       </p>
 
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold">
@@ -198,7 +203,7 @@ export default function VaptUpload() {
   const regionRequestMode = searchParams.get("region_request") === "1";
   const requestedRegionCode = searchParams.get("region_code")?.trim().toUpperCase() || "";
   const verificationScheduleParam = searchParams.get("verification_schedule") || "";
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [fileError, setFileError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [progressMsg, setProgressMsg] = useState("");
@@ -943,20 +948,43 @@ export default function VaptUpload() {
       .catch(() => setOrgsError("Could not load organizations or approved rescans. Please try again."));
   }, [canUpload]);
 
-  const handleFile = useCallback((file) => {
+  const handleFiles = useCallback((files) => {
     setUploadError("");
-    const err = validateVaptFile(file);
-    if (err) {
-      setFileError(err);
-      setSelectedFile(null);
+    const selected = Array.from(files || []);
+    if (!selected.length) {
+      setFileError("Select at least one scanner export.");
+      setSelectedFiles([]);
+      return;
+    }
+    if (selected.length > MAX_REPORT_FILES) {
+      setFileError(`Select no more than ${MAX_REPORT_FILES} files for one combined report.`);
+      setSelectedFiles([]);
+      return;
+    }
+    for (const candidate of selected) {
+      const err = validateVaptFile(candidate);
+      if (err) {
+        setFileError(`${candidate.name}: ${err}`);
+        setSelectedFiles([]);
+        return;
+      }
+    }
+    const totalSize = selected.reduce((total, candidate) => total + candidate.size, 0);
+    if (totalSize > MAX_COMBINED_REPORT_SIZE) {
+      setFileError("Combined report files exceed the 100 MB total size limit.");
+      setSelectedFiles([]);
       return;
     }
     setFileError("");
-    setSelectedFile(file);
+    setSelectedFiles(selected);
   }, []);
 
   const handleUpload = useCallback(async () => {
-    if (!selectedFile || isUploading) return;
+    if (!selectedFiles.length || isUploading) return;
+    if (selectedVerificationSchedule && selectedFiles.length > 1) {
+      setUploadError("Verification uploads accept one scanner export at a time.");
+      return;
+    }
     if (!selectedVerificationSchedule && !selectedOrgId) {
       setUploadError("Please select the organization this report belongs to.");
       return;
@@ -973,8 +1001,8 @@ export default function VaptUpload() {
     setProgressMsg("Parsing, scoring and normalizing findings…");
     try {
       const result = selectedVerificationSchedule
-        ? await uploadVaptVerificationReport(selectedFile, selectedVerificationSchedule, token, verificationDisplayName)
-        : await uploadVaptReport(selectedFile, token, selectedOrgId, selectedRegion);
+        ? await uploadVaptVerificationReport(selectedFiles[0], selectedVerificationSchedule, token, verificationDisplayName)
+        : await uploadVaptReport(selectedFiles, token, selectedOrgId, selectedRegion);
       setPreview(result);
       setProgressMsg("");
     } catch (err) {
@@ -983,7 +1011,7 @@ export default function VaptUpload() {
     } finally {
       setIsUploading(false);
     }
-  }, [selectedFile, isUploading, selectedOrgId, selectedRegion, selectedVerificationSchedule, verificationDisplayName]);
+  }, [selectedFiles, isUploading, selectedOrgId, selectedRegion, selectedVerificationSchedule, verificationDisplayName]);
 
   const handleDownloadPdf = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -1035,7 +1063,7 @@ export default function VaptUpload() {
   const dist = preview?.severity_distribution || {};
   const totalReal = preview?.total_findings ?? 0;
   const summary = preview?.summary || {};
-  const excludedInfo = summary.excluded_info_findings ?? 0;
+  const excludedEmptyRows = summary.excluded_empty_rows ?? 0;
   const rawParsed = summary.raw_findings_parsed ?? 0;
   const riskMeta = riskTone(preview?.risk_score ?? 0);
 
@@ -1984,7 +2012,12 @@ export default function VaptUpload() {
         {!preview ? (
           <>
             {/* ── Drop zone ── */}
-            <DropZone onFile={handleFile} error={fileError} isUploading={isUploading} />
+            <DropZone
+              onFiles={handleFiles}
+              error={fileError}
+              isUploading={isUploading}
+              allowMultiple={!selectedVerificationSchedule}
+            />
 
             {/* ── Publish-to organization picker (SOC analysts / admins) ── */}
             <div className="mx-auto mt-5 max-w-3xl rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -1999,6 +2032,8 @@ export default function VaptUpload() {
                     onChange={(e) => {
                       const scheduleId = e.target.value;
                       setSelectedVerificationSchedule(scheduleId);
+                      setSelectedFiles([]);
+                      setFileError("");
                       if (!scheduleId) {
                         setVerificationDisplayName("");
                         return;
@@ -2058,6 +2093,8 @@ export default function VaptUpload() {
                 onChange={(e) => {
                   const orgId = e.target.value;
                   setSelectedVerificationSchedule("");
+                  setSelectedFiles([]);
+                  setFileError("");
                   setSelectedOrgId(orgId);
                   const org = orgs.find((o) => o.org_id === orgId);
                   const regions = org?.approved_regions || [];
@@ -2115,37 +2152,50 @@ export default function VaptUpload() {
               </div>
             </div>
 
-            {selectedFile && !fileError && (
-              <div className="mx-auto mt-5 flex max-w-3xl flex-col items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400">
-                    <FileUp size={18} />
+            {selectedFiles.length > 0 && !fileError && (
+              <div className="mx-auto mt-5 max-w-3xl rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400">
+                      <FileUp size={18} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                        {selectedFiles.length === 1 ? selectedFiles[0].name : `${selectedFiles.length} files will be combined`}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {formatBytes(selectedFiles.reduce((total, selected) => total + selected.size, 0))} total · one report for the selected organization and region
+                      </p>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-200">{selectedFile.name}</p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      {formatBytes(selectedFile.size)} · ready to import
-                    </p>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={handleUpload}
+                    disabled={isUploading}
+                    className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-purple-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95 disabled:opacity-50"
+                  >
+                    {isUploading ? (
+                      <>
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                        {progressMsg || "Uploading…"}
+                      </>
+                    ) : (
+                      <>
+                        <Zap size={15} />
+                        {selectedVerificationSchedule ? "Upload verification" : "Import & Score"}
+                      </>
+                    )}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleUpload}
-                  disabled={isUploading}
-                  className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-purple-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-purple-600/20 transition hover:bg-purple-700 active:scale-95 disabled:opacity-50"
-                >
-                  {isUploading ? (
-                    <>
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                      {progressMsg || "Uploading…"}
-                    </>
-                  ) : (
-                    <>
-                      <Zap size={15} />
-                      {selectedVerificationSchedule ? "Upload verification" : "Import & Score"}
-                    </>
-                  )}
-                </button>
+                <ul className="mt-4 grid gap-2 border-t border-slate-100 pt-3 text-xs text-slate-600 dark:border-slate-800 dark:text-slate-300 sm:grid-cols-2">
+                  {selectedFiles.map((selected, index) => (
+                    <li key={`${selected.name}-${selected.lastModified}-${index}`} className="flex min-w-0 items-center gap-2">
+                      <FileText size={14} className="shrink-0 text-purple-500" />
+                      <span className="truncate" title={selected.name}>{selected.name}</span>
+                      <span className="ml-auto shrink-0 text-slate-400">{formatBytes(selected.size)}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 
@@ -2244,7 +2294,7 @@ export default function VaptUpload() {
                 </Link>
                 <button
                   type="button"
-                  onClick={() => { setPreview(null); setSelectedFile(null); }}
+                  onClick={() => { setPreview(null); setSelectedFiles([]); }}
                   className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
                 >
                   <ArrowLeft size={15} /> Import another
@@ -2271,13 +2321,13 @@ export default function VaptUpload() {
                 icon={<ShieldAlert size={20} />}
                 tone={{ text: riskMeta.text, border: "border-slate-200 dark:border-slate-800" }}
               />
-              <StatCard label="Real Findings" value={totalReal} icon={<Layers size={20} />} tone={{}} />
+              <StatCard label="Findings Reported" value={totalReal} icon={<Layers size={20} />} tone={{}} />
               <StatCard label="Unique Hosts" value={preview.unique_hosts ?? 0} icon={<Globe size={20} />} tone={{}} />
               <StatCard
-                label="Info Excluded"
-                value={excludedInfo}
+                label="Empty Rows Excluded"
+                value={excludedEmptyRows}
                 icon={<Info size={20} />}
-                tone={excludedInfo > 0 ? { text: "text-amber-600 dark:text-amber-400" } : {}}
+                tone={excludedEmptyRows > 0 ? { text: "text-amber-600 dark:text-amber-400" } : {}}
                 sub={`of ${rawParsed} raw entries`}
               />
             </div>
@@ -2287,8 +2337,8 @@ export default function VaptUpload() {
               <Info size={16} className="shrink-0 text-sky-500" />
               <span className="text-slate-600 dark:text-slate-300">
                 <b className="text-slate-900 dark:text-slate-100">{rawParsed}</b> raw entries parsed ·{" "}
-                <b className="text-slate-900 dark:text-slate-100">{excludedInfo}</b> informational findings excluded ·{" "}
-                <b className="text-slate-900 dark:text-slate-100">{totalReal}</b> real findings reported.
+                <b className="text-slate-900 dark:text-slate-100">{excludedEmptyRows}</b> empty rows excluded ·{" "}
+                <b className="text-slate-900 dark:text-slate-100">{totalReal}</b> findings reported, including informational findings.
               </span>
             </div>
 

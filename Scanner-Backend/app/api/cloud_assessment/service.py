@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,6 +22,8 @@ from app.db.models import CloudSecurityAssessment
 logger = logging.getLogger(__name__)
 PROWLER_TIMEOUT_SECONDS = 60 * 60
 CREDENTIAL_CHECK_TIMEOUT_SECONDS = 30
+PROGRESS_POLL_SECONDS = 5
+PROGRESS_UPDATE_SECONDS = 15
 FINDING_SEVERITIES = {"critical", "high", "medium", "low", "informational"}
 PROWLER_EXECUTABLE = os.getenv("PROWLER_EXECUTABLE", "prowler").strip() or "prowler"
 PROWLER_PYTHON_EXECUTABLE = os.getenv("PROWLER_PYTHON_EXECUTABLE", "").strip()
@@ -47,7 +50,7 @@ PROVIDER_CREDENTIAL_ENV_VARS = {
     "GOOGLE_CLOUD_PROJECT_ID",
 }
 CREDENTIAL_CHECKS = {
-    "aws": "import boto3; boto3.client('sts').get_caller_identity()",
+    "aws": "import boto3; print(boto3.client('sts').get_caller_identity()['Account'])",
     "azure": """
 import json
 import os
@@ -88,7 +91,9 @@ class CloudCredentialValidationError(RuntimeError):
     pass
 
 
-def validate_cloud_credentials(provider: str, credential_values: dict[str, str]) -> None:
+def validate_cloud_credentials(
+    provider: str, credential_values: dict[str, str]
+) -> str | None:
     if provider not in CREDENTIAL_CHECKS:
         raise ValueError(f"Unsupported cloud provider: {provider}")
     prowler_path = shutil.which(PROWLER_EXECUTABLE)
@@ -108,7 +113,7 @@ def validate_cloud_credentials(provider: str, credential_values: dict[str, str])
             [python_executable, "-c", CREDENTIAL_CHECKS[provider]],
             env=process_environment,
             input=request_input,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if provider == "aws" else subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
             timeout=CREDENTIAL_CHECK_TIMEOUT_SECONDS,
@@ -136,6 +141,31 @@ def validate_cloud_credentials(provider: str, credential_values: dict[str, str])
             f"Could not authenticate the {provider.upper()} credentials. "
             "Check the credential values and try again; no scan allowance was used."
         )
+    if provider == "aws":
+        account_id = (result.stdout or "").strip()
+        if not account_id.isdigit() or len(account_id) != 12:
+            logger.error("AWS credential verification returned an invalid account identifier.")
+            raise CloudCredentialValidationError(
+                "Could not identify the AWS account for this assessment. "
+                "Verify the AWS credentials and try again; no scan allowance was used."
+            )
+        return account_id
+    return None
+def _parse_delimited_mapping(value: str, pair_separator: str) -> dict[str, str]:
+    mapping = {}
+    for pair in value.split(" | "):
+        key, separator, item_value = pair.partition(pair_separator)
+        if separator and key.strip():
+            mapping[key.strip()] = item_value.strip()
+    return mapping
+
+
+def _parse_compliance(value: str) -> list[str]:
+    return [
+        item.strip()
+        for item in value.split(" | ")
+        if item.strip()
+    ]
 
 
 def _normalize_csv_findings(csv_text: str) -> list[dict[str, str]]:
@@ -147,6 +177,7 @@ def _normalize_csv_findings(csv_text: str) -> list[dict[str, str]]:
             {
                 "check_id": normalized.get("CHECK_ID", ""),
                 "title": normalized.get("CHECK_TITLE", ""),
+                "compliance": _parse_compliance(normalized.get("COMPLIANCE", "")),
                 "status": normalized.get("STATUS", "").upper(),
                 "status_extended": normalized.get("STATUS_EXTENDED", ""),
                 "severity": normalized.get("SEVERITY", "informational").lower(),
@@ -154,8 +185,12 @@ def _normalize_csv_findings(csv_text: str) -> list[dict[str, str]]:
                 "resource_type": normalized.get("RESOURCE_TYPE", ""),
                 "resource_id": normalized.get("RESOURCE_UID", ""),
                 "resource_name": normalized.get("RESOURCE_NAME", ""),
+                "resource_tags": _parse_delimited_mapping(
+                    normalized.get("RESOURCE_TAGS", ""), "="
+                ),
                 "region": normalized.get("REGION", ""),
                 "description": normalized.get("DESCRIPTION", ""),
+                "risk": normalized.get("RISK", ""),
                 "remediation": normalized.get("REMEDIATION_RECOMMENDATION_TEXT", ""),
                 "remediation_url": normalized.get("REMEDIATION_RECOMMENDATION_URL", ""),
             }
@@ -167,18 +202,38 @@ def _summarize_findings(findings: list[dict[str, str]]) -> dict[str, Any]:
     failed = [finding for finding in findings if finding["status"] == "FAIL"]
     errored = [finding for finding in findings if finding["status"] == "ERROR"]
     skipped = [finding for finding in findings if finding["status"] in {"SKIP", "SKIPPED"}]
+    manual = [finding for finding in findings if finding["status"] == "MANUAL"]
+    muted = [finding for finding in findings if finding["status"] in {"MUTED", "SUPPRESSED"}]
+    not_applicable = [
+        finding
+        for finding in findings
+        if finding["status"] in {"NOT_APPLICABLE", "NOTAPPLICABLE", "N/A"}
+    ]
+    passed = [finding for finding in findings if finding["status"] == "PASS"]
+    categorized = (
+        len(failed)
+        + len(errored)
+        + len(skipped)
+        + len(manual)
+        + len(muted)
+        + len(not_applicable)
+        + len(passed)
+    )
     summary: dict[str, Any] = {
         "total_checks": len(findings),
         "failed_checks": len(failed),
-        "passed_checks": sum(finding["status"] == "PASS" for finding in findings),
-        "manual_checks": sum(finding["status"] == "MANUAL" for finding in findings),
+        "passed_checks": len(passed),
+        "manual_checks": len(manual),
+        "muted_checks": len(muted),
+        "not_applicable_checks": len(not_applicable),
         "errored_checks": len(errored),
         "skipped_checks": len(skipped),
         "checks_unavailable": len(errored) + len(skipped),
+        "other_checks": len(findings) - categorized,
         "severity_counts": {severity: 0 for severity in sorted(FINDING_SEVERITIES)},
     }
     for finding in failed:
-        severity = finding["severity"]
+        severity = finding.get("severity", "informational")
         if severity in summary["severity_counts"]:
             summary["severity_counts"][severity] += 1
     return summary
@@ -200,7 +255,11 @@ def _scan_command(
         "--output-filename",
         "assessment",
     ]
-    if provider == "azure":
+    if provider == "aws" and scope.get("regions"):
+        command.extend(["--region", *scope["regions"]])
+    elif provider == "aws" and scope.get("region"):
+        command.extend(["--region", scope["region"]])
+    elif provider == "azure":
         command.extend(["--subscription-ids", *scope["subscription_ids"]])
     elif provider == "gcp":
         command.extend(["--project-ids", *scope["project_ids"]])
@@ -246,6 +305,93 @@ def _load_csv_findings(output_directory: Path) -> list[dict[str, str]]:
     return findings
 
 
+def _update_progress(
+    db,
+    scan_id: str,
+    user_id: str,
+    stage: str,
+    message: str,
+    output_bytes: int | None = None,
+) -> dict[str, Any] | None:
+    scan = db.query(CloudSecurityAssessment).filter(
+        CloudSecurityAssessment.scan_id == scan_id,
+        CloudSecurityAssessment.user_id == user_id,
+    ).first()
+    if scan is None:
+        logger.error("Cloud assessment record %s disappeared during %s.", scan_id, stage)
+        return None
+
+    summary = dict(scan.summary) if isinstance(scan.summary, dict) else {}
+    progress = dict(summary.get("progress") or {})
+    events = list(progress.get("events") or [])
+    updated_at = datetime.now(timezone.utc).isoformat()
+    if not events or events[-1].get("stage") != stage or events[-1].get("message") != message:
+        events.append({"stage": stage, "message": message, "timestamp": updated_at})
+        events = events[-20:]
+    progress.update(
+        {
+            "stage": stage,
+            "message": message,
+            "updated_at": updated_at,
+            "events": events,
+        }
+    )
+    if output_bytes is not None:
+        progress["output_bytes"] = output_bytes
+    summary["progress"] = progress
+    scan.summary = summary
+    db.commit()
+    logger.info("Cloud assessment %s: %s - %s", scan_id, stage, message)
+    return progress
+
+
+def _run_prowler_with_progress(
+    command: list[str],
+    process_env: dict[str, str],
+    log_path: Path,
+    on_progress,
+) -> int:
+    started_at = time.monotonic()
+    last_update_at = started_at
+    last_output_size = 0
+    with log_path.open("w", encoding="utf-8") as log_file:
+        process = subprocess.Popen(
+            command,
+            env=process_env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            while process.poll() is None:
+                elapsed = time.monotonic() - started_at
+                if elapsed >= PROWLER_TIMEOUT_SECONDS:
+                    raise subprocess.TimeoutExpired(command, PROWLER_TIMEOUT_SECONDS)
+
+                output_size = log_path.stat().st_size
+                now = time.monotonic()
+                if output_size != last_output_size or now - last_update_at >= PROGRESS_UPDATE_SECONDS:
+                    output_kb = output_size // 1024
+                    message = (
+                        f"Prowler is running; {output_kb} KB of scanner output received."
+                        if output_size
+                        else "Prowler is running; waiting for results from the cloud provider."
+                    )
+                    on_progress(message, output_size)
+                    last_output_size = output_size
+                    last_update_at = now
+                time.sleep(PROGRESS_POLL_SECONDS)
+            return process.wait()
+        except BaseException:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            raise
+
+
 def run_cloud_assessment(
     scan_id: str,
     user_id: str,
@@ -256,6 +402,13 @@ def run_cloud_assessment(
     """Run Prowler using short-lived credentials and persist only its results."""
     db = SessionLocal()
     try:
+        _update_progress(
+            db,
+            scan_id,
+            user_id,
+            "starting",
+            "Preparing the scanner and cloud assessment.",
+        )
         if not shutil.which(PROWLER_EXECUTABLE):
             raise RuntimeError("Prowler CLI is not installed on the scanner.")
 
@@ -276,22 +429,40 @@ def run_cloud_assessment(
                 process_env["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials_path)
 
             log_path = output_directory / "prowler.log"
-            with log_path.open("w", encoding="utf-8") as log_file:
-                completed = subprocess.run(
-                    command,
-                    env=process_env,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                    timeout=PROWLER_TIMEOUT_SECONDS,
+            _update_progress(
+                db,
+                scan_id,
+                user_id,
+                "scanning",
+                "Prowler is checking the selected cloud scope.",
+            )
+            returncode = _run_prowler_with_progress(
+                command,
+                process_env,
+                log_path,
+                lambda message, output_bytes: _update_progress(
+                    db,
+                    scan_id,
+                    user_id,
+                    "scanning",
+                    message,
+                    output_bytes,
+                ),
+            )
+            _update_progress(
+                db,
+                scan_id,
+                user_id,
+                "collecting_results",
+                "Prowler finished; collecting the generated assessment report.",
+            )
+            findings = _load_csv_findings(output_directory)
+            if returncode != 0:
+                logger.info(
+                    "Prowler exited with status %s after producing a report for assessment %s.",
+                    returncode,
+                    scan_id,
                 )
-                findings = _load_csv_findings(output_directory)
-                if completed.returncode != 0:
-                    logger.info(
-                        "Prowler exited with status %s after producing a report for assessment %s.",
-                        completed.returncode,
-                        scan_id,
-                    )
 
         scan = db.query(CloudSecurityAssessment).filter(
             CloudSecurityAssessment.scan_id == scan_id,
@@ -302,10 +473,17 @@ def run_cloud_assessment(
             return
         scan.status = "completed"
         scan.findings = findings
-        scan.summary = _summarize_findings(findings)
+        summary = _summarize_findings(findings)
+        previous_summary = scan.summary if isinstance(scan.summary, dict) else {}
+        summary["progress"] = dict(previous_summary.get("progress") or {})
+        if previous_summary.get("account_id"):
+            summary["account_id"] = previous_summary["account_id"]
+        scan.summary = summary
         scan.completed_at = datetime.now(timezone.utc)
         db.commit()
+        logger.info("Cloud assessment %s completed with %s checks.", scan_id, len(findings))
     except subprocess.TimeoutExpired:
+        logger.warning("Cloud assessment %s exceeded the one-hour time limit.", scan_id)
         _mark_failed(
             db,
             scan_id,
@@ -331,6 +509,21 @@ def _mark_failed(db, scan_id: str, user_id: str, message: str) -> None:
     if scan is not None:
         scan.status = "failed"
         scan.error = message
+        summary = dict(scan.summary) if isinstance(scan.summary, dict) else {}
+        progress = dict(summary.get("progress") or {})
+        updated_at = datetime.now(timezone.utc).isoformat()
+        events = list(progress.get("events") or [])
+        events.append({"stage": "failed", "message": message, "timestamp": updated_at})
+        progress.update(
+            {
+                "stage": "failed",
+                "message": message,
+                "updated_at": updated_at,
+                "events": events[-20:],
+            }
+        )
+        summary["progress"] = progress
+        scan.summary = summary
         scan.completed_at = datetime.now(timezone.utc)
         db.commit()
 
@@ -342,7 +535,16 @@ def request_credentials(request: CloudAssessmentRequest) -> tuple[str, dict[str,
             "secret_access_key": request.secret_access_key.get_secret_value(),
             "session_token": request.session_token.get_secret_value() if request.session_token else "",
         }
-        return "aws", {}, credentials
+        regions = request.aws_regions or (
+            [request.aws_region] if request.aws_region else []
+        )
+        if len(regions) == 1:
+            scope = {"region": regions[0]}
+        elif regions:
+            scope = {"regions": sorted(regions)}
+        else:
+            scope = {}
+        return "aws", scope, credentials
     if isinstance(request, AzureAssessmentRequest):
         credentials = {
             "tenant_id": request.tenant_id,

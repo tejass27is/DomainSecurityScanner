@@ -20,8 +20,10 @@ from app.api.webscan.routes import (
     _brand_neutral_data,
     _brand_neutral_text,
     _build_dynamic_webscan_pdf,
+    _build_static_webscan_pdf,
     _report_cwe,
     _report_value,
+    _semgrep_payload_to_findings,
 )
 
 
@@ -128,6 +130,84 @@ def test_developer_report_is_branded_and_includes_scan_metadata():
     assert "GET /login" in text
     assert "CVE-2026-1234" in text
     assert "iSecurify" in text
+
+
+def test_semgrep_findings_include_source_lines_recommendation_and_autofix():
+    findings = _semgrep_payload_to_findings({
+        "results": [{
+            "check_id": "python.lang.security.audit.sql-injection",
+            "path": "src/data.py",
+            "start": {"line": 41},
+            "end": {"line": 42},
+            "extra": {
+                "severity": "ERROR",
+                "message": "Possible SQL injection",
+                "lines": 'cursor.execute("SELECT * FROM users WHERE id=" + user_id)',
+                "fix": 'cursor.execute("SELECT * FROM users WHERE id=%s", (user_id,))',
+                "metadata": {
+                    "name": "SQL injection",
+                    "cwe": ["CWE-89"],
+                    "remediation": "Use a parameterized query.",
+                },
+            },
+        }],
+    })
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["name"] == "SQL injection"
+    assert finding["title"] == "SQL injection"
+    assert finding["plugin_id"] == "Semgrep"
+    assert "rule_id" not in finding
+    assert finding["file"] == "src/data.py"
+    assert finding["line_range"] == "41-42"
+    assert finding["description"] == "Possible SQL injection"
+    assert finding["solution"] == "Use a parameterized query."
+    assert "cursor.execute" in finding["evidence"]
+    assert "cursor.execute" in finding["autofix"]
+
+
+def test_static_report_is_branded_and_includes_semgrep_finding_details():
+    record = SimpleNamespace(
+        target_url="https://github.com/acme/example",
+        status="completed",
+        total_findings=1,
+        unique_urls=1,
+        risk_score=75,
+        severity="high",
+        severity_distribution={"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0},
+        findings=[{
+            "title": "python.lang.security.audit.sql-injection",
+            "source": "semgrep",
+            "plugin_family": "Semgrep",
+            "rule_id": "python.lang.security.audit.sql-injection",
+            "severity": "high",
+            "severity_label": "high",
+            "file": "src/data.py",
+            "line_range": "41-42",
+            "cwe": ["CWE-89"],
+            "description": "Possible SQL injection in the query.",
+            "solution": "Use a parameterized query.",
+            "evidence": 'cursor.execute("SELECT * FROM users WHERE id=" + user_id)',
+            "autofix": 'cursor.execute("SELECT * FROM users WHERE id=%s", (user_id,))',
+        }],
+    )
+
+    pdf = _build_static_webscan_pdf(record)
+    reader = PdfReader(BytesIO(pdf))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+
+    assert any(page.images for page in reader.pages)
+    assert "iSecurify" in text
+    assert "Static Repository Security Report" in text
+    assert "Semgrep" in text
+    assert "python.lang.security.audit.sql-injection" not in text
+    assert "src/data.py" in text
+    assert "41-42" in text
+    assert "Possible SQL injection in the query." in text
+    assert "Use a parameterized query." in text
+    assert "matched source lines" in text
+    assert "Semgrep autofix suggestion" in text
 
 
 @pytest.mark.parametrize(

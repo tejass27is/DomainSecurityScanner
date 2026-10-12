@@ -31,18 +31,35 @@ def get_cloud_assessment_access_status(
 
 
 def _serialize_scan(scan: CloudSecurityAssessment, include_findings: bool = False) -> dict[str, Any]:
+    summary = dict(scan.summary) if isinstance(scan.summary, dict) else scan.summary
+    if isinstance(summary, dict):
+        legacy_metadata = summary.pop("metadata", {})
+        legacy_identity = (
+            legacy_metadata.get("caller_identity", {})
+            if isinstance(legacy_metadata, dict)
+            else {}
+        )
+        if not summary.get("account_id") and isinstance(legacy_identity, dict):
+            legacy_account_id = legacy_identity.get("Account")
+            if legacy_account_id:
+                summary["account_id"] = str(legacy_account_id)
     result = {
         "scan_id": scan.scan_id,
         "provider": scan.provider,
         "scope": scan.scope or {},
         "status": scan.status,
-        "summary": scan.summary,
+        "summary": summary,
         "error": scan.error,
         "created_at": scan.created_at.isoformat() if scan.created_at else None,
         "completed_at": scan.completed_at.isoformat() if scan.completed_at else None,
     }
     if include_findings:
-        result["findings"] = scan.findings or []
+        result["findings"] = [
+            {key: value for key, value in finding.items() if key != "prowler_version"}
+            if isinstance(finding, dict)
+            else finding
+            for finding in (scan.findings or [])
+        ]
     return result
 
 
@@ -55,17 +72,33 @@ def create_cloud_assessment(
 ):
     provider, scope, credentials = request_credentials(request)
     try:
-        validate_cloud_credentials(provider, credentials)
+        aws_account_id = validate_cloud_credentials(provider, credentials)
     except CloudCredentialValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     reserve_scan_quota(db, current_user.user_id, "cloud_assessment")
     scan_id = str(uuid.uuid4())
+    account_id = aws_account_id
+    if provider == "azure":
+        account_id = ", ".join(scope["subscription_ids"])
+    elif provider == "gcp":
+        account_id = ", ".join(scope["project_ids"])
+    summary = {
+        "progress": {
+            "stage": "queued",
+            "message": "Assessment queued; waiting for the scanner to start.",
+            "updated_at": None,
+            "events": [],
+        }
+    }
+    if account_id:
+        summary["account_id"] = account_id
     scan = CloudSecurityAssessment(
         scan_id=scan_id,
         user_id=current_user.user_id,
         provider=provider,
         scope=scope,
         status="running",
+        summary=summary,
     )
     db.add(scan)
     db.commit()

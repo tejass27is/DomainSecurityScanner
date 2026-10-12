@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Download, Search, AlertCircle, Loader2,
@@ -50,6 +50,11 @@ const STATUS_BADGE = {
   rescheduled: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-400 dark:border-sky-900",
 };
 
+function requiresFindingTriage(finding) {
+  const severity = String(finding.severity_label || finding.severity || "").trim().toLowerCase();
+  return ["critical", "high", "medium"].includes(severity);
+}
+
 const LIFECYCLE_LABEL = {
   report_published: "Initial report published",
   awaiting_soc_remediation_acceptance: "Remediation review in progress",
@@ -65,12 +70,15 @@ const LIFECYCLE_LABEL = {
 function getClosureBlockReason(record, schedule) {
   if (!record) return "";
   const blocking = new Set(["critical", "high", "medium"]);
-  const findingKey = (finding) => JSON.stringify([
-    String(finding.plugin_id || finding.title || "").trim().toLowerCase(),
-    finding.port ?? null,
-    String(finding.protocol || "").toLowerCase(),
-    (finding.cves || []).map((cve) => String(cve).trim().toLowerCase()).filter(Boolean).sort(),
-  ]);
+  const findingKey = (finding) => {
+    const title = String(finding.title || "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (title) return JSON.stringify([title]);
+    return JSON.stringify([
+      String(finding.plugin_id || finding.vuln_id || "").trim().toLowerCase(),
+      String(finding.description || "").replace(/\s+/g, " ").trim().toLowerCase(),
+      (finding.cves || []).map((cve) => String(cve).trim().toLowerCase()).filter(Boolean).sort(),
+    ]);
+  };
   const remainingKeys = new Set((schedule?.result_data?.remaining_findings || []).map(findingKey));
   const blockers = (record.findings || []).filter((finding) => {
     const severity = String(finding.severity_label || finding.severity || "").toLowerCase();
@@ -193,11 +201,22 @@ function ExpandableText({ text = "", maxLength = 160 }) {
 function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
   const [status, setStatus] = useState(finding.status || "pending");
   const [comment, setComment] = useState(finding.comment || "");
+  const requiresTriage = requiresFindingTriage(finding);
   const cves = (finding.cves || []).filter(Boolean);
   const references = (finding.references || []).filter((r) =>
     r.startsWith("http://") || r.startsWith("https://"),
   );
   const hosts = (finding.affected_hosts || []).filter(Boolean);
+  const assets = finding.affected_assets?.length
+    ? finding.affected_assets
+    : hosts.map((host) => ({
+        host,
+        mac_address: finding.mac_address || "",
+        hostname: finding.hostname || "",
+        operating_system: finding.operating_system || finding.os || "",
+      }));
+  const protocols = finding.protocols?.length ? finding.protocols : [finding.protocol].filter(Boolean);
+  const ports = finding.ports?.length ? finding.ports : [finding.port].filter((port) => port != null);
   const evidence = (finding.evidence || "").trim();
 
   useEffect(() => {
@@ -233,13 +252,18 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
       </td>
       <td className="min-w-[300px] px-3 py-3 align-top">
         <div className="space-y-3">
-          {readOnly ? (
+          {readOnly || !requiresTriage ? (
             <div className="space-y-2">
               <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_BADGE[status] || STATUS_BADGE.pending}`}>
                 <span className={`h-1.5 w-1.5 rounded-full ${status === "solved" ? "bg-emerald-500" : status === "ignore" || status === "false_positive" ? "bg-purple-500" : "bg-amber-500"}`} />
-                {STATUS_LABEL[status] || status}
+                {!requiresTriage ? "No triage required" : STATUS_LABEL[status] || status}
               </span>
               <p className="whitespace-pre-wrap text-[12px] text-slate-600 dark:text-slate-300">{comment || "—"}</p>
+              {!readOnly && !requiresTriage && (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Low and Informational findings remain visible in the report but do not need a status update.
+                </p>
+              )}
             </div>
           ) : (
             <div className="space-y-3">
@@ -276,15 +300,23 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
       </td>
       <td className="min-w-[180px] px-3 py-3">
         <div className="space-y-1 text-[12px]">
-          <div>{hosts.length > 0 ? hosts.join(", ") : finding.host || "—"}</div>
-          {finding.hostname && <div className="text-slate-500 dark:text-slate-400">{finding.hostname}</div>}
+          <div className="font-semibold">
+            {finding.host_count || assets.length || hosts.length || (finding.host ? 1 : 0)} affected asset(s)
+          </div>
+          {assets.slice(0, 5).map((asset, index) => (
+            <div key={`${asset.host || "asset"}-${asset.mac_address || index}`}>
+              {asset.host || asset.hostname || "Unknown asset"}
+            </div>
+          ))}
+          {assets.length > 5 && <div>+ {assets.length - 5} more assets</div>}
+          {!assets.length && <div>{finding.host || "—"}</div>}
         </div>
       </td>
-      <td className="min-w-[120px] px-3 py-3 text-[12px]">{finding.mac_address || "—"}</td>
-      <td className="min-w-[140px] px-3 py-3 text-[12px]">{finding.hostname || finding.host || "—"}</td>
-      <td className="min-w-[160px] px-3 py-3 text-[12px]">{finding.operating_system || finding.os || "—"}</td>
-      <td className="min-w-[90px] px-3 py-3 text-[12px]">{finding.protocol || "—"}</td>
-      <td className="min-w-[80px] px-3 py-3 text-[12px]">{finding.port != null ? finding.port : "—"}</td>
+      <td className="min-w-[120px] px-3 py-3 text-[12px]">{assets.flatMap((asset) => String(asset.mac_address || "").split(",")).map((mac) => mac.trim()).filter(Boolean).filter((mac, index, all) => all.findIndex((value) => value.toLowerCase() === mac.toLowerCase()) === index).join(", ") || finding.mac_address || "—"}</td>
+      <td className="min-w-[140px] px-3 py-3 text-[12px]">{assets.map((asset) => asset.hostname).filter(Boolean).filter((name, index, all) => all.indexOf(name) === index).join(", ") || finding.hostname || finding.host || "—"}</td>
+      <td className="min-w-[160px] px-3 py-3 text-[12px]">{assets.map((asset) => asset.operating_system).filter(Boolean).filter((os, index, all) => all.indexOf(os) === index).join(", ") || finding.operating_system || finding.os || "—"}</td>
+      <td className="min-w-[90px] px-3 py-3 text-[12px]">{protocols.join(", ") || "—"}</td>
+      <td className="min-w-[80px] px-3 py-3 text-[12px]">{ports.join(", ") || "—"}</td>
       <td className="min-w-[240px] px-3 py-3">
         <ExpandableText text={finding.description || finding.synopsis || "No description available."} maxLength={140} />
       </td>
@@ -710,23 +742,28 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
   const result = schedule.result_data || {};
   const fixed = (result.fixed_findings || []).map((f) => ({ ...f, _verificationStatus: "fixed" }));
   const remaining = (result.remaining_findings || []).map((f) => ({ ...f, _verificationStatus: "unresolved" }));
-  const allFindings = [...fixed, ...remaining];
+  const newFindings = (result.new_findings || []).map((f) => ({ ...f, _verificationStatus: "new" }));
+  const unverified = (result.unverified_findings || []).map((f) => ({ ...f, _verificationStatus: "unverified" }));
+  const allFindings = [...fixed, ...remaining, ...newFindings, ...unverified];
   const scheduleIndex = record?._scheduleIndex ?? 0;
   const reviewComplete = result.client_review_status === "client_completed";
+  const reviewFindings = [...remaining, ...newFindings];
+  const hasActionableReview = reviewFindings.some(requiresFindingTriage);
 
   const updateDraft = (findingId, field, value) => setDrafts((prev) => ({ ...prev, [findingId]: { ...prev[findingId], [field]: value } }));
   const saveReview = async () => {
     setSaving(true);
     setMessage("");
     try {
-      for (const finding of remaining) {
+      for (const finding of reviewFindings) {
+        if (!requiresFindingTriage(finding)) continue;
         const draft = drafts[finding.id] || finding;
         await updateVerificationFindingStatus(record.import_id, schedule.id, finding.id, { status: draft.status || "pending", comment: draft.comment || "" }, localStorage.getItem("token"));
       }
       await submitVerificationReview(record.import_id, schedule.id, localStorage.getItem("token"));
       setMessage("Verification review submitted to SOC.");
     } catch (err) {
-      setMessage(err?.message || "Complete every unresolved finding before submitting.");
+      setMessage(err?.message || "Triage every actionable verification finding before submitting.");
     } finally {
       setSaving(false);
     }
@@ -769,14 +806,15 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
               schedule.status === "failed" ? "border-red-200 bg-red-50 text-red-700" :
               "border-amber-200 bg-amber-50 text-amber-700"
             }`}>
-              {schedule.status === "completed" ? "All fixes confirmed" :
+              {schedule.status === "completed" && newFindings.length === 0 ? "All fixes confirmed" :
+               schedule.status === "completed" ? "Verification complete; new findings listed" :
                schedule.status === "failed" ? "Upload failed" :
                "Completed with errors"}
             </span>
           </div>
         </div>
         {/* Summary row */}
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <div className="mt-4 grid gap-3 sm:grid-cols-5">
           <div className="rounded-lg bg-emerald-50 p-3 dark:bg-emerald-950/30">
             <p className="text-2xl font-extrabold text-emerald-700 dark:text-emerald-400">{statusCounts.fixed}</p>
             <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700/80 dark:text-emerald-400/80">Confirmed fixed</p>
@@ -787,9 +825,23 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
           </div>
           <div className="rounded-lg bg-slate-100 p-3 dark:bg-slate-800">
             <p className="text-2xl font-extrabold text-slate-700 dark:text-slate-200">{statusCounts.all}</p>
-            <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">Solved findings tested</p>
+            <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">Verification findings</p>
+          </div>
+          <div className="rounded-lg bg-amber-50 p-3 dark:bg-amber-950/30">
+            <p className="text-2xl font-extrabold text-amber-700 dark:text-amber-400">{newFindings.length}</p>
+            <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-amber-700/80 dark:text-amber-400/80">New findings</p>
+          </div>
+          <div className="rounded-lg bg-slate-100 p-3 dark:bg-slate-800">
+            <p className="text-2xl font-extrabold text-slate-700 dark:text-slate-200">{unverified.length}</p>
+            <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">Not verified</p>
           </div>
         </div>
+        {(newFindings.length > 0 || unverified.length > 0) && (
+          <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            {newFindings.length > 0 && "New findings were not part of the original report. Critical, High, and Medium findings need a client decision before submitting this review; Low and Informational findings are shown for visibility. "}
+            {unverified.length > 0 && "Some affected assets were outside the scheduled scan scope. They are not considered fixed, and SOC must verify them before closing the cycle."}
+          </p>
+        )}
       </div>
 
       {/* Full finding table — same structure as initial report */}
@@ -818,23 +870,35 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
               </tr>
             </thead>
             <tbody>
-              {allFindings.map((f, idx) => (
-                <VerificationFindingRow
-                  key={f.id || f.plugin_id || idx}
-                  finding={f}
-                  draft={drafts[f.id]}
-                  onDraftChange={!isPlatformView && f._verificationStatus === "unresolved" && !reviewComplete ? updateDraft : undefined}
-                />
-              ))}
+              {[
+                { label: "Confirmed fixed", findings: fixed },
+                { label: "Still unresolved", findings: remaining },
+                { label: "New findings from this scan", findings: newFindings },
+                { label: "Affected assets not included in this scan", findings: unverified },
+              ].filter((group) => group.findings.length > 0).flatMap((group) => [
+                <tr key={`${group.label}-heading`}>
+                  <th colSpan={17} className="sticky left-0 z-10 bg-slate-100 px-3 py-2 text-left text-xs font-black uppercase tracking-wider text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                    {group.label} · {group.findings.length}
+                  </th>
+                </tr>,
+                ...group.findings.map((f, idx) => (
+                  <VerificationFindingRow
+                    key={f.id || f.plugin_id || `${group.label}-${idx}`}
+                    finding={f}
+                    draft={drafts[f.id]}
+                    onDraftChange={!isPlatformView && f._verificationStatus !== "fixed" && !reviewComplete ? updateDraft : undefined}
+                  />
+                )),
+              ])}
             </tbody>
           </table>
         </div>
         <div className="rounded-b-2xl border-t border-slate-200 bg-slate-50 px-4 py-4 dark:border-slate-800 dark:bg-slate-950/70">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              {statusCounts.fixed} confirmed fixed · {statusCounts.unresolved} still unresolved
+              {statusCounts.fixed} confirmed fixed · {statusCounts.unresolved} still unresolved · {newFindings.length} new · {unverified.length} not verified
             </p>
-            {!isPlatformView && remaining.length > 0 && !reviewComplete && (
+            {!isPlatformView && hasActionableReview && !reviewComplete && (
               <div className="flex items-center gap-3">
                 {message && <p className="text-xs font-semibold text-sky-800 dark:text-sky-200">{message}</p>}
                 <button
@@ -861,8 +925,22 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
   const hosts = (finding.affected_hosts || []).filter(Boolean);
   const evidence = (finding.evidence || "").trim();
   const isFixed = finding._verificationStatus === "fixed";
+  const isUnverified = finding._verificationStatus === "unverified";
   const status = draft?.status || finding.status || "pending";
   const comment = draft?.comment ?? finding.comment ?? "";
+  const hostsFixed = finding.verified_fixed_hosts || [];
+  const hostsUnverified = finding.unverified_hosts || [];
+  const assets = finding.affected_assets?.length
+    ? finding.affected_assets
+    : hosts.map((host) => ({
+        host,
+        mac_address: finding.mac_address || "",
+        hostname: finding.hostname || "",
+        operating_system: finding.operating_system || finding.os || "",
+      }));
+  const protocols = finding.protocols?.length ? finding.protocols : [finding.protocol].filter(Boolean);
+  const ports = finding.ports?.length ? finding.ports : [finding.port].filter((port) => port != null);
+  const hostCount = finding.host_count || assets.length || hosts.length || (finding.host ? 1 : 0);
 
   return (
     <tr className="border-t border-slate-200 align-top text-sm text-slate-700 dark:border-slate-800 dark:text-slate-300">
@@ -890,12 +968,25 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
           <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${
             isFixed
               ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400"
-              : "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
+              : isUnverified
+                ? "border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+              : finding._verificationStatus === "new"
+                ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400"
+                : "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
           }`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${isFixed ? "bg-emerald-500" : "bg-red-500"}`} />
-            {isFixed ? "Fixed" : "Unresolved"}
+            <span className={`h-1.5 w-1.5 rounded-full ${
+              isFixed ? "bg-emerald-500" : isUnverified ? "bg-slate-500" : finding._verificationStatus === "new" ? "bg-amber-500" : "bg-red-500"
+            }`} />
+            {isFixed ? "Fixed" : isUnverified ? "Not verified" : finding._verificationStatus === "new" ? "New finding" : "Unresolved"}
           </span>
-          {onDraftChange && !isFixed && (
+          {finding._verificationStatus !== "new" && finding.original_host_count > 0 && (
+            <p className="text-[11px] leading-4 text-slate-600 dark:text-slate-300">
+              {isFixed
+                ? `Confirmed fixed on ${hostsFixed.length || hostCount} of ${finding.original_host_count} affected assets.`
+                : `${hostsFixed.length} of ${finding.original_host_count} affected assets confirmed fixed${hostsUnverified.length ? `; ${hostsUnverified.length} not included in this scan` : ""}.`}
+            </p>
+          )}
+          {onDraftChange && !isFixed && requiresFindingTriage(finding) && (
             <div className="space-y-2">
               <select
                 value={status}
@@ -915,19 +1006,35 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
               />
             </div>
           )}
+          {onDraftChange && !isFixed && !requiresFindingTriage(finding) && (
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Low and Informational findings remain visible but do not need a status update.
+            </p>
+          )}
         </div>
       </td>
       <td className="min-w-[180px] px-3 py-3">
         <div className="space-y-1 text-[12px]">
-          <div>{hosts.length > 0 ? hosts.join(", ") : finding.host || "—"}</div>
-          {finding.hostname && <div className="text-slate-500 dark:text-slate-400">{finding.hostname}</div>}
+          <div className="font-semibold">{hostCount} affected asset(s)</div>
+          {assets.slice(0, 5).map((asset, index) => (
+            <div key={`${asset.host || "asset"}-${asset.mac_address || index}`}>
+              {asset.host || asset.hostname || "Unknown asset"}
+            </div>
+          ))}
+          {assets.length > 5 && <div>+ {assets.length - 5} more assets</div>}
+          {!assets.length && <div>{finding.host || "—"}</div>}
+          {hostsUnverified.length > 0 && (
+            <div className="text-slate-500 dark:text-slate-400" title={hostsUnverified.join(", ")}>
+              Not scanned: {hostsUnverified.length} asset(s)
+            </div>
+          )}
         </div>
       </td>
-      <td className="min-w-[120px] px-3 py-3 text-[12px]">{finding.mac_address || "—"}</td>
-      <td className="min-w-[140px] px-3 py-3 text-[12px]">{finding.hostname || finding.host || "—"}</td>
-      <td className="min-w-[160px] px-3 py-3 text-[12px]">{finding.operating_system || finding.os || "—"}</td>
-      <td className="min-w-[90px] px-3 py-3 text-[12px]">{finding.protocol || "—"}</td>
-      <td className="min-w-[80px] px-3 py-3 text-[12px]">{finding.port != null ? finding.port : "—"}</td>
+      <td className="min-w-[120px] px-3 py-3 text-[12px]">{assets.flatMap((asset) => String(asset.mac_address || "").split(",")).map((mac) => mac.trim()).filter(Boolean).filter((mac, index, all) => all.findIndex((value) => value.toLowerCase() === mac.toLowerCase()) === index).join(", ") || finding.mac_address || "—"}</td>
+      <td className="min-w-[140px] px-3 py-3 text-[12px]">{assets.map((asset) => asset.hostname).filter(Boolean).filter((name, index, all) => all.indexOf(name) === index).join(", ") || finding.hostname || finding.host || "—"}</td>
+      <td className="min-w-[160px] px-3 py-3 text-[12px]">{assets.map((asset) => asset.operating_system).filter(Boolean).filter((os, index, all) => all.indexOf(os) === index).join(", ") || finding.operating_system || finding.os || "—"}</td>
+      <td className="min-w-[90px] px-3 py-3 text-[12px]">{protocols.join(", ") || "—"}</td>
+      <td className="min-w-[80px] px-3 py-3 text-[12px]">{ports.join(", ") || "—"}</td>
       <td className="min-w-[240px] px-3 py-3">
         <ExpandableText text={finding.description || finding.synopsis || "No description available."} maxLength={140} />
       </td>
@@ -1402,7 +1509,12 @@ export default function VaptReport() {
       const hay = [
         f.title, f.description, f.solution, f.evidence,
         (f.affected_hosts || []).join(" "),
+        (f.affected_assets || []).map((asset) => [
+          asset.host, asset.mac_address, asset.hostname, asset.operating_system,
+        ].join(" ")).join(" "),
         (f.cves || []).join(" "),
+        (f.protocols || []).join(" "),
+        (f.ports || []).join(" "),
         f.category,
       ].join(" ").toLowerCase();
       return hay.includes(q);
@@ -1419,7 +1531,7 @@ export default function VaptReport() {
     return (record.findings || []).some((finding) => {
       const draft = draftChanges[String(finding.id)];
       const status = (draft?.status ?? finding.status ?? "pending").toLowerCase();
-      return status === "pending";
+      return requiresFindingTriage(finding) && status === "pending";
     });
   }, [record, draftChanges]);
 
@@ -1635,6 +1747,24 @@ export default function VaptReport() {
 
           <NotificationPanel record={record} schedules={rescanSchedules} isPlatformView={isPlatformView} />
 
+          {isPlatformView && Array.isArray(summary.source_files) && summary.source_files.length > 0 && (
+            <section className="mb-6 rounded-2xl border border-sky-200 bg-sky-50/70 p-5 dark:border-sky-900 dark:bg-sky-950/20">
+              <h2 className="text-sm font-bold text-sky-900 dark:text-sky-200">
+                One combined report from {summary.source_files.length} scanner file{summary.source_files.length === 1 ? "" : "s"}
+              </h2>
+              <p className="mt-1 text-xs text-sky-800/80 dark:text-sky-300/80">
+                Findings from all uploaded files are included below. Host IPs from the scanner exports remain attached to their findings.
+              </p>
+              <ul className="mt-3 flex flex-wrap gap-2">
+                {summary.source_files.map((fileName) => (
+                  <li key={fileName} className="max-w-full truncate rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-sky-900 dark:bg-slate-900 dark:text-slate-300" title={fileName}>
+                    {fileName}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <p className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">VAPT cycle {record.cycle_number || 1}</p>
             <p className="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-200">
@@ -1695,10 +1825,10 @@ export default function VaptReport() {
             </div>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               {[
-                { label: "Real findings", value: totalReal, icon: <Layers size={16} />, color: "bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400" },
+                { label: "Findings reported", value: totalReal, icon: <Layers size={16} />, color: "bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400" },
                 { label: "Unique hosts", value: record.unique_hosts ?? 0, icon: <Globe size={16} />, color: "bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-400" },
                 { label: "Raw entries parsed", value: summary.raw_findings_parsed ?? 0, icon: <Database size={16} />, color: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" },
-                { label: "Info excluded", value: summary.excluded_info_findings ?? 0, icon: <Info size={16} />, color: "bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400" },
+                { label: "Empty rows excluded", value: summary.excluded_empty_rows ?? 0, icon: <Info size={16} />, color: "bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400" },
               ].map(({ label, value, icon, color }) => (
                 <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
                   <div className={`mb-2 inline-flex h-9 w-9 items-center justify-center rounded-xl ${color}`}>
@@ -2046,7 +2176,7 @@ export default function VaptReport() {
                 </button>
                 {hasPendingFindings && (
                   <div className="text-sm text-amber-600 dark:text-amber-400">
-                    All findings must be marked Solved, Ignore, or False positive before submitting.
+                    Actionable findings must be marked Solved, Ignore, or False positive before submitting. Low and Informational findings do not require triage.
                   </div>
                 )}
                 {submitError && (
@@ -2137,7 +2267,7 @@ export default function VaptReport() {
                   </div>
                   {hasPendingFindings && (
                     <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
-                      All findings must be marked Solved, Ignore, or False positive before submitting.
+                      Actionable findings must be marked Solved, Ignore, or False positive before submitting. Low and Informational findings do not require triage.
                     </div>
                   )}
                   {submitError && (

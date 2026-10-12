@@ -125,6 +125,7 @@ export const SOURCE_LABEL = {
   openvas: "OpenVAS",
   qualys: "Qualys",
   generic: "Generic",
+  combined: "Combined assessment",
 };
 
 export function formatSource(source) {
@@ -138,6 +139,7 @@ export function formatLabel(item) {
   if (tool === "nessus") return "Nessus";
   if (tool === "openvas") return "OpenVAS";
   if (tool === "qualys") return "Qualys";
+  if (tool === "combined") return "Combined assessment";
   const fmt = String(item?.file_format || "").toLowerCase();
   if (fmt === "xlsx") return "Excel";
   if (fmt === "csv") return "CSV";

@@ -59,6 +59,33 @@ def test_cloud_assessment_scan_routes_require_approved_access():
         )
 
 
+def test_scan_serialization_hides_legacy_version_and_caller_metadata():
+    scan = SimpleNamespace(
+        scan_id="scan-1",
+        provider="aws",
+        scope={},
+        status="completed",
+        summary={
+            "total_checks": 1,
+            "metadata": {
+                "prowler_version": "5.45.0",
+                "caller_identity": {"Account": "123456789012"},
+            },
+        },
+        error=None,
+        created_at=None,
+        completed_at=None,
+        findings=[{"check_id": "check-1", "prowler_version": "5.45.0"}],
+    )
+
+    serialized = cloud_assessment_routes._serialize_scan(scan, include_findings=True)
+
+    assert "metadata" not in serialized["summary"]
+    assert serialized["summary"]["account_id"] == "123456789012"
+    assert "prowler_version" not in serialized["findings"][0]
+    assert "metadata" in scan.summary
+
+
 def test_cloud_assessment_request_validates_aws_credentials():
     request = TypeAdapter(CloudAssessmentRequest).validate_python(
         {
@@ -78,6 +105,70 @@ def test_cloud_assessment_request_validates_aws_credentials():
         "secret_access_key": "aws-secret",
         "session_token": "temporary-session-token",
     }
+
+
+def test_cloud_assessment_request_accepts_and_normalizes_aws_region():
+    request = TypeAdapter(CloudAssessmentRequest).validate_python(
+        {
+            "provider": "aws",
+            "access_key_id": "AKIAABCDEFGHIJKLMNOP",
+            "secret_access_key": "aws-secret",
+            "aws_region": " US-EAST-1 ",
+        }
+    )
+
+    provider, scope, _ = request_credentials(request)
+
+    assert provider == "aws"
+    assert scope == {"region": "us-east-1"}
+
+
+def test_cloud_assessment_request_accepts_multiple_aws_regions():
+    request = TypeAdapter(CloudAssessmentRequest).validate_python(
+        {
+            "provider": "aws",
+            "access_key_id": "AKIAABCDEFGHIJKLMNOP",
+            "secret_access_key": "aws-secret",
+            "aws_regions": [" US-WEST-2 ", "us-east-1"],
+        }
+    )
+
+    provider, scope, _ = request_credentials(request)
+
+    assert provider == "aws"
+    assert scope == {"regions": ["us-east-1", "us-west-2"]}
+
+
+def test_cloud_assessment_request_rejects_malformed_aws_region():
+    with pytest.raises(ValidationError):
+        TypeAdapter(CloudAssessmentRequest).validate_python(
+            {
+                "provider": "aws",
+                "access_key_id": "AKIAABCDEFGHIJKLMNOP",
+                "secret_access_key": "aws-secret",
+                "aws_region": "us-east",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        [],
+        ["us-east-1", "us-east-1"],
+        ["us-east"],
+    ],
+)
+def test_cloud_assessment_request_rejects_invalid_aws_region_selection(regions):
+    with pytest.raises(ValidationError):
+        TypeAdapter(CloudAssessmentRequest).validate_python(
+            {
+                "provider": "aws",
+                "access_key_id": "AKIAABCDEFGHIJKLMNOP",
+                "secret_access_key": "aws-secret",
+                "aws_regions": regions,
+            }
+        )
 
 
 def test_cloud_assessment_request_requires_explicit_azure_and_gcp_scope():
@@ -138,6 +229,35 @@ def test_prowler_command_uses_selected_cloud_scope_and_csv_output(tmp_path):
     assert str(tmp_path) in command
 
 
+@pytest.mark.parametrize(
+    ("scope", "expected_region_args"),
+    [
+        ({}, []),
+        ({"region": "us-east-1"}, ["--region", "us-east-1"]),
+        (
+            {"regions": ["us-east-1", "us-west-2"]},
+            ["--region", "us-east-1", "us-west-2"],
+        ),
+    ],
+)
+def test_aws_prowler_command_respects_selected_region_scope(
+    tmp_path, scope, expected_region_args
+):
+    command = _scan_command(
+        "aws",
+        tmp_path,
+        scope,
+        executable="prowler",
+    )
+
+    assert command[command.index("--output-formats") + 1] == "csv"
+    if expected_region_args:
+        region_index = command.index("--region")
+        assert command[region_index : region_index + len(expected_region_args)] == expected_region_args
+    else:
+        assert "--region" not in command
+
+
 def test_assessment_environment_does_not_reuse_host_cloud_credentials():
     process_environment = _provider_environment(
         {
@@ -171,7 +291,16 @@ def test_assessment_environment_does_not_reuse_host_cloud_credentials():
             {"tenant_id": "tenant", "client_id": "client", "client_secret": "azure-secret"},
             "azure-secret",
         ),
-        ("gcp", {"service_account_json": '{"private_key":"gcp-secret"}'}, "gcp-secret"),
+        (
+            "gcp",
+            {
+                "service_account_json": (
+                    '{"private_key":"gcp-secret","client_email":"scanner@example.iam.gserviceaccount.com",'
+                    '"project_id":"security-project"}'
+                )
+            },
+            "gcp-secret",
+        ),
     ],
 )
 def test_credential_preflight_uses_provider_credentials_without_cli_secrets(
@@ -182,17 +311,24 @@ def test_credential_preflight_uses_provider_credentials_without_cli_secrets(
     def run(command, **kwargs):
         captured["command"] = command
         captured.update(kwargs)
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="123456789012",
+        )
 
     monkeypatch.setattr(cloud_assessment_service, "PROWLER_EXECUTABLE", "prowler")
     monkeypatch.setattr(cloud_assessment_service, "PROWLER_PYTHON_EXECUTABLE", "prowler-python")
     monkeypatch.setattr(cloud_assessment_service.shutil, "which", lambda _executable: "prowler")
     monkeypatch.setattr(cloud_assessment_service.subprocess, "run", run)
 
-    cloud_assessment_service.validate_cloud_credentials(provider, credentials)
+    account_id = cloud_assessment_service.validate_cloud_credentials(provider, credentials)
 
     assert expected_secret not in " ".join(captured["command"])
-    assert captured["stdout"] == cloud_assessment_service.subprocess.DEVNULL
+    assert captured["stdout"] == (
+        cloud_assessment_service.subprocess.PIPE
+        if provider == "aws"
+        else cloud_assessment_service.subprocess.DEVNULL
+    )
     assert captured["stderr"] == cloud_assessment_service.subprocess.DEVNULL
     if provider == "gcp":
         assert captured["input"] == credentials["service_account_json"]
@@ -203,8 +339,7 @@ def test_credential_preflight_uses_provider_credentials_without_cli_secrets(
             "AWS_SECRET_ACCESS_KEY" if provider == "aws" else "AZURE_CLIENT_SECRET"
         )
         assert captured["env"][credential_variable] == expected_secret
-
-
+    assert account_id == ("123456789012" if provider == "aws" else None)
 def test_failed_credential_preflight_does_not_consume_scan_quota(monkeypatch):
     request = TypeAdapter(CloudAssessmentRequest).validate_python(
         {
@@ -259,11 +394,18 @@ def test_assessment_reserves_quota_only_after_credentials_are_verified(monkeypat
         def refresh(self, _scan):
             pass
 
-    monkeypatch.setattr(
-        cloud_assessment_routes,
-        "validate_cloud_credentials",
-        lambda *_args: events.append("verify"),
-    )
+    def verify_credentials(*_args):
+        events.append("verify")
+        return "123456789012"
+
+    scheduled = {}
+
+    def schedule_task(function, *args):
+        events.append("schedule")
+        scheduled["function"] = function
+        scheduled["args"] = args
+
+    monkeypatch.setattr(cloud_assessment_routes, "validate_cloud_credentials", verify_credentials)
     monkeypatch.setattr(
         cloud_assessment_routes,
         "reserve_scan_quota",
@@ -272,34 +414,44 @@ def test_assessment_reserves_quota_only_after_credentials_are_verified(monkeypat
 
     result = cloud_assessment_routes.create_cloud_assessment(
         request,
-        SimpleNamespace(add_task=lambda *_args: events.append("schedule")),
+        SimpleNamespace(add_task=schedule_task),
         FakeDb(),
         SimpleNamespace(user_id="user-1"),
     )
 
     assert events == ["verify", "reserve", "persist", "schedule"]
     assert result["status"] == "running"
+    assert result["summary"]["account_id"] == "123456789012"
+    assert len(scheduled["args"]) == 5
 
 
 def test_prowler_findings_are_normalized_and_summarized():
     findings = _normalize_csv_findings(
-        "CHECK_ID;CHECK_TITLE;STATUS;STATUS_EXTENDED;SEVERITY;SERVICE_NAME;"
-        "RESOURCE_UID;REMEDIATION_RECOMMENDATION_TEXT\n"
-        "iam_example;Enable MFA;FAIL;MFA disabled;high;iam;user/123;Enable MFA\n"
-        "s3_example;Block public access;PASS;Bucket is private;low;s3;bucket-1;\n"
+        "CHECK_ID;CHECK_TITLE;COMPLIANCE;PROWLER_VERSION;RESOURCE_TAGS;STATUS;"
+        "STATUS_EXTENDED;SEVERITY;SERVICE_NAME;RESOURCE_UID;RISK;REMEDIATION_RECOMMENDATION_TEXT\n"
+        "iam_example;Enable MFA;CIS: 1.1 | NIST: AC-2;5.45.0;owner=security | env=prod;"
+        "FAIL;MFA disabled;high;iam;user/123;Unauthorized access could expose sensitive data;Enable MFA\n"
+        "s3_example;Block public access;;;;PASS;Bucket is private;low;s3;bucket-1;\n"
     )
 
     assert findings[0]["check_id"] == "iam_example"
     assert findings[0]["resource_id"] == "user/123"
+    assert findings[0]["compliance"] == ["CIS: 1.1", "NIST: AC-2"]
+    assert findings[0]["resource_tags"] == {"owner": "security", "env": "prod"}
+    assert "prowler_version" not in findings[0]
+    assert findings[0]["risk"] == "Unauthorized access could expose sensitive data"
     assert findings[1]["status"] == "PASS"
     assert _summarize_findings(findings) == {
         "total_checks": 2,
         "failed_checks": 1,
         "passed_checks": 1,
         "manual_checks": 0,
+        "muted_checks": 0,
+        "not_applicable_checks": 0,
         "errored_checks": 0,
         "skipped_checks": 0,
         "checks_unavailable": 0,
+        "other_checks": 0,
         "severity_counts": {
             "critical": 0,
             "high": 1,
@@ -323,13 +475,45 @@ def test_cloud_assessment_summary_counts_errored_and_skipped_checks():
     assert summary["errored_checks"] == 1
     assert summary["skipped_checks"] == 2
     assert summary["checks_unavailable"] == 3
+    assert (
+        summary["passed_checks"]
+        + summary["failed_checks"]
+        + summary["manual_checks"]
+        + summary["muted_checks"]
+        + summary["not_applicable_checks"]
+        + summary["errored_checks"]
+        + summary["skipped_checks"]
+        + summary["other_checks"]
+        == summary["total_checks"]
+    )
+
+
+def test_cloud_assessment_summary_accounts_for_manual_muted_not_applicable_and_unknown():
+    summary = _summarize_findings(
+        [
+            {"status": "PASS"},
+            {"status": "FAIL"},
+            {"status": "MANUAL"},
+            {"status": "MUTED"},
+            {"status": "NOT_APPLICABLE"},
+            {"status": "UNKNOWN_STATUS"},
+        ]
+    )
+
+    assert summary["total_checks"] == 6
+    assert summary["passed_checks"] == 1
+    assert summary["failed_checks"] == 1
+    assert summary["manual_checks"] == 1
+    assert summary["muted_checks"] == 1
+    assert summary["not_applicable_checks"] == 1
+    assert summary["other_checks"] == 1
 
 
 def test_nonzero_prowler_exit_with_csv_report_completes_assessment(monkeypatch):
     scan = SimpleNamespace(
         status="running",
         findings=None,
-        summary=None,
+        summary={"account_id": "123456789012"},
         completed_at=None,
     )
 
@@ -357,12 +541,11 @@ def test_nonzero_prowler_exit_with_csv_report_completes_assessment(monkeypatch):
             "iam_example;Enable MFA;FAIL;MFA disabled;high\n",
             encoding="utf-8",
         )
-        return SimpleNamespace(returncode=3)
+        return SimpleNamespace(returncode=3, poll=lambda: 3, wait=lambda **_wait_kwargs: 3)
 
     monkeypatch.setattr(cloud_assessment_service, "SessionLocal", FakeSession)
     monkeypatch.setattr(cloud_assessment_service.shutil, "which", lambda _executable: "prowler")
-    monkeypatch.setattr(cloud_assessment_service.subprocess, "run", run_prowler)
-
+    monkeypatch.setattr(cloud_assessment_service.subprocess, "Popen", run_prowler)
     cloud_assessment_service.run_cloud_assessment(
         "scan-nonzero-with-report",
         "user-1",
@@ -373,6 +556,10 @@ def test_nonzero_prowler_exit_with_csv_report_completes_assessment(monkeypatch):
 
     assert scan.status == "completed"
     assert scan.summary["failed_checks"] == 1
+    assert scan.summary["progress"]["stage"] == "collecting_results"
+    assert scan.summary["progress"]["events"]
+    assert scan.summary["account_id"] == "123456789012"
+    assert "metadata" not in scan.summary
     assert scan.findings[0]["check_id"] == "iam_example"
     assert scan.completed_at is not None
 
@@ -381,6 +568,7 @@ def test_nonzero_prowler_exit_without_report_fails_assessment(monkeypatch):
     scan = SimpleNamespace(
         status="running",
         error=None,
+        summary=None,
         completed_at=None,
     )
 
@@ -405,8 +593,8 @@ def test_nonzero_prowler_exit_without_report_fails_assessment(monkeypatch):
     monkeypatch.setattr(cloud_assessment_service.shutil, "which", lambda _executable: "prowler")
     monkeypatch.setattr(
         cloud_assessment_service.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=3),
+        "Popen",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=3, poll=lambda: 3, wait=lambda **_wait_kwargs: 3),
     )
 
     cloud_assessment_service.run_cloud_assessment(
@@ -419,4 +607,5 @@ def test_nonzero_prowler_exit_without_report_fails_assessment(monkeypatch):
 
     assert scan.status == "failed"
     assert "without producing a CSV report" in scan.error
+    assert scan.summary["progress"]["stage"] == "failed"
     assert scan.completed_at is not None
