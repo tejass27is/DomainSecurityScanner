@@ -2,8 +2,10 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
+from app.api.cloud_assessment.report import generate_cloud_assessment_pdf
 from app.api.cloud_assessment.schemas import CloudAssessmentRequest
 from app.api.cloud_assessment.service import (
     CloudCredentialValidationError,
@@ -142,3 +144,30 @@ def get_cloud_assessment(
     if scan is None:
         raise HTTPException(status_code=404, detail="Cloud assessment not found.")
     return _serialize_scan(scan, include_findings=True)
+
+
+@router.get("/scans/{scan_id}/report")
+def download_cloud_assessment_report(
+    scan_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_cloud_assessment_access),
+):
+    scan = db.query(CloudSecurityAssessment).filter(
+        CloudSecurityAssessment.scan_id == scan_id,
+        CloudSecurityAssessment.user_id == current_user.user_id,
+    ).first()
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Cloud assessment not found.")
+    if scan.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="The cloud assessment report is available after the scan completes.",
+        )
+
+    report = generate_cloud_assessment_pdf(_serialize_scan(scan, include_findings=True))
+    provider = scan.provider if scan.provider in {"aws", "azure", "gcp"} else "cloud"
+    return Response(
+        content=report,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="cloud-assessment-{provider}.pdf"'},
+    )

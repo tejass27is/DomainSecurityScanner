@@ -76,6 +76,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
                 { to: "/admin", label: "User Management", icon: "group" },
                 { to: "/admin/subscription", label: "Subscription Management", icon: "payments" },
                 { to: "/admin/audit", label: "Audit & Security", icon: "shield" },
+                { to: "/admin/cloud-assessments", label: "Cloud Assessments", icon: "cloud" },
                 { to: "/admin/reports", label: "Reported Issues", icon: "flag" },
                 { to: "/admin/soc-dashboard", label: "SOC Console", icon: "monitoring" },
                 { to: "/admin/semgrep", label: "Tool Updates", icon: "system_update_alt" },

@@ -37,6 +37,9 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=${DATABASE_URL}
+      - TOOL_UPDATE_GITHUB_TOKEN=${TOOL_UPDATE_GITHUB_TOKEN:-}
+      - TOOL_UPDATE_REPOSITORY=${TOOL_UPDATE_REPOSITORY:-tejass27is/DomainSecurityScanner}
+      - TOOL_UPDATE_REF=${TOOL_UPDATE_REF:-main}
       - REDIS_HOST=${REDIS_HOST}
       - REDIS_PORT=${REDIS_PORT}
       - QUTTERA_API_KEY=${QUTTERA_API_KEY}

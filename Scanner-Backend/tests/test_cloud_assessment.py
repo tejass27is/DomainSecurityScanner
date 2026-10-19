@@ -1,5 +1,6 @@
 import json
 import os
+from io import BytesIO
 from types import SimpleNamespace
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
@@ -7,7 +8,9 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 import pytest
 from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
+from pypdf import PdfReader
 
+from app.api.cloud_assessment.report import generate_cloud_assessment_pdf
 from app.api.cloud_assessment.schemas import CloudAssessmentRequest
 from app.api.cloud_assessment.routes import router as cloud_assessment_router
 from app.api.cloud_assessment import service as cloud_assessment_service
@@ -20,6 +23,90 @@ from app.api.cloud_assessment.service import (
     _summarize_findings,
     request_credentials,
 )
+
+
+def test_cloud_assessment_pdf_uses_executive_report_layout():
+    report = generate_cloud_assessment_pdf(
+        {
+            "scan_id": "scan-report-test",
+            "provider": "aws",
+            "scope": {"regions": ["us-east-1"]},
+            "status": "completed",
+            "created_at": "2026-10-15T10:00:00+00:00",
+            "completed_at": "2026-10-15T10:05:00+00:00",
+            "summary": {
+                "account_id": "123456789012",
+                "total_checks": 3,
+                "failed_checks": 1,
+                "passed_checks": 1,
+                "manual_checks": 1,
+                "muted_checks": 0,
+                "skipped_checks": 0,
+                "severity_counts": {
+                    "critical": 0,
+                    "high": 1,
+                    "medium": 0,
+                    "low": 0,
+                    "informational": 0,
+                },
+            },
+            "findings": [
+                {
+                    "check_id": "check-storage-public",
+                    "title": "Storage must not be public",
+                    "status": "FAIL",
+                    "severity": "high",
+                    "service": "s3",
+                    "region": "us-east-1",
+                    "resource_id": "bucket-1",
+                    "compliance": ["CIS: 2.1"],
+                    "status_extended": "Bucket permits public reads.",
+                    "risk": "Public reads can expose stored data.\u200b",
+                    "remediation": "Block public access.",
+                },
+                {
+                    "check_id": "check-encryption",
+                    "title": "Encryption enabled",
+                    "status": "PASS",
+                    "severity": "high",
+                    "service": "s3",
+                    "region": "us-east-1",
+                    "resource_id": "bucket-2",
+                    "compliance": ["CIS: 2.2"],
+                },
+                {
+                    "check_id": "check-manual",
+                    "title": "Review key rotation",
+                    "status": "MANUAL",
+                    "severity": "medium",
+                    "service": "iam",
+                    "region": "global",
+                },
+            ],
+        }
+    )
+
+    pdf = PdfReader(BytesIO(report))
+    text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    assert report.startswith(b"%PDF-")
+    assert "Executive Security Report" in text
+    assert "Security Posture Score" in text
+    assert "GRADE C" in text
+    assert "Findings by Severity" in text
+    assert "Regulatory & Compliance Framework Alignment" not in text
+    assert "Finding Status Guide" in text
+    assert "Security Findings Explorer" in text
+    assert "Manual Verification Required" in text
+    assert "Passed Security Controls" in text
+    assert "AFFECTED RESOURCE / SCOPE" in text
+    assert "STATUS DETAILS" in text
+    assert "RISK IMPACT" in text
+    assert "REMEDIATION GUIDANCE" in text
+    assert "compliance" not in text.lower()
+    assert "CIS" not in text
+    assert "\u200b" not in text
+    assert "\u25a0" not in text
 
 
 def test_cloud_assessment_access_requires_admin_approval():
@@ -43,6 +130,7 @@ def test_cloud_assessment_scan_routes_require_approved_access():
         ("POST", "/cloud-assessment/scans"),
         ("GET", "/cloud-assessment/scans"),
         ("GET", "/cloud-assessment/scans/{scan_id}"),
+        ("GET", "/cloud-assessment/scans/{scan_id}/report"),
     }
     guarded_routes = {
         (method, route.path): route

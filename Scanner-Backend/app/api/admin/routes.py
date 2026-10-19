@@ -12,6 +12,7 @@ from app.api.admin.schemas import (
     CreateSocAnalystRequest,
     GeneratePromoCodeRequest,
     PersonalEmailApprovalRequest,
+    ToolUpdateRequest,
     UserScanQuotaRequest,
     VaptBlockRequest,
 )
@@ -59,6 +60,7 @@ from app.api.admin.service import (
 )
 from app.api.admin.semgrep_status import SemgrepVersionCheckError, get_semgrep_version_status
 from app.api.admin.prowler_status import ProwlerVersionCheckError, get_prowler_version_status
+from app.api.admin.tool_updates import ToolUpdateError, dispatch_tool_update
 from app.api.webscan.acunetix import get_scanner_connection_status
 from app.api.vapt.report_generator import generate_vapt_report_pdf, generate_vapt_verification_report_pdf, generate_vapt_report_xlsx, generate_vapt_verification_report_xlsx
 from app.api.vapt.routes import _region_display_name, _require_open_vapt_cycle, _to_detail, _to_list_item, _uploader_email_map, _verification_download_filename
@@ -70,7 +72,7 @@ from app.core.middleware import (
 )
 from app.core.websocket_manager import ws_manager
 from app.db.base import get_db
-from app.db.models import Organization, User, VaptImport, VaptRescanSchedule
+from app.db.models import CloudSecurityAssessment, Organization, User, VaptImport, VaptRescanSchedule
 from app.utils.email import send_vapt_rescan_schedule_email
 from pydantic import BaseModel
 from datetime import datetime, timezone
@@ -97,6 +99,32 @@ def prowler_version_status(
         return get_prowler_version_status()
     except ProwlerVersionCheckError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/tools/update")
+def start_tool_update(
+    req: ToolUpdateRequest,
+    _current_admin: User = Depends(require_admin),
+):
+    get_status = {
+        "semgrep": get_semgrep_version_status,
+        "prowler": get_prowler_version_status,
+    }[req.tool]
+    try:
+        status = get_status()
+    except (SemgrepVersionCheckError, ProwlerVersionCheckError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if status["update_available"] is not True:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{req.tool.capitalize()} does not have an available update.",
+        )
+
+    try:
+        return dispatch_tool_update(req.tool, status["latest_version"])
+    except ToolUpdateError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/tools/webscan-connection")
@@ -808,6 +836,38 @@ def get_scans_total(
     _current_admin: User = Depends(require_admin),
 ):
     return get_total_scans(db)
+
+
+@router.get("/cloud-assessments")
+def list_cloud_assessments_for_admin(
+    limit: int = Query(default=500, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    _current_admin: User = Depends(require_admin),
+):
+    rows = (
+        db.query(CloudSecurityAssessment, User, Organization)
+        .outerjoin(User, CloudSecurityAssessment.user_id == User.user_id)
+        .outerjoin(Organization, User.org_id == Organization.org_id)
+        .order_by(CloudSecurityAssessment.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "scan_id": scan.scan_id,
+            "client_email": user.email if user else None,
+            "organization_domain": organization.domain if organization else None,
+            "provider": scan.provider,
+            "status": scan.status,
+            "account_id": (scan.summary or {}).get("account_id")
+            if isinstance(scan.summary, dict)
+            else None,
+            "scope": scan.scope or {},
+            "created_at": scan.created_at.isoformat() if scan.created_at else None,
+            "completed_at": scan.completed_at.isoformat() if scan.completed_at else None,
+        }
+        for scan, user, organization in rows
+    ]
 
 
 

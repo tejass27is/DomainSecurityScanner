@@ -218,6 +218,12 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
   const protocols = finding.protocols?.length ? finding.protocols : [finding.protocol].filter(Boolean);
   const ports = finding.ports?.length ? finding.ports : [finding.port].filter((port) => port != null);
   const evidence = (finding.evidence || "").trim();
+  const assetNames = [...new Map(
+    (assets || []).map((asset) => {
+      const label = asset.host || asset.hostname || "Unknown asset";
+      return [String(label).trim() || "Unknown asset", label];
+    })
+  ).values()];
 
   useEffect(() => {
     if (readOnly) return;
@@ -303,13 +309,12 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
           <div className="font-semibold">
             {finding.host_count || assets.length || hosts.length || (finding.host ? 1 : 0)} affected asset(s)
           </div>
-          {assets.slice(0, 5).map((asset, index) => (
-            <div key={`${asset.host || "asset"}-${asset.mac_address || index}`}>
-              {asset.host || asset.hostname || "Unknown asset"}
+          {assetNames.map((assetName, index) => (
+            <div key={`${assetName}-${index}`}>
+              {assetName}
             </div>
           ))}
-          {assets.length > 5 && <div>+ {assets.length - 5} more assets</div>}
-          {!assets.length && <div>{finding.host || "—"}</div>}
+          {!assetNames.length && <div>{finding.host || "—"}</div>}
         </div>
       </td>
       <td className="min-w-[120px] px-3 py-3 text-[12px]">{assets.flatMap((asset) => String(asset.mac_address || "").split(",")).map((mac) => mac.trim()).filter(Boolean).filter((mac, index, all) => all.findIndex((value) => value.toLowerCase() === mac.toLowerCase()) === index).join(", ") || finding.mac_address || "—"}</td>
@@ -941,6 +946,12 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
   const protocols = finding.protocols?.length ? finding.protocols : [finding.protocol].filter(Boolean);
   const ports = finding.ports?.length ? finding.ports : [finding.port].filter((port) => port != null);
   const hostCount = finding.host_count || assets.length || hosts.length || (finding.host ? 1 : 0);
+  const assetNames = [...new Map(
+    (assets || []).map((asset) => {
+      const label = asset.host || asset.hostname || "Unknown asset";
+      return [String(label).trim() || "Unknown asset", label];
+    })
+  ).values()];
 
   return (
     <tr className="border-t border-slate-200 align-top text-sm text-slate-700 dark:border-slate-800 dark:text-slate-300">
@@ -1016,13 +1027,12 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
       <td className="min-w-[180px] px-3 py-3">
         <div className="space-y-1 text-[12px]">
           <div className="font-semibold">{hostCount} affected asset(s)</div>
-          {assets.slice(0, 5).map((asset, index) => (
-            <div key={`${asset.host || "asset"}-${asset.mac_address || index}`}>
-              {asset.host || asset.hostname || "Unknown asset"}
+          {assetNames.map((assetName, index) => (
+            <div key={`${assetName}-${index}`}>
+              {assetName}
             </div>
           ))}
-          {assets.length > 5 && <div>+ {assets.length - 5} more assets</div>}
-          {!assets.length && <div>{finding.host || "—"}</div>}
+          {!assetNames.length && <div>{finding.host || "—"}</div>}
           {hostsUnverified.length > 0 && (
             <div className="text-slate-500 dark:text-slate-400" title={hostsUnverified.join(", ")}>
               Not scanned: {hostsUnverified.length} asset(s)

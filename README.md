@@ -87,6 +87,8 @@ cd Scanner-Backend && pip install -r requirements.txt && uvicorn app.main:app --
 # 3. Configure the frontend
 cp ShieldStat-Frontend/.env.example ShieldStat-Frontend/.env
 #    → set VITE_BACKEND_URL=http://localhost:8000
+#    → hosted deployments can also point at the proxied backend root (for example http://example.com/api)
+#      and the backend accepts both /auth and /api/auth compatibility routes
 
 # 4. Run the frontend
 cd ShieldStat-Frontend && npm install && npm run dev
@@ -243,7 +245,10 @@ Copy `Scanner-Backend/.env.example` → `.env`. All config is env-driven — not
 | reCAPTCHA | `RECAPTCHA_ENABLED`, `RECAPTCHA_SECRET_KEY` |
 | Accounts | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `MARKETING_EMAIL`, `MARKETING_PASSWORD` |
 | Third-party | `ABUSEIPDB_API_KEY`, `QUTTERA_API_KEY` |
+| Admin tool updates | `TOOL_UPDATE_GITHUB_TOKEN`, `TOOL_UPDATE_REPOSITORY` (defaults to `tejass27is/DomainSecurityScanner`), `TOOL_UPDATE_REF` (defaults to `main`) |
 | Malware poller | `MALWARE_POLL_INTERVAL_SEC`, `MALWARE_POLL_TIMEOUT_SEC` |
+
+The Scanner updates admin page can automatically update Semgrep and Prowler and redeploy the backend. To enable it in production, create a fine-grained GitHub token restricted to the configured repository with **Actions: write** permission, set it as `TOOL_UPDATE_GITHUB_TOKEN` in `Scanner-Backend/.env` on the deployment server, and rebuild/restart the backend once so Docker Compose loads it. Keep this token server-side; never put it in a frontend environment variable. The backend deployment workflow also needs its existing SSH secrets and a `GITHUB_TOKEN` with `contents: write` permission (already declared in the workflow) to commit the new version pin before rebuilding the production image.
 
 ### SMTP Notes
 

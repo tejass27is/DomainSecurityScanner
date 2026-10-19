@@ -76,6 +76,35 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+def include_api_compatibility_routes(app_instance: FastAPI) -> None:
+    """Support deployments behind a reverse proxy that exposes the API under /api.
+
+    Most local setups hit the backend at the root origin, but some hosted setups
+    terminate TLS or route traffic via /api. Registering the same routers under
+    both prefixes keeps the app compatible with either configuration without
+    changing existing endpoint paths.
+    """
+    routers = (
+        auth_router,
+        scanner_router,
+        assessment_router,
+        cloud_assessment_router,
+        analyzer_router,
+        fix_router,
+        admin_router,
+        webhook_scanner_router,
+        malware_router,
+        report_issue_router,
+        public_router,
+        vapt_router,
+        webscan_router,
+    )
+    for router in routers:
+        app_instance.include_router(router)
+        app_instance.include_router(router, prefix="/api")
+
+
 # CORS
 # CORS configuration — accepts both CORS_ORIGINS and FRONTEND_URL.
 # FRONTEND_URL is automatically added to the allowed origins so you only
@@ -125,19 +154,7 @@ def healthz_check():
     return {"status": "ok"}
 
 
-app.include_router(auth_router)
-app.include_router(scanner_router)
-app.include_router(assessment_router)
-app.include_router(cloud_assessment_router)
-app.include_router(analyzer_router)
-app.include_router(fix_router)
-app.include_router(admin_router)
-app.include_router(webhook_scanner_router)
-app.include_router(malware_router)
-app.include_router(report_issue_router)
-app.include_router(public_router)
-app.include_router(vapt_router)
-app.include_router(webscan_router)
+include_api_compatibility_routes(app)
 
 if __name__ == "__main__":
     import uvicorn

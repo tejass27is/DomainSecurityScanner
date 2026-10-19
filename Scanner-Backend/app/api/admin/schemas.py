@@ -27,6 +27,10 @@ class CreateSocAnalystRequest(BaseModel):
     email: EmailStr
 
 
+class ToolUpdateRequest(BaseModel):
+    tool: str = Field(pattern="^(semgrep|prowler)$")
+
+
 class PersonalEmailApprovalRequest(BaseModel):
     email: EmailStr
     notes: str | None = None

@@ -24,6 +24,7 @@ const MalwareScanHistory = lazy(() => import("./pages/MalwareScanHistory"));
 const MalwareDashboard = lazy(() => import("./pages/MalwareDashboard"));
 const Profile = lazy(() => import("./pages/Profile"));
 const AdminReports = lazy(() => import("./pages/AdminReports"));
+const AdminCloudAssessments = lazy(() => import("./pages/AdminCloudAssessments"));
 const VaptUpload = lazy(() => import("./pages/VaptUpload"));
 const VaptReports = lazy(() => import("./pages/VaptReports"));
 const VaptReport = lazy(() => import("./pages/VaptReport"));
@@ -119,6 +120,7 @@ function App() {
         <Route path="subscription" element={<AdminSubscription />} />
         <Route path="audit" element={<AdminAudit />} />
         <Route path="reports" element={<AdminReports />} />
+        <Route path="cloud-assessments" element={<AdminCloudAssessments />} />
         <Route path="vapt-reports" element={<SocAnalystVaptReports />} />
         <Route path="vapt-reports/:importId" element={<VaptReport />} />
         <Route path="vapt-upload" element={<VaptUpload />} />

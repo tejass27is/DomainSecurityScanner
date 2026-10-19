@@ -63,7 +63,9 @@ async function request(endpoint, { method = "GET", body, token, signal, publicIp
     const message = typeof data === "object" && data?.detail
       ? data.detail
       : `Request failed (${res.status})`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = res.status;
+    throw error;
   }
 
   if (method !== "GET") {
@@ -274,6 +276,27 @@ export function getCloudAssessment(scanId, token) {
     token,
     skipCache: true,
   });
+}
+
+export async function downloadCloudAssessmentReport(scanId, token) {
+  const response = await fetch(
+    buildUrl(`/cloud-assessment/scans/${encodeURIComponent(scanId)}/report`),
+    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+  );
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || `Failed to download report (${response.status})`);
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `cloud-assessment-${String(scanId).slice(0, 8)}-report.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ─── Web Scan (dynamic + Semgrep static mode) ──────────────────────────────
@@ -547,6 +570,14 @@ export function getProwlerVersionStatus(token) {
   return request("/admin/tools/prowler", { token, skipCache: true });
 }
 
+export function requestToolUpdate(tool, token) {
+  return request("/admin/tools/update", {
+    method: "POST",
+    body: { tool },
+    token,
+  });
+}
+
 export function getWebScanConnectionStatus(token) {
   return request("/admin/tools/webscan-connection", { token, skipCache: true });
 }
@@ -711,6 +742,10 @@ export function getScanSummaries(token) {
 
 export function getTotalScans(token) {
   return request("/admin/scans/total", { token });
+}
+
+export function getAdminCloudAssessments(token) {
+  return request("/admin/cloud-assessments", { token, skipCache: true });
 }
 
 

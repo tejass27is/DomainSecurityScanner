@@ -6,14 +6,65 @@ on:
       - main
     paths:
       - 'Scanner-Backend/**'
+  workflow_dispatch:
+    inputs:
+      tool:
+        description: Scanner tool to update
+        required: true
+        type: choice
+        options:
+          - semgrep
+          - prowler
+      version:
+        description: Exact release version to install
+        required: true
+        type: string
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Update requested tool pin
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TOOL: ${{ inputs.tool }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          tool = os.environ["TOOL"]
+          version = os.environ["VERSION"]
+          if not re.fullmatch(r"\d+(?:\.\d+)+(?:[A-Za-z0-9.+!-]*)?", version):
+              raise SystemExit("The requested version is not a valid package version.")
+
+          if tool == "semgrep":
+              path = Path("Scanner-Backend/requirements.txt")
+              pattern = re.compile(r"^semgrep==.*$", re.MULTILINE)
+              replacement = f"semgrep=={version}"
+          elif tool == "prowler":
+              path = Path("Scanner-Backend/Dockerfile")
+              pattern = re.compile(r"prowler==[A-Za-z0-9.!+_-]+")
+              replacement = f"prowler=={version}"
+          else:
+              raise SystemExit("Unsupported scanner tool.")
+
+          contents = path.read_text(encoding="utf-8")
+          updated, count = pattern.subn(replacement, contents)
+          if count != 1:
+              raise SystemExit(f"Expected exactly one {tool} version pin, found {count}.")
+          if updated == contents:
+              raise SystemExit(f"{tool} is already pinned to {version}.")
+          path.write_text(updated, encoding="utf-8")
+          PY
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -27,8 +78,20 @@ jobs:
       - name: Run backend tests
         working-directory: Scanner-Backend
         env:
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: "sqlite:///:memory:"
         run: pytest -q
+
+      - name: Commit updated tool version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TOOL: ${{ inputs.tool }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "Scanner-Backend/requirements.txt" "Scanner-Backend/Dockerfile"
+          git commit -m "[tool-update] Update ${TOOL} to ${VERSION}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Deploy Backend via SSH
         uses: appleboy/ssh-action@v1.0.3
@@ -43,7 +106,6 @@ jobs:
             git pull
 
             echo "Rebuilding backend..."
-            docker-compose down
             docker-compose up -d --build
 
             echo "Backend deployed!"
