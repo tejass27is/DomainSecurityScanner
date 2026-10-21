@@ -438,7 +438,7 @@ def assign_promo_code_to_user(
         "code": promo.code,
         "assigned_to": user.email,
         "max_domains": org.max_domains,
-    }
+     }
 
 
 def get_users_by_org(db: Session) -> dict:

@@ -61,7 +61,7 @@ def test_cloud_assessment_pdf_uses_executive_report_layout():
                     "resource_id": "bucket-1",
                     "compliance": ["CIS: 2.1"],
                     "status_extended": "Bucket permits public reads.",
-                    "risk": "Public reads can expose stored data.\u200b",
+                    "risk": "Public reads can expose **stored data**.\u200b",
                     "remediation": "Block public access.",
                 },
                 {
@@ -94,7 +94,9 @@ def test_cloud_assessment_pdf_uses_executive_report_layout():
     assert "Security Posture Score" in text
     assert "GRADE C" in text
     assert "Findings by Severity" in text
-    assert "Regulatory & Compliance Framework Alignment" not in text
+    assert "Regulatory & Compliance Framework Alignment" in text
+    assert "Framework" in text
+    assert "CIS" in text
     assert "Finding Status Guide" in text
     assert "Security Findings Explorer" in text
     assert "Manual Verification Required" in text
@@ -103,8 +105,9 @@ def test_cloud_assessment_pdf_uses_executive_report_layout():
     assert "STATUS DETAILS" in text
     assert "RISK IMPACT" in text
     assert "REMEDIATION GUIDANCE" in text
-    assert "compliance" not in text.lower()
-    assert "CIS" not in text
+    assert "Total controls" in text
+    assert "Alignment" in text
+    assert "**" not in text
     assert "\u200b" not in text
     assert "\u25a0" not in text
 

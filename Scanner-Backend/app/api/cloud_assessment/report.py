@@ -1,6 +1,7 @@
 """ReportLab PDF rendering for completed cloud assessments."""
 
 import html
+import re
 import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -51,6 +52,8 @@ COLOR_PASS = colors.HexColor("#16A34A")
 BG_PASS = colors.HexColor("#DCFCE7")
 COLOR_MUTED = colors.HexColor("#D97706")
 BG_MUTED = colors.HexColor("#FEF3C7")
+COLOR_RISK = colors.HexColor("#B91C1C")
+BG_RISK = colors.HexColor("#FEE2E2")
 
 SEVERITY_ORDER = ("critical", "high", "medium", "low", "informational")
 SEVERITY_COLORS = {
@@ -108,6 +111,28 @@ def _escape(value: Any) -> str:
     )
     text = text.encode("cp1252", errors="replace").decode("cp1252")
     return html.escape(text, quote=False)
+
+
+def _rich_text(value: Any) -> str:
+    text = str(value or "")
+    text = "".join(
+        " " if character in "\r\t" else character
+        for character in text
+        if unicodedata.category(character) not in {"Cc", "Cf"} or character in "\r\t\n"
+    )
+    text = text.encode("cp1252", errors="replace").decode("cp1252")
+    parts = re.split(r"(\*\*.*?\*\*|__.*?__|`[^`]*`)", text, flags=re.DOTALL)
+    formatted = []
+    for part in parts:
+        if part.startswith("**") and part.endswith("**"):
+            formatted.append(f"<b>{html.escape(part[2:-2], quote=False)}</b>")
+        elif part.startswith("__") and part.endswith("__"):
+            formatted.append(f"<b>{html.escape(part[2:-2], quote=False)}</b>")
+        elif part.startswith("`") and part.endswith("`"):
+            formatted.append(html.escape(part[1:-1], quote=False))
+        else:
+            formatted.append(html.escape(part.replace("*", ""), quote=False))
+    return "".join(formatted).replace("\n", "<br/>")
 
 
 def _wrap_safe(value: Any) -> str:
@@ -196,6 +221,46 @@ def _resource(finding: dict[str, Any]) -> str:
         or finding.get("resource_type")
         or "Not explicitly identified by scanner"
     )
+
+
+def _framework_alignment(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    control_statuses: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for finding in findings:
+        references = finding.get("compliance")
+        if not isinstance(references, list):
+            continue
+        for raw_reference in references:
+            for reference in str(raw_reference or "").split(" | "):
+                framework, separator, controls = reference.partition(":")
+                if not separator or not framework.strip():
+                    continue
+                for control in controls.split(","):
+                    control = control.strip()
+                    if control:
+                        control_statuses[(framework.strip(), control)].add(_status(finding))
+
+    frameworks: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"total": 0, "passed": 0, "failed": 0, "not_assessed": 0}
+    )
+    for (framework, _control), statuses in control_statuses.items():
+        counts = frameworks[framework]
+        counts["total"] += 1
+        if "FAIL" in statuses:
+            counts["failed"] += 1
+        elif statuses == {"PASS"}:
+            counts["passed"] += 1
+        else:
+            counts["not_assessed"] += 1
+
+    result = []
+    for framework, counts in sorted(frameworks.items()):
+        assessed = counts["passed"] + counts["failed"]
+        result.append({
+            "framework": framework,
+            **counts,
+            "alignment": round(counts["passed"] / assessed * 100, 1) if assessed else None,
+        })
+    return result
 
 
 @lru_cache(maxsize=1)
@@ -323,6 +388,7 @@ def generate_cloud_assessment_pdf(scan: dict[str, Any]) -> bytes:
 
     passed_findings = [finding for finding in findings if _status(finding) == "PASS"]
     manual_findings = [finding for finding in findings if _status(finding) == "MANUAL"]
+    framework_rows = _framework_alignment(findings)
     services: dict[str, int] = defaultdict(int)
     for finding in report_findings:
         if _status(finding) == "FAIL":
@@ -569,8 +635,59 @@ def generate_cloud_assessment_pdf(scan: dict[str, Any]) -> bytes:
     for index, severity in enumerate(("critical", "high", "medium", "low")):
         severity_styles.append(("BACKGROUND", (index, 0), (index, 0), SEVERITY_COLORS[severity][1]))
     severity_table.setStyle(TableStyle(severity_styles))
+    content.extend([severity_table])
+    content.append(Paragraph("Regulatory &amp; Compliance Framework Alignment", style["h1"]))
+    content.append(Paragraph(
+        "Control alignment is calculated from framework mappings supplied with the assessment findings. "
+        "Passed and failed controls are assessed; other statuses are shown as not assessed.",
+        style["body"],
+    ))
+    if framework_rows:
+        framework_table_data = [[
+            Paragraph("<b>Framework</b>", style["header"]),
+            Paragraph("<b>Total controls</b>", style["header"]),
+            Paragraph("<b>Passed</b>", style["header"]),
+            Paragraph("<b>Failed</b>", style["header"]),
+            Paragraph("<b>Not assessed</b>", style["header"]),
+            Paragraph("<b>Alignment</b>", style["header"]),
+        ]]
+        framework_table_data.extend([
+            [
+                Paragraph(_escape(row["framework"]), style["small"]),
+                Paragraph(str(row["total"]), style["small"]),
+                Paragraph(str(row["passed"]), style["small"]),
+                Paragraph(str(row["failed"]), style["small"]),
+                Paragraph(str(row["not_assessed"]), style["small"]),
+                Paragraph(
+                    f'{row["alignment"]:.1f}%' if row["alignment"] is not None else "N/A",
+                    style["small"],
+                ),
+            ]
+            for row in framework_rows
+        ])
+        framework_table = Table(
+            framework_table_data,
+            colWidths=[126, 83, 62, 62, 103, 83],
+            repeatRows=1,
+        )
+        framework_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), BG_LIGHT),
+            ("BOX", (0, 0), (-1, -1), 0.8, BORDER_COLOR),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        content.append(framework_table)
+    else:
+        content.append(Paragraph(
+            "No framework mappings were provided by the scanner for this assessment.",
+            style["body"],
+        ))
     content.extend([
-        severity_table,
         PageBreak(),
         Paragraph("Finding Status Guide", style["h1"]),
     ])
@@ -754,6 +871,7 @@ def generate_cloud_assessment_pdf(scan: dict[str, Any]) -> bytes:
             Paragraph("<b>AFFECTED RESOURCE / SCOPE</b>", style["label"]),
             Paragraph(f"<font face='Courier' size=7.5>{_wrap_safe(', '.join(resource_names))}</font>", style["small"]),
         ]]
+        risk_row_index = None
         for field, heading, formatter in (
             ("status_extended", "STATUS DETAILS", lambda value: value),
             ("risk", "RISK IMPACT", lambda value: value),
@@ -763,18 +881,39 @@ def generate_cloud_assessment_pdf(scan: dict[str, Any]) -> bytes:
             value = finding.get(field)
             if not value:
                 continue
+            if field == "risk":
+                risk_row_index = len(body_rows)
             body_rows.append([
-                Paragraph(f"<b>{heading}</b>", style["label"]),
-                Paragraph(_wrap_safe(formatter(value)), style["small"]),
+                Paragraph(
+                    f"<font color='{COLOR_RISK.hexval()}'><b>{heading}</b></font>"
+                    if field == "risk"
+                    else f"<b>{heading}</b>",
+                    style["label"],
+                ),
+                Paragraph(
+                    _rich_text(formatter(value)) if field in {"risk", "remediation", "status_extended"}
+                    else _wrap_safe(formatter(value)),
+                    ParagraphStyle(
+                        f"FindingRisk{index}",
+                        parent=style["small"],
+                        textColor=COLOR_RISK if field == "risk" else TEXT_MAIN,
+                    ),
+                ),
             ])
         body_table = Table(body_rows, colWidths=[150, 369])
-        body_table.setStyle(TableStyle([
+        body_table_styles = [
             ("BACKGROUND", (0, 0), (-1, -1), colors.white),
             ("LINEBELOW", (0, 0), (-1, -2), 0.35, BORDER_COLOR),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
             ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ]))
+        ]
+        if risk_row_index is not None:
+            body_table_styles.extend([
+                ("BACKGROUND", (0, risk_row_index), (-1, risk_row_index), BG_RISK),
+                ("LINEBEFORE", (1, risk_row_index), (1, risk_row_index), 2, COLOR_RISK),
+            ])
+        body_table.setStyle(TableStyle(body_table_styles))
         finding_content = Table([[header], [body_table]], colWidths=[519])
         finding_content.setStyle(TableStyle([
             ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),

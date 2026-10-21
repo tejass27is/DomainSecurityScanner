@@ -73,7 +73,7 @@ from app.core.middleware import (
 from app.core.websocket_manager import ws_manager
 from app.db.base import get_db
 from app.db.models import CloudSecurityAssessment, Organization, User, VaptImport, VaptRescanSchedule
-from app.utils.email import send_vapt_rescan_schedule_email
+from app.utils.email import send_vapt_rescan_schedule_email 
 from pydantic import BaseModel
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
