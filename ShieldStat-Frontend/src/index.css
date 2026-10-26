@@ -30,6 +30,10 @@ body {
   color-scheme: dark;
 }
 
+.password-toggle-input::-ms-reveal {
+  display: none;
+}
+
 /* ─── DARK MODE: Global html / body / root ─── */
 html.dark,
 html.dark body,

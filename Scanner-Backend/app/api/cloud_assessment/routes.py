@@ -32,9 +32,18 @@ def get_cloud_assessment_access_status(
     }
 
 
-def _serialize_scan(scan: CloudSecurityAssessment, include_findings: bool = False) -> dict[str, Any]:
+def _serialize_scan(
+    scan: CloudSecurityAssessment,
+    include_findings: bool = False,
+    client_name: str | None = None,
+    include_output_tail: bool = True,
+) -> dict[str, Any]:
     summary = dict(scan.summary) if isinstance(scan.summary, dict) else scan.summary
     if isinstance(summary, dict):
+        if not include_output_tail and isinstance(summary.get("progress"), dict):
+            progress = dict(summary["progress"])
+            progress.pop("output_tail", None)
+            summary["progress"] = progress
         legacy_metadata = summary.pop("metadata", {})
         legacy_identity = (
             legacy_metadata.get("caller_identity", {})
@@ -55,6 +64,8 @@ def _serialize_scan(scan: CloudSecurityAssessment, include_findings: bool = Fals
         "created_at": scan.created_at.isoformat() if scan.created_at else None,
         "completed_at": scan.completed_at.isoformat() if scan.completed_at else None,
     }
+    if client_name:
+        result["client_name"] = client_name
     if include_findings:
         result["findings"] = [
             {key: value for key, value in finding.items() if key != "prowler_version"}
@@ -128,7 +139,10 @@ def list_cloud_assessments(
         .limit(50)
         .all()
     )
-    return [_serialize_scan(scan) for scan in scans]
+    return [
+        _serialize_scan(scan, include_output_tail=scan.status == "running")
+        for scan in scans
+    ]
 
 
 @router.get("/scans/{scan_id}")
@@ -164,7 +178,9 @@ def download_cloud_assessment_report(
             detail="The cloud assessment report is available after the scan completes.",
         )
 
-    report = generate_cloud_assessment_pdf(_serialize_scan(scan, include_findings=True))
+    report = generate_cloud_assessment_pdf(
+        _serialize_scan(scan, include_findings=True, client_name=current_user.email)
+    )
     provider = scan.provider if scan.provider in {"aws", "azure", "gcp"} else "cloud"
     return Response(
         content=report,

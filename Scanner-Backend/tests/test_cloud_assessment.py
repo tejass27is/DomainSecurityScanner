@@ -17,8 +17,12 @@ from app.api.cloud_assessment import service as cloud_assessment_service
 from app.api.cloud_assessment import routes as cloud_assessment_routes
 from app.core.middleware import require_cloud_assessment_access
 from app.api.cloud_assessment.service import (
+    _format_live_prowler_findings,
     _normalize_csv_findings,
+    _format_prowler_progress,
     _provider_environment,
+    _read_prowler_log_tail,
+    _redact_prowler_log,
     _scan_command,
     _summarize_findings,
     request_credentials,
@@ -34,6 +38,7 @@ def test_cloud_assessment_pdf_uses_executive_report_layout():
             "status": "completed",
             "created_at": "2026-10-15T10:00:00+00:00",
             "completed_at": "2026-10-15T10:05:00+00:00",
+            "client_name": "client@example.com",
             "summary": {
                 "account_id": "123456789012",
                 "total_checks": 3,
@@ -94,9 +99,15 @@ def test_cloud_assessment_pdf_uses_executive_report_layout():
     assert "Security Posture Score" in text
     assert "GRADE C" in text
     assert "Findings by Severity" in text
-    assert "Regulatory & Compliance Framework Alignment" in text
+    assert "client@example.com" in text
+    assert "CLIENT CONTACT" in text
+    assert "Compliance Framework Coverage" in text
+    assert "This automated snapshot is not a compliance certification." in text
     assert "Framework" in text
     assert "CIS" in text
+    assert "Mapped controls" in text
+    assert "Security gaps" in text
+    assert "Pass rate" in text
     assert "Finding Status Guide" in text
     assert "Security Findings Explorer" in text
     assert "Manual Verification Required" in text
@@ -105,8 +116,6 @@ def test_cloud_assessment_pdf_uses_executive_report_layout():
     assert "STATUS DETAILS" in text
     assert "RISK IMPACT" in text
     assert "REMEDIATION GUIDANCE" in text
-    assert "Total controls" in text
-    assert "Alignment" in text
     assert "**" not in text
     assert "\u200b" not in text
     assert "\u25a0" not in text
@@ -158,6 +167,7 @@ def test_scan_serialization_hides_legacy_version_and_caller_metadata():
         status="completed",
         summary={
             "total_checks": 1,
+            "progress": {"output_tail": "recent Prowler output"},
             "metadata": {
                 "prowler_version": "5.45.0",
                 "caller_identity": {"Account": "123456789012"},
@@ -170,11 +180,37 @@ def test_scan_serialization_hides_legacy_version_and_caller_metadata():
     )
 
     serialized = cloud_assessment_routes._serialize_scan(scan, include_findings=True)
+    list_serialized = cloud_assessment_routes._serialize_scan(
+        scan, include_output_tail=False
+    )
 
     assert "metadata" not in serialized["summary"]
     assert serialized["summary"]["account_id"] == "123456789012"
+    assert serialized["summary"]["progress"]["output_tail"] == "recent Prowler output"
+    assert "output_tail" not in list_serialized["summary"]["progress"]
+    assert "output_tail" in scan.summary["progress"]
     assert "prowler_version" not in serialized["findings"][0]
     assert "metadata" in scan.summary
+
+
+def test_scan_serialization_includes_client_contact_for_report():
+    scan = SimpleNamespace(
+        scan_id="scan-1",
+        provider="aws",
+        scope={},
+        status="completed",
+        summary={},
+        error=None,
+        created_at=None,
+        completed_at=None,
+        findings=[],
+    )
+
+    serialized = cloud_assessment_routes._serialize_scan(
+        scan, include_findings=True, client_name="client@example.com"
+    )
+
+    assert serialized["client_name"] == "client@example.com"
 
 
 def test_cloud_assessment_request_validates_aws_credentials():
@@ -312,6 +348,7 @@ def test_prowler_command_uses_selected_cloud_scope_and_csv_output(tmp_path):
     )
 
     assert command[:2] == [executable, "azure"]
+    assert command[command.index("--log-level") + 1] == "DEBUG"
     assert command[command.index("--subscription-ids") + 1 :] == [
         "subscription-one",
         "subscription-two",
@@ -600,6 +637,65 @@ def test_cloud_assessment_summary_accounts_for_manual_muted_not_applicable_and_u
     assert summary["other_checks"] == 1
 
 
+def test_prowler_log_tail_is_bounded_and_redacts_credentials(tmp_path):
+    log_path = tmp_path / "prowler.log"
+    log_path.write_bytes(
+        (
+            "old output\n"
+            + ("x" * cloud_assessment_service.PROWLER_LOG_TAIL_BYTES)
+            + "\r\n\x1b[32mProwler check: example-access-key\x1b[0m\r\n"
+        ).encode("utf-8")
+    )
+
+    output = _read_prowler_log_tail(log_path)
+    redacted = _redact_prowler_log(output, {"access_key_id": "example-access-key"})
+
+    assert len(output) <= cloud_assessment_service.PROWLER_LOG_TAIL_MAX_CHARS
+    assert "old output" not in output
+    assert "Prowler check:" in output
+    assert "\x1b[" not in output
+    assert "example-access-key" not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_prowler_log_tail_keeps_output_when_log_has_no_newline(tmp_path):
+    log_path = tmp_path / "prowler.log"
+    log_path.write_bytes(
+        b"Prowler rendered terminal output " * 3000
+    )
+
+    output = _read_prowler_log_tail(log_path)
+
+    assert output
+    assert "Prowler rendered terminal output" in output
+    assert len(output) <= cloud_assessment_service.PROWLER_LOG_TAIL_MAX_CHARS
+
+
+def test_live_prowler_findings_are_formatted_for_terminal(tmp_path):
+    (tmp_path / "assessment.csv").write_text(
+        "CHECK_ID;CHECK_TITLE;STATUS;STATUS_EXTENDED;SEVERITY;SERVICE_NAME;"
+        "RESOURCE_UID;RESOURCE_NAME;REGION\n"
+        "s3_bucket_public;Bucket is not public;FAIL;Public access is enabled;"
+        "high;s3;bucket-123;customer-data;us-east-1\n",
+        encoding="utf-8",
+    )
+
+    findings = cloud_assessment_service._read_live_prowler_findings(tmp_path)
+    output = _format_live_prowler_findings(findings)
+
+    assert "Live findings written: 1" in output
+    assert "[FAIL][HIGH] s3 s3_bucket_public Bucket is not public" in output
+    assert "customer-data | us-east-1" in output
+    assert "Public access is enabled" in output
+
+
+def test_prowler_progress_message_shows_elapsed_output_and_finding_count():
+    assert _format_prowler_progress(187, 2508, 12) == (
+        "Prowler scan active | elapsed 00:03:07 | "
+        "2,508 output bytes | 12 findings discovered."
+    )
+
+
 def test_nonzero_prowler_exit_with_csv_report_completes_assessment(monkeypatch):
     scan = SimpleNamespace(
         status="running",
@@ -625,30 +721,63 @@ def test_nonzero_prowler_exit_with_csv_report_completes_assessment(monkeypatch):
         def close(self):
             pass
 
-    def run_prowler(command, **_kwargs):
+    def run_prowler(command, _process_env):
         output_directory = command[command.index("--output-directory") + 1]
+        log_path = cloud_assessment_service.Path(output_directory) / "prowler.log"
         (cloud_assessment_service.Path(output_directory) / "assessment.csv").write_text(
             "CHECK_ID;CHECK_TITLE;STATUS;STATUS_EXTENDED;SEVERITY\n"
             "iam_example;Enable MFA;FAIL;MFA disabled;high\n",
             encoding="utf-8",
         )
-        return SimpleNamespace(returncode=3, poll=lambda: 3, wait=lambda **_wait_kwargs: 3)
+        poll_count = 0
+
+        def poll():
+            nonlocal poll_count
+            if poll_count:
+                return 3
+            poll_count += 1
+            deadline = cloud_assessment_service.time.monotonic() + 1
+            while not log_path.exists() or log_path.stat().st_size == 0:
+                if cloud_assessment_service.time.monotonic() >= deadline:
+                    return 3
+                cloud_assessment_service.threading.Event().wait(0.001)
+            return None
+
+        process = SimpleNamespace(
+            returncode=3,
+            poll=poll,
+            wait=lambda **_wait_kwargs: 3,
+        )
+        output_stream = BytesIO(
+            b"Prowler check started\nFound example-access-key in output\n"
+        )
+        return process, output_stream
 
     monkeypatch.setattr(cloud_assessment_service, "SessionLocal", FakeSession)
     monkeypatch.setattr(cloud_assessment_service.shutil, "which", lambda _executable: "prowler")
-    monkeypatch.setattr(cloud_assessment_service.subprocess, "Popen", run_prowler)
+    monkeypatch.setattr(cloud_assessment_service, "_start_prowler_process", run_prowler)
+    monkeypatch.setattr(cloud_assessment_service.time, "sleep", lambda _seconds: None)
     cloud_assessment_service.run_cloud_assessment(
         "scan-nonzero-with-report",
         "user-1",
         "aws",
         {},
-        {"access_key_id": "access", "secret_access_key": "secret"},
+        {"access_key_id": "example-access-key", "secret_access_key": "secret"},
     )
 
     assert scan.status == "completed"
     assert scan.summary["failed_checks"] == 1
     assert scan.summary["progress"]["stage"] == "collecting_results"
     assert scan.summary["progress"]["events"]
+    assert any(
+        "Prowler scan active" in event["message"]
+        for event in scan.summary["progress"]["events"]
+    )
+    assert scan.summary["progress"]["started_at"]
+    assert "Prowler check started" in scan.summary["progress"]["output_tail"]
+    assert "Live findings written: 1" in scan.summary["progress"]["output_tail"]
+    assert "MFA disabled" in scan.summary["progress"]["output_tail"]
+    assert "example-access-key" not in scan.summary["progress"]["output_tail"]
     assert scan.summary["account_id"] == "123456789012"
     assert "metadata" not in scan.summary
     assert scan.findings[0]["check_id"] == "iam_example"
@@ -683,9 +812,16 @@ def test_nonzero_prowler_exit_without_report_fails_assessment(monkeypatch):
     monkeypatch.setattr(cloud_assessment_service, "SessionLocal", FakeSession)
     monkeypatch.setattr(cloud_assessment_service.shutil, "which", lambda _executable: "prowler")
     monkeypatch.setattr(
-        cloud_assessment_service.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=3, poll=lambda: 3, wait=lambda **_wait_kwargs: 3),
+        cloud_assessment_service,
+        "_start_prowler_process",
+        lambda *_args: (
+            SimpleNamespace(
+                returncode=3,
+                poll=lambda: 3,
+                wait=lambda **_wait_kwargs: 3,
+            ),
+            BytesIO(),
+        ),
     )
 
     cloud_assessment_service.run_cloud_assessment(

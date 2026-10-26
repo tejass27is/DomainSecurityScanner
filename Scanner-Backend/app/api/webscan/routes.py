@@ -32,8 +32,18 @@ from reportlab.platypus import Image, Paragraph, Preformatted, SimpleDocTemplate
 from sqlalchemy.orm import Session
 
 from app.api.scanner.service import _normalize_domain_for_match
-from app.api.webscan.acunetix import AcunetixClient, AcunetixError
-from app.api.webscan.schemas import WebScanCreateRequest, WebScanDetail, WebScanListItem
+from app.api.webscan.acunetix import (
+    CONFIGURABLE_AUTH_METHODS,
+    AcunetixClient,
+    AcunetixError,
+    map_criticality,
+)
+from app.api.webscan.schemas import (
+    WebScanCreateRequest,
+    WebScanCustomHeader,
+    WebScanDetail,
+    WebScanListItem,
+)
 from app.core.middleware import require_webscan_access
 from app.core.scan_quotas import reserve_scan_quota
 from app.core.redis_queue import RedisClient
@@ -97,6 +107,80 @@ def normalize_target_url(raw: str) -> tuple[str, str]:
     path = (parts.path or "").rstrip("/")
     normalized = urlunsplit((scheme, netloc, path, parts.query, ""))
     return normalized, host
+
+
+def _validate_authentication_settings(
+    required: bool,
+    method: str | None,
+    username: str | None,
+    password: str | None,
+    token: str | None,
+    login_url: str | None = None,
+    headers: list[WebScanCustomHeader] | None = None,
+    cookie: str | None = None,
+) -> None:
+    if not required:
+        return
+    if method not in CONFIGURABLE_AUTH_METHODS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Choose Basic, Form login, Custom headers, or Session cookie authentication."
+            ),
+        )
+    if method in {"basic", "form_login"} and (not username or not password):
+        raise HTTPException(
+            status_code=422,
+            detail="This authentication method requires both a username and password.",
+        )
+    if method == "form_login" and not login_url:
+        raise HTTPException(
+            status_code=422,
+            detail="Form login requires a login URL.",
+        )
+    if method == "api_token" and not (token or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="API-token authentication requires a token value.",
+        )
+    if method == "session_cookie" and not (cookie or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Session-cookie authentication requires a cookie string.",
+        )
+    if method == "custom_headers":
+        if not headers:
+            raise HTTPException(status_code=422, detail="Add at least one custom header.")
+        if len(headers) > 20:
+            raise HTTPException(
+                status_code=422,
+                detail="Acunetix accepts at most 20 custom headers.",
+            )
+        for header in headers:
+            if (
+                not header.name.strip()
+                or ":" in header.name
+                or "\r" in header.name
+                or "\n" in header.name
+                or not header.value
+                or "\r" in header.value
+                or "\n" in header.value
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Custom header names and values must be valid single-line HTTP header entries.",
+                )
+
+
+def _normalize_excluded_paths(paths: list[str] | None) -> list[str]:
+    normalized = list(dict.fromkeys(path.strip() for path in paths or [] if path.strip()))
+    if len(normalized) > 512:
+        raise HTTPException(status_code=422, detail="Acunetix accepts at most 512 excluded paths.")
+    if any(len(path) > 512 for path in normalized):
+        raise HTTPException(status_code=422, detail="Excluded paths must be at most 512 characters.")
+    if any("\r" in path or "\n" in path for path in normalized):
+        raise HTTPException(status_code=422, detail="Each excluded path must be on one line.")
+    return normalized
 
 
 def _host_belongs_to_org(host: str, raw_org_domains) -> bool:
@@ -163,10 +247,7 @@ def _to_list_item(record: WebScan) -> dict:
         "auth_method": record.auth_method,
         "login_url": record.login_url,
         "auth_username": record.auth_username,
-        "auth_profile_id": record.auth_profile_id,
-        "mfa_instructions": record.mfa_instructions,
-        "auth_details": _brand_neutral_text(record.auth_details) if record.auth_details else record.auth_details,
-        "login_sequence": record.login_sequence,
+        "excluded_paths": record.excluded_paths or [],
         "acunetix_scan_id": record.acunetix_scan_id,
         "error_message": _brand_neutral_text(record.error_message) if record.error_message else record.error_message,
         "started_at": record.started_at,
@@ -490,7 +571,8 @@ def _finalize_static_scan(db: Session, record: WebScan, result: dict) -> None:
     record.unique_urls = len({f.get("affected_url") for f in findings if f.get("affected_url")})
     record.risk_score = int(summary.get("risk_score") or 0)
     record.severity = (
-        "high" if any(f.get("severity") in {"critical", "high"} for f in findings)
+        "critical" if any(f.get("severity") == "critical" for f in findings)
+        else "high" if any(f.get("severity") == "high" for f in findings)
         else "medium" if any(f.get("severity") == "medium" for f in findings)
         else "low" if findings
         else "none"
@@ -1197,24 +1279,35 @@ async def create_web_scan(
                 detail="A repository token is required to scan a private repository.",
             )
 
-    reserve_scan_quota(db, user.user_id, "webscan")
     requested_profile = (request.scan_profile or request.profile_id or "").strip() if scan_mode == "dynamic" else ""
     requested_criticality = request.criticality if scan_mode == "dynamic" else "medium"
     requested_auth = bool(request.authentication_required) if scan_mode == "dynamic" else False
     requested_auth_method = (request.auth_method or "").strip() if scan_mode == "dynamic" else None
     requested_login_url = (request.login_url or "").strip() if scan_mode == "dynamic" else None
     requested_auth_username = (request.auth_username or "").strip() if scan_mode == "dynamic" else None
-    requested_auth_password = (request.auth_password or "").strip() if scan_mode == "dynamic" else None
+    requested_auth_password = (request.auth_password or "") if scan_mode == "dynamic" else None
     requested_auth_header_name = (request.auth_header_name or "").strip() if scan_mode == "dynamic" else None
-    requested_auth_token = (request.auth_token or "").strip() if scan_mode == "dynamic" else None
-    requested_cookie_name = (request.session_cookie_name or "").strip() if scan_mode == "dynamic" else None
-    requested_cookie_value = (request.session_cookie_value or "").strip() if scan_mode == "dynamic" else None
-    requested_auth_profile_id = (request.auth_profile_id or "").strip() if scan_mode == "dynamic" else None
-    requested_mfa_instructions = (request.mfa_instructions or "").strip() if scan_mode == "dynamic" else None
-    requested_auth_details = (request.auth_details or "").strip() if scan_mode == "dynamic" else None
-    requested_login_sequence = (request.login_sequence or "").strip() if scan_mode == "dynamic" else None
+    requested_auth_token = (request.auth_token or "") if scan_mode == "dynamic" else None
+    requested_auth_headers = request.auth_headers if scan_mode == "dynamic" else []
+    requested_session_cookie = (request.session_cookie or "") if scan_mode == "dynamic" else ""
+    requested_excluded_paths = _normalize_excluded_paths(
+        request.excluded_paths if scan_mode == "dynamic" else []
+    )
     # Private-repo token: used for the clone, never persisted or logged.
     requested_repo_token = (request.repo_token or "").strip() if scan_mode == "static" else None
+
+    _validate_authentication_settings(
+        requested_auth,
+        requested_auth_method,
+        requested_auth_username,
+        requested_auth_password,
+        requested_auth_token,
+        requested_login_url,
+        requested_auth_headers,
+        requested_session_cookie,
+    )
+
+    reserve_scan_quota(db, user.user_id, "webscan")
 
     record = WebScan(
         org_id=user.org_id,
@@ -1233,17 +1326,17 @@ async def create_web_scan(
         auth_method=requested_auth_method,
         login_url=requested_login_url,
         auth_username=requested_auth_username,
-        # Secret values are intentionally not persisted. They must be sent to
-        # a verified Acunetix auth-configuration endpoint before use.
+        excluded_paths=requested_excluded_paths,
+        # Authentication secrets are passed directly to Acunetix and not stored.
         auth_password=None,
         auth_header_name=requested_auth_header_name,
         auth_token=None,
-        session_cookie_name=requested_cookie_name,
+        session_cookie_name=None,
         session_cookie_value=None,
-        auth_profile_id=requested_auth_profile_id,
-        mfa_instructions=requested_mfa_instructions,
-        auth_details=requested_auth_details,
-        login_sequence=requested_login_sequence,
+        auth_profile_id=None,
+        mfa_instructions=None,
+        auth_details=None,
+        login_sequence=None,
     )
     db.add(record)
     db.commit()
@@ -1269,13 +1362,7 @@ async def create_web_scan(
     try:
         with AcunetixClient() as client:
             profile_id = request.profile_id or client.resolve_profile_id(requested_profile or None)
-            criticality_score = {
-                "critical": 10,
-                "high": 8,
-                "normal": 5,
-                "medium": 5,
-                "low": 2,
-            }.get(requested_criticality or "normal", 5)
+            criticality_score = map_criticality(requested_criticality)
             description = f"ShieldStat web scan requested by {user.email}"
             acunetix_target_id = client.create_target(
                 target_url,
@@ -1283,32 +1370,25 @@ async def create_web_scan(
                 criticality=criticality_score,
             )
 
-            # Configure authentication on the target *before* the scan starts,
-            # so the crawl is authenticated. Unverified methods (login sequence,
-            # SSO, MFA, Auth Profile ID) return a note instead of being sent.
-            auth_note = None
-            if requested_auth:
-                try:
-                    auth_note = client.configure_authentication(
-                        acunetix_target_id,
-                        method=requested_auth_method or "",
-                        username=requested_auth_username or "",
-                        password=requested_auth_password or "",
-                        token_header=requested_auth_header_name or "Authorization",
-                        token_value=requested_auth_token or "",
-                    )
-                except AcunetixError:
-                    # A mis-shaped/unsupported config must not lose the scan; the
-                    # operator is told via auth_details and can set it manually.
-                    logger.warning(
-                        "Could not configure Acunetix authentication for %s",
-                        target_url,
-                        exc_info=True,
-                    )
-                    auth_note = (
-                        "ShieldStat could not configure this authentication method "
-                        "automatically; configure it manually in the scanning service."
-                    )
+            client.configure_authentication(
+                acunetix_target_id,
+                method=requested_auth_method if requested_auth else None,
+                username=requested_auth_username or "",
+                password=requested_auth_password or "",
+                login_url=requested_login_url or "",
+                token_header=requested_auth_header_name or "Authorization",
+                token_value=requested_auth_token or "",
+                headers=[
+                    {"name": header.name, "value": header.value}
+                    for header in requested_auth_headers
+                ],
+                cookie=requested_session_cookie,
+                target_url=target_url,
+            )
+            client.configure_excluded_paths(
+                acunetix_target_id,
+                requested_excluded_paths,
+            )
 
             acunetix_scan_id = client.start_scan(acunetix_target_id, profile_id)
     except AcunetixError as exc:
@@ -1324,11 +1404,6 @@ async def create_web_scan(
             status_code=502,
             detail=f"Dynamic scan request was rejected: {_brand_neutral_text(exc)}",
         ) from exc
-
-    if auth_note:
-        record.auth_details = " ".join(
-            part for part in [record.auth_details, auth_note] if part
-        )
 
     record.acunetix_target_id = acunetix_target_id
     record.acunetix_scan_id = acunetix_scan_id

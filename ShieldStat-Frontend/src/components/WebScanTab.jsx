@@ -298,18 +298,13 @@ function WebScanTab() {
   const [scanProfile, setScanProfile] = useState("Full Scan");
   const [criticality, setCriticality] = useState("medium");
   const [authenticationRequired, setAuthenticationRequired] = useState(false);
-  const [authMethod, setAuthMethod] = useState("username_password");
+  const [authMethod, setAuthMethod] = useState("form_login");
   const [loginUrl, setLoginUrl] = useState("");
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
-  const [authHeaderName, setAuthHeaderName] = useState("Authorization");
-  const [authToken, setAuthToken] = useState("");
-  const [sessionCookieName, setSessionCookieName] = useState("");
-  const [sessionCookieValue, setSessionCookieValue] = useState("");
-  const [authProfileId, setAuthProfileId] = useState("");
-  const [mfaInstructions, setMfaInstructions] = useState("");
-  const [authDetails, setAuthDetails] = useState("");
-  const [loginSequence, setLoginSequence] = useState("");
+  const [authHeaders, setAuthHeaders] = useState([{ name: "", value: "" }]);
+  const [sessionCookie, setSessionCookie] = useState("");
+  const [excludedPaths, setExcludedPaths] = useState("");
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [downloadingReport, setDownloadingReport] = useState(false);
@@ -452,31 +447,21 @@ function WebScanTab() {
             loginUrl,
             authUsername,
             authPassword,
-            authHeaderName,
-            authToken,
-            sessionCookieName,
-            sessionCookieValue,
-            authProfileId,
-            mfaInstructions,
-            authDetails,
-            loginSequence,
+            authHeaders,
+            sessionCookie,
+            excludedPaths: excludedPaths.split(/\r?\n/).map((path) => path.trim()).filter(Boolean),
           });
       setActiveScan(data);
       setActiveId(data?.scan_id || null);
       setUrlInput("");
       setArchiveFile(null);
       setRepoToken("");
-      setAuthDetails("");
-      setLoginSequence("");
       setLoginUrl("");
       setAuthUsername("");
       setAuthPassword("");
-      setAuthHeaderName("Authorization");
-      setAuthToken("");
-      setSessionCookieName("");
-      setSessionCookieValue("");
-      setAuthProfileId("");
-      setMfaInstructions("");
+      setAuthHeaders([{ name: "", value: "" }]);
+      setSessionCookie("");
+      setExcludedPaths("");
       loadList();
     } catch (err) {
       setFormError(err?.message || "Could not start the scan.");
@@ -846,18 +831,19 @@ function WebScanTab() {
                       onChange={(event) => setAuthMethod(event.target.value)}
                       className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
                     >
-                      <option value="username_password">Username and password</option>
-                      <option value="api_token">Bearer/API token</option>
-                      <option value="basic">Basic authentication</option>
-                      <option value="sso">SSO</option>
-                      <option value="mfa">MFA</option>
-                      <option value="other">Other</option>
+                      <option value="form_login">Form login (automatic detection)</option>
+                      <option value="basic">HTTP Basic authentication</option>
+                      <option value="custom_headers">Custom headers</option>
+                      <option value="session_cookie">Session cookie</option>
                     </select>
+                    <p className="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">
+                      Acunetix automatic form login detects common username and password fields. The documented target API does not expose custom field selectors or a logged-in indicator.
+                    </p>
                   </div>
 
-                  {(authMethod === "username_password" || authMethod === "basic") && (
+                  {(authMethod === "form_login" || authMethod === "basic") && (
                     <>
-                      {authMethod === "username_password" && (
+                      {authMethod === "form_login" && (
                         <div>
                           <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Login URL</label>
                           <input type="url" value={loginUrl} onChange={(event) => setLoginUrl(event.target.value)} placeholder="https://app.example.com/login" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
@@ -871,63 +857,53 @@ function WebScanTab() {
                         <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Password</label>
                         <input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Test account password" autoComplete="new-password" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
                       </div>
-                      {authMethod === "username_password" && (
-                        <div className="md:col-span-2">
-                          <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Login sequence</label>
-                          <textarea value={loginSequence} onChange={(event) => setLoginSequence(event.target.value)} rows={3} placeholder="Example: Open /login, enter username and password, click Sign in" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                    </>
+                  )}
+
+                  {authMethod === "custom_headers" && (
+                    <div className="md:col-span-2 space-y-2">
+                      {authHeaders.map((header, index) => (
+                        <div key={`auth-header-${index}`} className="flex gap-2">
+                          <input
+                            type="text"
+                            value={header.name}
+                            onChange={(event) => setAuthHeaders((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))}
+                            placeholder="Header name"
+                            aria-label={`Header ${index + 1} name`}
+                            className="w-2/5 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                          />
+                          <input
+                            type="password"
+                            value={header.value}
+                            onChange={(event) => setAuthHeaders((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))}
+                            placeholder="Header value"
+                            aria-label={`Header ${index + 1} value`}
+                            autoComplete="new-password"
+                            className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                          />
+                          <button type="button" onClick={() => setAuthHeaders((current) => current.filter((_, itemIndex) => itemIndex !== index))} disabled={authHeaders.length === 1} className="rounded-xl border border-slate-200 px-3 text-sm text-slate-600 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300" aria-label={`Remove header ${index + 1}`}>?</button>
                         </div>
-                      )}
-                    </>
-                  )}
-
-                  {authMethod === "api_token" && (
-                    <>
-                      <div>
-                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Header name</label>
-                        <input type="text" value={authHeaderName} onChange={(event) => setAuthHeaderName(event.target.value)} placeholder="Authorization" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Token value</label>
-                        <input type="password" value={authToken} onChange={(event) => setAuthToken(event.target.value)} placeholder="Bearer token" autoComplete="new-password" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
-                      </div>
-                    </>
-                  )}
-
-                  {(authMethod === "sso" || authMethod === "mfa") && (
-                    <>
-                      <div>
-                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Session cookie name</label>
-                        <input type="text" value={sessionCookieName} onChange={(event) => setSessionCookieName(event.target.value)} placeholder="PHPSESSID" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Session cookie value</label>
-                        <input type="password" value={sessionCookieValue} onChange={(event) => setSessionCookieValue(event.target.value)} placeholder="Pre-authenticated session value" autoComplete="new-password" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
-                      </div>
-                    </>
-                  )}
-
-                  {(authMethod === "sso" || authMethod === "mfa" || authMethod === "other") && (
-                    <div className="md:col-span-2">
-                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Authentication details</label>
-                      <textarea value={authDetails} onChange={(event) => setAuthDetails(event.target.value)} rows={3} placeholder="Non-secret notes about the identity provider or authentication flow" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      ))}
+                      <button type="button" onClick={() => setAuthHeaders((current) => current.length < 20 ? [...current, { name: "", value: "" }] : current)} disabled={authHeaders.length >= 20} className="text-sm font-semibold text-purple-700 disabled:opacity-50 dark:text-purple-300">
+                        + Add header
+                      </button>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Acunetix allows up to 20 custom headers.</p>
                     </div>
                   )}
 
-                  {authMethod === "mfa" && (
+                  {authMethod === "session_cookie" && (
                     <div className="md:col-span-2">
-                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">MFA instructions</label>
-                      <textarea value={mfaInstructions} onChange={(event) => setMfaInstructions(event.target.value)} rows={2} placeholder="Notes for the operator configuring the scan session" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
-                    </div>
-                  )}
-
-                  {authMethod === "other" && (
-                    <div className="md:col-span-2">
-                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Authentication Profile ID</label>
-                      <input type="text" value={authProfileId} onChange={(event) => setAuthProfileId(event.target.value)} placeholder="Profile ID configured for the scanning service" autoComplete="off" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-800 dark:text-slate-100 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20" />
+                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Session cookie string</label>
+                      <input type="password" value={sessionCookie} onChange={(event) => setSessionCookie(event.target.value)} placeholder="session_id=value; other_cookie=value" autoComplete="new-password" className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
                     </div>
                   )}
                 </>
               )}
+
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Exclude URLs (one path or pattern per line)</label>
+                <textarea value={excludedPaths} onChange={(event) => setExcludedPaths(event.target.value)} rows={3} placeholder="/logout\n/delete-account" className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+              </div>
             </div>
           )}
         </form>

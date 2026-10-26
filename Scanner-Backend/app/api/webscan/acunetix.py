@@ -23,11 +23,30 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-#: Auth methods this client can configure on a target through Acunetix' API.
-#: Any other method (username/password login sequence, SSO, MFA, or an
-#: Acunetix Auth Profile ID) has no verified request shape yet, so it is left
-#: for an operator to configure manually in Acunetix.
-CONFIGURABLE_AUTH_METHODS = {"basic", "api_token"}
+#: Authentication options supported by the Acunetix target configuration API.
+CONFIGURABLE_AUTH_METHODS = {
+    "basic",
+    "form_login",
+    "api_token",
+    "custom_headers",
+    "session_cookie",
+}
+ACUNETIX_CRITICALITY = {
+    "critical": 30,
+    "high": 20,
+    "medium": 10,
+    "normal": 10,
+    "low": 0,
+}
+
+
+def map_criticality(criticality: str | None) -> int:
+    """Map UI labels to the Acunetix target criticality enum."""
+    normalized = (criticality or "normal").strip().lower()
+    try:
+        return ACUNETIX_CRITICALITY[normalized]
+    except KeyError as error:
+        raise ValueError(f"Unsupported target criticality: {criticality}") from error
 
 
 class AcunetixError(RuntimeError):
@@ -320,55 +339,122 @@ class AcunetixClient:
     def configure_authentication(
         self,
         target_id: str,
-        method: str,
+        method: str | None,
         username: str = "",
         password: str = "",
+        login_url: str = "",
         token_header: str = "Authorization",
         token_value: str = "",
-    ) -> str | None:
-        """Apply the credentials for ``method`` to an existing target.
-
-        Only the two shapes verified against the Acunetix API are sent:
-
-        * ``basic`` — ``{"authentication": {"enabled": true, "username": …,
-          "password": …}}``
-        * ``api_token`` — ``{"custom_headers": ["Header-Name: value"]}``
-
-        Both go to ``PATCH /targets/{target_id}/configuration`` and must be
-        applied *before* the scan starts so the crawl is authenticated.
-
-        Returns ``None`` on success, or a human-readable note when the method is
-        one of the unverified ones (login sequence, SSO, MFA, Auth Profile ID) —
-        in that case nothing is sent and the operator must configure it in
-        Acunetix by hand.
-        """
+        headers: list[dict[str, str]] | None = None,
+        cookie: str = "",
+        target_url: str = "",
+    ) -> None:
+        """Set the target authentication fields defined by Acunetix's API."""
         normalized = (method or "").strip().lower()
-
-        if normalized not in CONFIGURABLE_AUTH_METHODS:
-            note = (
-                f"Authentication method '{normalized or 'unspecified'}' requires "
-                "manual configuration in Acunetix; no target configuration was sent."
+        if normalized and normalized not in CONFIGURABLE_AUTH_METHODS:
+            raise AcunetixError(f"Unsupported Acunetix authentication method: {normalized}")
+        if normalized in {"basic", "form_login"} and (
+            not username.strip() or not password
+        ):
+            raise AcunetixError(
+                f"{normalized.replace('_', ' ').title()} requires a username and password."
             )
-            logger.warning("Target %s: %s", target_id, note)
-            return note
+        if normalized == "form_login" and not login_url.strip():
+            raise AcunetixError("Form login requires a login URL.")
+        if normalized == "api_token" and not token_value.strip():
+            raise AcunetixError("API-token authentication requires a token value.")
+        if normalized == "session_cookie" and (
+            not cookie.strip() or not target_url.strip()
+        ):
+            raise AcunetixError(
+                "Session-cookie authentication requires a cookie and target URL."
+            )
+        if normalized == "custom_headers":
+            if not headers or len(headers) > 20:
+                raise AcunetixError(
+                    "Custom-header authentication requires between 1 and 20 headers."
+                )
+            if any(
+                not header.get("name", "").strip()
+                or ":" in header["name"]
+                or "\r" in header["name"]
+                or "\n" in header["name"]
+                or not header.get("value")
+                or "\r" in header["value"]
+                or "\n" in header["value"]
+                for header in headers
+            ):
+                raise AcunetixError("Custom header names and values must be valid.")
 
+        body: dict = {
+            "authentication": {"enabled": False},
+            "login": {"kind": "none"},
+            "custom_headers": [],
+            "custom_cookies": [],
+        }
         if normalized == "basic":
-            body: dict = {
-                "authentication": {
-                    "enabled": True,
-                    "username": (username or "").strip(),
-                    "password": password or "",
-                }
+            body["authentication"] = {
+                "enabled": True,
+                "username": username.strip(),
+                "password": password,
             }
-        else:  # api_token
-            header_name = (token_header or "").strip() or "Authorization"
-            body = {"custom_headers": [f"{header_name}: {token_value or ''}"]}
+        elif normalized == "form_login":
+            body["login"] = {
+                "kind": "automatic",
+                "credentials": {
+                    "enabled": True,
+                    "username": username.strip(),
+                    "password": password,
+                    "url": login_url,
+                },
+            }
+        elif normalized in {"api_token", "custom_headers"}:
+            configured_headers = (
+                [{"name": (token_header or "").strip() or "Authorization", "value": token_value}]
+                if normalized == "api_token"
+                else headers or []
+            )
+            body["custom_headers"] = [
+                f"{header['name'].strip()}: {header['value']}"
+                for header in configured_headers
+            ]
+        elif normalized == "session_cookie":
+            if len(cookie) > 4096:
+                raise AcunetixError("Acunetix session cookie strings are limited to 4096 characters.")
+            body["custom_cookies"] = [{"cookie": cookie, "url": target_url}]
 
         self._request("PATCH", f"/targets/{target_id}/configuration", json=body)
         logger.info(
-            "Configured %s authentication on Acunetix target %s", normalized, target_id
+            "Configured %s authentication on Acunetix target %s",
+            normalized or "no",
+            target_id,
         )
-        return None
+
+    def configure_excluded_paths(self, target_id: str, paths: list[str]) -> None:
+        """Synchronize exclusions with Acunetix without accumulating stale paths."""
+        if len(paths) > 512 or any(
+            not path.strip() or len(path) > 512 or "\r" in path or "\n" in path
+            for path in paths
+        ):
+            raise AcunetixError("Acunetix excluded paths must be non-empty single lines up to 512 characters.")
+        response = self._request(
+            "GET", f"/targets/{target_id}/configuration/exclusions"
+        )
+        current_paths = set(response.get("excluded_paths") or [])
+        desired_paths = set(paths)
+        additions = sorted(desired_paths - current_paths)
+        deletions = sorted(current_paths - desired_paths)
+        if not additions and not deletions:
+            return
+
+        self._request(
+            "POST",
+            f"/targets/{target_id}/configuration/exclusions",
+            json={
+                "add": {"excluded_paths": additions},
+                "delete": {"excluded_paths": deletions},
+            },
+        )
 
     # ── scanning profiles ─────────────────────────────────────────────────────
 

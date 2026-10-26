@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Cloud, Download, Filter, LoaderCircle, Play, Search, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, Cloud, Download, Filter, LoaderCircle, Play, Search, ShieldCheck, Terminal } from "lucide-react";
 import {
   createCloudAssessment,
   downloadCloudAssessmentReport,
@@ -109,6 +109,46 @@ function complianceFramework(reference) {
   return String(reference).split(":", 1)[0].trim();
 }
 
+function formatElapsedTime(totalSeconds) {
+  const elapsed = Math.max(0, Math.floor(totalSeconds));
+  const hours = String(Math.floor(elapsed / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0");
+  const seconds = String(elapsed % 60).padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+function formatProwlerTerminalOutput(scan, currentTime) {
+  const progress = scan?.summary?.progress || {};
+  const activity = (progress.events || []).map((event) => {
+    const timestamp = event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : "";
+    return `[${timestamp}] ${String(event.stage || "info").toUpperCase()}: ${event.message}`;
+  });
+  const outputTail = String(progress.output_tail || "").trim();
+
+  if (progress.message) {
+    activity.push(`[${String(progress.stage || "info").toUpperCase()}] ${progress.message}`);
+  }
+  if (scan?.status === "running") {
+    const startedAt = progress.started_at || progress.events?.[0]?.timestamp;
+    const startedTime = startedAt ? new Date(startedAt).getTime() : currentTime;
+    activity.push(
+      "",
+      `SCAN ACTIVE | Started: ${startedAt ? new Date(startedAt).toLocaleString() : "time unavailable"}`,
+      `Current time: ${new Date(currentTime).toLocaleString()} | Elapsed: ${formatElapsedTime((currentTime - startedTime) / 1000)}`,
+    );
+  }
+  if (outputTail) {
+    activity.push("", "---- Prowler CLI output ----", outputTail);
+  } else if (scan?.status === "running") {
+    activity.push(
+      "",
+      progress.message || "Prowler is running; waiting for CLI output.",
+    );
+  }
+
+  return activity.join("\n");
+}
+
 function CloudAssessment() {
   const [provider, setProvider] = useState("aws");
   const [form, setForm] = useState({
@@ -137,6 +177,8 @@ function CloudAssessment() {
   const [findingFramework, setFindingFramework] = useState("all");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [terminalClock, setTerminalClock] = useState(Date.now());
+  const prowlerOutputRef = useRef(null);
 
   const refreshScans = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -193,6 +235,18 @@ function CloudAssessment() {
     const intervalId = window.setInterval(refreshScans, 5000);
     return () => window.clearInterval(intervalId);
   }, [refreshScans, scans]);
+
+  useEffect(() => {
+    if (selectedScan?.status !== "running") return undefined;
+    const intervalId = window.setInterval(() => setTerminalClock(Date.now()), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [selectedScan?.status]);
+
+  useEffect(() => {
+    if (selectedScan?.status === "running" && prowlerOutputRef.current) {
+      prowlerOutputRef.current.scrollTop = prowlerOutputRef.current.scrollHeight;
+    }
+  }, [selectedScan?.status, selectedScan?.summary?.progress?.output_tail]);
 
   useEffect(() => {
     if (!selectedScan) return;
@@ -680,21 +734,37 @@ function CloudAssessment() {
           </div>
 
           {selectedScan.status === "running" && (
-            <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
-              <p className="flex items-center gap-2 font-semibold"><LoaderCircle className="animate-spin" size={17} /> {selectedScan.summary?.progress?.message || "Prowler is assessing this cloud account."}</p>
-              {selectedScan.summary?.progress?.updated_at && (
-                <p className="mt-1 text-xs opacity-80">Last update: {formatDate(selectedScan.summary.progress.updated_at)}</p>
-              )}
-              {selectedScan.summary?.progress?.events?.length > 0 && (
-                <ol aria-label="Assessment activity" className="mt-3 space-y-1 border-l border-blue-300 pl-3 text-xs dark:border-blue-700">
-                  {selectedScan.summary.progress.events.slice(-5).map((event, index) => (
-                    <li key={`${event.timestamp}-${index}`}>
-                      <span className="font-semibold">{formatDate(event.timestamp)}:</span> {event.message}
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </div>
+            <section
+              aria-label="Prowler terminal output"
+              className="overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-inner"
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+                <h3 className="flex items-center gap-2 text-sm font-bold text-slate-100">
+                  <Terminal size={16} className="text-emerald-400" />
+                  Prowler output
+                </h3>
+                <span className="font-mono text-xs uppercase tracking-wide text-emerald-300">
+                  LIVE
+                </span>
+              </div>
+              <pre
+                ref={prowlerOutputRef}
+                role="log"
+                aria-label="Recent Prowler CLI output"
+                className="max-h-80 min-h-24 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-xs leading-5 text-emerald-100"
+              >
+                {formatProwlerTerminalOutput(selectedScan, terminalClock)}
+              </pre>
+              <p className="border-t border-slate-800 px-4 py-2 text-xs text-slate-400">
+                {selectedScan.summary?.progress?.updated_at
+                  ? `Last update: ${formatDate(selectedScan.summary.progress.updated_at)} · `
+                  : ""}
+                {selectedScan.summary?.progress?.output_bytes
+                  ? `${selectedScan.summary.progress.output_bytes.toLocaleString()} bytes received · `
+                  : ""}
+                Live scanner output; credential values are redacted.
+              </p>
+            </section>
           )}
           {selectedScan.status === "failed" && (
             <p role="alert" className="rounded-xl bg-rose-50 p-4 text-sm text-rose-800 dark:bg-rose-950/40 dark:text-rose-200">{selectedScan.error || "Assessment failed."}</p>

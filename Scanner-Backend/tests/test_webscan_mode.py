@@ -1,13 +1,20 @@
 import io
 import os
 import zipfile
+from types import SimpleNamespace
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 import pytest
 from fastapi import HTTPException
 
-from app.api.webscan.routes import _authenticated_clone_url, _compute_risk_score, _safe_extract_zip
+from app.api.webscan.routes import (
+    _authenticated_clone_url,
+    _compute_risk_score,
+    _finalize_static_scan,
+    _safe_extract_zip,
+    _validate_authentication_settings,
+)
 from app.api.webscan.schemas import WebScanCreateRequest
 from app.core.middleware import require_webscan_access
 
@@ -53,6 +60,29 @@ def test_static_request_defaults_to_public_visibility():
 
     assert request.repo_visibility is None
     assert request.repo_token is None
+
+
+@pytest.mark.parametrize(
+    ("method", "username", "password", "token", "message"),
+    [
+        ("sso", None, None, None, "supports Basic authentication"),
+        ("basic", None, "secret", None, "username and password"),
+        ("basic", "alice", None, None, "username and password"),
+        ("api_token", None, None, None, "token value"),
+        ("api_token", None, None, "   ", "token value"),
+    ],
+)
+def test_required_authentication_rejects_unsupported_or_missing_settings(
+    method, username, password, token, message
+):
+    with pytest.raises(HTTPException, match=message):
+        _validate_authentication_settings(True, method, username, password, token)
+
+
+def test_authentication_validation_allows_supported_credentials_and_optional_auth():
+    _validate_authentication_settings(True, "basic", "alice", "secret", None)
+    _validate_authentication_settings(True, "api_token", None, None, "token")
+    _validate_authentication_settings(False, "sso", None, None, None)
 
 
 def test_approved_member_can_use_webscan():
@@ -124,6 +154,35 @@ def test_risk_score_follows_worst_severity_and_density():
     assert _compute_risk_score([{"severity": "critical"}]) == 100
     assert _compute_risk_score([{"severity": "medium"}]) == 56
     assert _compute_risk_score([{"severity": "low"}, {"severity": "info"}]) == 23
+
+
+def test_semgrep_static_scan_preserves_critical_severity_for_display():
+    record = SimpleNamespace()
+
+    class FakeDb:
+        def add(self, _record):
+            pass
+
+        def commit(self):
+            pass
+
+        def refresh(self, _record):
+            pass
+
+    _finalize_static_scan(
+        FakeDb(),
+        record,
+        {
+            "findings": [{"severity": "critical", "affected_url": "src/app.py"}],
+            "summary": {
+                "risk_score": 100,
+                "severity_distribution": {"critical": 1},
+            },
+        },
+    )
+
+    assert record.risk_score == 100
+    assert record.severity == "critical"
 
 
 def test_safe_extract_zip_extracts_a_normal_archive(tmp_path):

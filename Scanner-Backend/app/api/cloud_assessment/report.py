@@ -425,7 +425,7 @@ def generate_cloud_assessment_pdf(scan: dict[str, Any]) -> bytes:
         [
             Paragraph("<b>TARGET ACCOUNT</b>", style["label"]),
             Paragraph("<b>CLOUD PROVIDER</b>", style["label"]),
-            Paragraph("<b>CLIENT NAME</b>", style["label"]),
+            Paragraph("<b>CLIENT CONTACT</b>", style["label"]),
             Paragraph("<b>SCAN TIMESTAMP</b>", style["label"]),
         ],
         [
@@ -618,11 +618,22 @@ def generate_cloud_assessment_pdf(scan: dict[str, Any]) -> bytes:
         percentage = round(count / failed_severity_total * 100, 1) if failed_severity_total else 0
         severity_cards.append([
             Paragraph(f"<font color='{color.hexval()}'><b>{severity.title()}</b></font>",
-                      ParagraphStyle(f"SeverityLabel{index}", fontName="Helvetica-Bold", fontSize=8)),
+                      ParagraphStyle(
+                          f"SeverityLabel{index}", fontName="Helvetica-Bold",
+                          fontSize=8, leading=10,
+                      )),
+            Spacer(1, 3),
             Paragraph(f"<font size=15 color='{color.hexval()}'><b>{count}</b></font>",
-                      ParagraphStyle(f"SeverityCount{index}", fontName="Helvetica-Bold", alignment=1)),
+                      ParagraphStyle(
+                          f"SeverityCount{index}", fontName="Helvetica-Bold",
+                          fontSize=15, leading=19, alignment=1,
+                      )),
+            Spacer(1, 2),
             Paragraph(f"{percentage}% of total failed findings",
-                      ParagraphStyle(f"SeverityPercent{index}", fontSize=6.5, textColor=TEXT_MUTED, alignment=1)),
+                      ParagraphStyle(
+                          f"SeverityPercent{index}", fontName="Helvetica",
+                          fontSize=6.5, leading=8, textColor=TEXT_MUTED, alignment=1,
+                      )),
         ])
     severity_table = Table([severity_cards], colWidths=[130.75] * 4)
     severity_styles = [
@@ -636,20 +647,38 @@ def generate_cloud_assessment_pdf(scan: dict[str, Any]) -> bytes:
         severity_styles.append(("BACKGROUND", (index, 0), (index, 0), SEVERITY_COLORS[severity][1]))
     severity_table.setStyle(TableStyle(severity_styles))
     content.extend([severity_table])
-    content.append(Paragraph("Regulatory &amp; Compliance Framework Alignment", style["h1"]))
-    content.append(Paragraph(
-        "Control alignment is calculated from framework mappings supplied with the assessment findings. "
-        "Passed and failed controls are assessed; other statuses are shown as not assessed.",
-        style["body"],
-    ))
+    content.append(Paragraph("Compliance Framework Coverage", style["h1"]))
+    compliance_explanation = Table([[
+        Paragraph(
+            "<b>How to read this section</b><br/>"
+            "Scanner findings are mapped to the framework references provided by the assessment. "
+            "<b>Met</b> means the mapped check passed; <b>Security gaps</b> means it failed; "
+            "<b>Not assessed</b> means no pass/fail result was available. "
+            "<b>Pass rate</b> is calculated from met and failed controls only. "
+            "This automated snapshot is not a compliance certification.",
+            ParagraphStyle(
+                "ComplianceExplanation", fontName="Helvetica", fontSize=8.5,
+                leading=12, textColor=TEXT_MAIN,
+            ),
+        ),
+    ]], colWidths=[523])
+    compliance_explanation.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), BG_LIGHT),
+        ("BOX", (0, 0), (-1, -1), 0.7, BORDER_COLOR),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    content.extend([compliance_explanation, Spacer(1, 7)])
     if framework_rows:
         framework_table_data = [[
             Paragraph("<b>Framework</b>", style["header"]),
-            Paragraph("<b>Total controls</b>", style["header"]),
-            Paragraph("<b>Passed</b>", style["header"]),
-            Paragraph("<b>Failed</b>", style["header"]),
+            Paragraph("<b>Mapped controls</b>", style["header"]),
+            Paragraph(f"<font color='{COLOR_PASS.hexval()}'><b>Met</b></font>", style["header"]),
+            Paragraph(f"<font color='{COLOR_FAIL.hexval()}'><b>Security gaps</b></font>", style["header"]),
             Paragraph("<b>Not assessed</b>", style["header"]),
-            Paragraph("<b>Alignment</b>", style["header"]),
+            Paragraph("<b>Pass rate</b>", style["header"]),
         ]]
         framework_table_data.extend([
             [
@@ -684,7 +713,8 @@ def generate_cloud_assessment_pdf(scan: dict[str, Any]) -> bytes:
         content.append(framework_table)
     else:
         content.append(Paragraph(
-            "No framework mappings were provided by the scanner for this assessment.",
+            "The scanner did not return framework mappings for this assessment, so framework coverage "
+            "could not be calculated.",
             style["body"],
         ))
     content.extend([

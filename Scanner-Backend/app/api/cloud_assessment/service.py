@@ -1,10 +1,13 @@
 import csv
+import errno
 import io
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,8 +25,14 @@ from app.db.models import CloudSecurityAssessment
 logger = logging.getLogger(__name__)
 PROWLER_TIMEOUT_SECONDS = 60 * 60
 CREDENTIAL_CHECK_TIMEOUT_SECONDS = 30
-PROGRESS_POLL_SECONDS = 5
-PROGRESS_UPDATE_SECONDS = 15
+PROGRESS_POLL_SECONDS = 3
+PROGRESS_UPDATE_SECONDS = 10
+PROWLER_LOG_TAIL_BYTES = 48 * 1024
+PROWLER_LOG_TAIL_LINES = 300
+PROWLER_LOG_TAIL_MAX_CHARS = 36_000
+PROWLER_ANSI_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
+)
 FINDING_SEVERITIES = {"critical", "high", "medium", "low", "informational"}
 PROWLER_EXECUTABLE = os.getenv("PROWLER_EXECUTABLE", "prowler").strip() or "prowler"
 PROWLER_PYTHON_EXECUTABLE = os.getenv("PROWLER_PYTHON_EXECUTABLE", "").strip()
@@ -168,6 +177,95 @@ def _parse_compliance(value: str) -> list[str]:
     ]
 
 
+def _read_prowler_log_tail(log_path: Path) -> str:
+    with log_path.open("rb") as log_file:
+        log_file.seek(0, os.SEEK_END)
+        size = log_file.tell()
+        start = max(0, size - PROWLER_LOG_TAIL_BYTES)
+        log_file.seek(start)
+        output = log_file.read().decode("utf-8", errors="replace")
+    if start and "\n" in output:
+        output = output.split("\n", 1)[1]
+    output = output.replace("\r\n", "\n").replace("\r", "\n")
+    output = PROWLER_ANSI_ESCAPE.sub("", output)
+    output = "".join(
+        character
+        for character in output
+        if character in "\n\t" or character.isprintable()
+    )
+    output = "\n".join(output.splitlines()[-PROWLER_LOG_TAIL_LINES:])
+    return output[-PROWLER_LOG_TAIL_MAX_CHARS:]
+
+
+def _redact_prowler_log(output: str, credential_values: Mapping[str, str]) -> str:
+    for secret in sorted(
+        {value for value in credential_values.values() if len(value) >= 4},
+        key=len,
+        reverse=True,
+    ):
+        output = output.replace(secret, "[REDACTED]")
+    return output[-PROWLER_LOG_TAIL_MAX_CHARS:]
+
+
+def _read_live_prowler_findings(output_directory: Path) -> list[dict[str, Any]]:
+    findings = []
+    for csv_file in sorted(output_directory.glob("*.csv")):
+        csv_text = csv_file.read_text(encoding="utf-8-sig", errors="replace")
+        findings.extend(_normalize_csv_findings(csv_text))
+    return findings
+
+
+def _format_live_prowler_findings(findings: list[dict[str, Any]]) -> str:
+    if not findings:
+        return ""
+
+    lines = [f"Live findings written: {len(findings)}"]
+    for finding in findings[-150:]:
+        status = str(finding.get("status") or "UNKNOWN")
+        severity = str(finding.get("severity") or "informational").upper()
+        check = " ".join(
+            value
+            for value in (
+                str(finding.get("service") or ""),
+                str(finding.get("check_id") or ""),
+                str(finding.get("title") or ""),
+            )
+            if value
+        )
+        resource = " | ".join(
+            value
+            for value in (
+                str(finding.get("resource_name") or finding.get("resource_id") or ""),
+                str(finding.get("region") or ""),
+            )
+            if value
+        )
+        line = f"[{status}][{severity}] {check}"
+        if resource:
+            line += f" | {resource}"
+        lines.append(line)
+        details = str(finding.get("status_extended") or "").strip()
+        if details:
+            lines.append(f"  {details}")
+
+    return "\n".join(lines)
+
+
+def _format_prowler_progress(
+    elapsed_seconds: float,
+    output_size: int,
+    finding_count: int,
+) -> str:
+    elapsed = max(0, int(elapsed_seconds))
+    hours, remainder = divmod(elapsed, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    duration = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return (
+        f"Prowler scan active | elapsed {duration} | "
+        f"{output_size:,} output bytes | {finding_count:,} findings discovered."
+    )
+
+
 def _normalize_csv_findings(csv_text: str) -> list[dict[str, str]]:
     rows = csv.DictReader(io.StringIO(csv_text.lstrip("\ufeff")), delimiter=";")
     findings = []
@@ -248,6 +346,8 @@ def _scan_command(
     command = [
         executable,
         provider,
+        "--log-level",
+        "DEBUG",
         "--output-formats",
         "csv",
         "--output-directory",
@@ -312,6 +412,7 @@ def _update_progress(
     stage: str,
     message: str,
     output_bytes: int | None = None,
+    output_tail: str | None = None,
 ) -> dict[str, Any] | None:
     scan = db.query(CloudSecurityAssessment).filter(
         CloudSecurityAssessment.scan_id == scan_id,
@@ -325,6 +426,8 @@ def _update_progress(
     progress = dict(summary.get("progress") or {})
     events = list(progress.get("events") or [])
     updated_at = datetime.now(timezone.utc).isoformat()
+    if stage == "starting" and not progress.get("started_at"):
+        progress["started_at"] = updated_at
     if not events or events[-1].get("stage") != stage or events[-1].get("message") != message:
         events.append({"stage": stage, "message": message, "timestamp": updated_at})
         events = events[-20:]
@@ -338,11 +441,70 @@ def _update_progress(
     )
     if output_bytes is not None:
         progress["output_bytes"] = output_bytes
+    if output_tail is not None:
+        progress["output_tail"] = output_tail
     summary["progress"] = progress
     scan.summary = summary
     db.commit()
     logger.info("Cloud assessment %s: %s - %s", scan_id, stage, message)
     return progress
+
+
+def _copy_prowler_output(output_stream, log_file, errors: list[Exception]) -> None:
+    try:
+        while chunk := output_stream.read(4096):
+            log_file.write(chunk)
+            log_file.flush()
+    except OSError as error:
+        if error.errno != errno.EIO:
+            errors.append(error)
+    finally:
+        output_stream.close()
+
+
+def _start_prowler_process(
+    command: list[str],
+    process_env: dict[str, str],
+) -> tuple[subprocess.Popen, Any]:
+    process_options = {
+        "env": process_env,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+        "bufsize": 0,
+    }
+    if os.name != "nt":
+        import pty
+
+        try:
+            master_fd, slave_fd = pty.openpty()
+        except OSError:
+            logger.warning("Could not allocate a Prowler pseudo-terminal; using pipe output.")
+        else:
+            terminal_env = process_env.copy()
+            terminal_env.setdefault("TERM", "xterm-256color")
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=slave_fd,
+                    env=terminal_env,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                )
+            except BaseException:
+                os.close(master_fd)
+                raise
+            finally:
+                os.close(slave_fd)
+            return process, os.fdopen(master_fd, "rb", buffering=0)
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        **process_options,
+    )
+    if process.stdout is None:
+        raise RuntimeError("Could not capture Prowler CLI output.")
+    return process, process.stdout
 
 
 def _run_prowler_with_progress(
@@ -354,33 +516,67 @@ def _run_prowler_with_progress(
     started_at = time.monotonic()
     last_update_at = started_at
     last_output_size = 0
-    with log_path.open("w", encoding="utf-8") as log_file:
-        process = subprocess.Popen(
-            command,
-            env=process_env,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
+    with log_path.open("wb") as log_file:
+        process, output_stream = _start_prowler_process(command, process_env)
+        output_errors: list[Exception] = []
+        output_reader = threading.Thread(
+            target=_copy_prowler_output,
+            args=(output_stream, log_file, output_errors),
+            daemon=True,
         )
+        output_reader.start()
         try:
             while process.poll() is None:
+                if output_errors:
+                    raise RuntimeError("Could not capture Prowler CLI output.") from output_errors[0]
                 elapsed = time.monotonic() - started_at
                 if elapsed >= PROWLER_TIMEOUT_SECONDS:
                     raise subprocess.TimeoutExpired(command, PROWLER_TIMEOUT_SECONDS)
 
-                output_size = log_path.stat().st_size
+                report_files = list(log_path.parent.glob("*.csv"))
+                output_size = log_path.stat().st_size + sum(
+                    report_file.stat().st_size for report_file in report_files
+                )
                 now = time.monotonic()
                 if output_size != last_output_size or now - last_update_at >= PROGRESS_UPDATE_SECONDS:
-                    output_kb = output_size // 1024
-                    message = (
-                        f"Prowler is running; {output_kb} KB of scanner output received."
-                        if output_size
-                        else "Prowler is running; waiting for results from the cloud provider."
+                    live_findings = _read_live_prowler_findings(log_path.parent)
+                    message = _format_prowler_progress(
+                        elapsed,
+                        output_size,
+                        len(live_findings),
                     )
-                    on_progress(message, output_size)
+                    console_output = _read_prowler_log_tail(log_path)
+                    finding_output = _format_live_prowler_findings(live_findings)
+                    if finding_output:
+                        console_output = "\n\n".join(
+                            part for part in (console_output, finding_output) if part
+                        )[-PROWLER_LOG_TAIL_MAX_CHARS:]
+                    on_progress(message, output_size, console_output)
                     last_output_size = output_size
                     last_update_at = now
                 time.sleep(PROGRESS_POLL_SECONDS)
-            return process.wait()
+            output_reader.join()
+            if output_errors:
+                raise RuntimeError("Could not capture Prowler CLI output.") from output_errors[0]
+            returncode = process.wait()
+            report_files = list(log_path.parent.glob("*.csv"))
+            output_size = log_path.stat().st_size + sum(
+                report_file.stat().st_size for report_file in report_files
+            )
+            console_output = _read_prowler_log_tail(log_path)
+            live_findings = _format_live_prowler_findings(
+                _read_live_prowler_findings(log_path.parent)
+            )
+            if live_findings:
+                console_output = "\n\n".join(
+                    part for part in (console_output, live_findings) if part
+                )[-PROWLER_LOG_TAIL_MAX_CHARS:]
+            on_progress(
+                "Prowler finished; collecting the generated assessment report.",
+                output_size,
+                console_output,
+            )
+            return returncode
         except BaseException:
             if process.poll() is None:
                 process.terminate()
@@ -389,6 +585,7 @@ def _run_prowler_with_progress(
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+            output_reader.join(timeout=10)
             raise
 
 
@@ -440,13 +637,14 @@ def run_cloud_assessment(
                 command,
                 process_env,
                 log_path,
-                lambda message, output_bytes: _update_progress(
+                lambda message, output_bytes, output_tail: _update_progress(
                     db,
                     scan_id,
                     user_id,
                     "scanning",
                     message,
                     output_bytes,
+                    _redact_prowler_log(output_tail, credential_values),
                 ),
             )
             _update_progress(

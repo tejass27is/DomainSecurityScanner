@@ -939,12 +939,14 @@ function AuthPage() {
                                     placeholder="Password"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
-                                    className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
+                                    className="password-toggle-input w-full px-4 pr-12 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
                                  />
                                  <button
                                     type="button"
                                     onClick={() => setSignupShowPassword(!signupShowPassword)}
-                                    className="absolute right-4 top-3 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
+                                    aria-label={signupShowPassword ? "Hide password" : "Show password"}
+                                    aria-pressed={signupShowPassword}
+                                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
                                  >
                                     {signupShowPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                                  </button>
@@ -957,12 +959,14 @@ function AuthPage() {
                                     placeholder="Confirm"
                                     value={confirmPassword}
                                     onChange={(e) => setConfirmPassword(e.target.value)}
-                                    className="w-full px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
+                                    className="password-toggle-input w-full px-4 pr-12 py-3 rounded-lg bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent dark:text-white transition"
                                  />
                                  <button
                                     type="button"
                                     onClick={() => setSignupShowConfirmPassword(!signupShowConfirmPassword)}
-                                    className="absolute right-4 top-3 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
+                                    aria-label={signupShowConfirmPassword ? "Hide confirmation password" : "Show confirmation password"}
+                                    aria-pressed={signupShowConfirmPassword}
+                                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
                                  >
                                     {signupShowConfirmPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                                  </button>

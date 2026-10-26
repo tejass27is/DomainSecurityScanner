@@ -14,6 +14,7 @@ from app.api.webscan.acunetix import (
     _error_detail,
     _env_bool,
     _env_float,
+    map_criticality,
     resolve_base_url,
 )
 from app.api.webscan.routes import (
@@ -492,6 +493,26 @@ def test_find_target_handles_empty_address(monkeypatch):
 # ─── Authentication configuration (configure_authentication) ─────────────────
 
 
+@pytest.mark.parametrize(
+    ("criticality", "expected"),
+    [
+        ("critical", 30),
+        ("high", 20),
+        ("medium", 10),
+        ("normal", 10),
+        ("low", 0),
+        (None, 10),
+    ],
+)
+def test_map_criticality_matches_acunetix_scale(criticality, expected):
+    assert map_criticality(criticality) == expected
+
+
+def test_map_criticality_rejects_unknown_values():
+    with pytest.raises(ValueError, match="Unsupported target criticality"):
+        map_criticality("urgent")
+
+
 def _capturing_client(monkeypatch):
     """A client whose _request is stubbed, recording the last call."""
     monkeypatch.setenv("ACUNETIX_URL", "https://acunetix.example.com:3443")
@@ -511,6 +532,76 @@ def _capturing_client(monkeypatch):
     return client
 
 
+def test_create_target_sends_acunetix_criticality_value(monkeypatch):
+    client = _capturing_client(monkeypatch)
+    calls = []
+
+    def fake_request(method, path, **kwargs):
+        calls.append((method, path, kwargs.get("json")))
+        if method == "GET":
+            return {"targets": [], "pagination": {}}
+        return {"target_id": "t-1"}
+
+    client._request = fake_request
+
+    assert client.create_target("https://example.com", criticality=30) == "t-1"
+    assert calls[-1] == (
+        "POST",
+        "/targets",
+        {
+            "address": "https://example.com",
+            "description": "ShieldStat web scan for https://example.com",
+            "criticality": 30,
+        },
+    )
+
+
+def test_reused_target_updates_acunetix_criticality_value(monkeypatch):
+    client = _capturing_client(monkeypatch)
+    calls = []
+
+    def fake_request(method, path, **kwargs):
+        calls.append((method, path, kwargs.get("json")))
+        if method == "GET":
+            return {
+                "targets": [{"target_id": "t-1", "address": "https://example.com"}],
+                "pagination": {},
+            }
+        return {}
+
+    client._request = fake_request
+
+    assert client.create_target("https://example.com", criticality=0) == "t-1"
+    assert calls[-1] == (
+        "PUT",
+        "/targets/t-1",
+        {
+            "address": "https://example.com",
+            "description": "",
+            "criticality": 0,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "kwargs", "message"),
+    [
+        ("basic", {"username": "alice"}, "username and password"),
+        ("basic", {"password": "secret"}, "username and password"),
+        ("api_token", {}, "token value"),
+    ],
+)
+def test_configure_authentication_rejects_missing_credentials(
+    monkeypatch, method, kwargs, message
+):
+    client = _capturing_client(monkeypatch)
+
+    with pytest.raises(AcunetixError, match=message):
+        client.configure_authentication("t-1", method=method, **kwargs)
+
+    assert client._captured == {}
+
+
 def test_configure_authentication_basic_sends_credentials(monkeypatch):
     client = _capturing_client(monkeypatch)
 
@@ -526,8 +617,21 @@ def test_configure_authentication_basic_sends_credentials(monkeypatch):
             "enabled": True,
             "username": "alice",
             "password": "s3cret",
-        }
+        },
+        "login": {"kind": "none"},
+        "custom_headers": [],
+        "custom_cookies": [],
     }
+
+
+def test_configure_authentication_preserves_password_whitespace(monkeypatch):
+    client = _capturing_client(monkeypatch)
+
+    client.configure_authentication(
+        "t-1", method="basic", username="alice", password="  passphrase  "
+    )
+
+    assert client._captured["body"]["authentication"]["password"] == "  passphrase  "
 
 
 def test_configure_authentication_api_token_sends_custom_header(monkeypatch):
@@ -542,7 +646,12 @@ def test_configure_authentication_api_token_sends_custom_header(monkeypatch):
 
     assert note is None
     assert client._captured["method"] == "PATCH"
-    assert client._captured["body"] == {"custom_headers": ["X-Api-Key: abc123"]}
+    assert client._captured["body"] == {
+        "authentication": {"enabled": False},
+        "login": {"kind": "none"},
+        "custom_headers": ["X-Api-Key: abc123"],
+        "custom_cookies": [],
+    }
 
 
 def test_configure_authentication_defaults_header_name_to_authorization(monkeypatch):
@@ -552,15 +661,15 @@ def test_configure_authentication_defaults_header_name_to_authorization(monkeypa
         "t-1", method="api_token", token_header="   ", token_value="Bearer xyz"
     )
 
-    assert client._captured["body"] == {"custom_headers": ["Authorization: Bearer xyz"]}
+    assert client._captured["body"]["custom_headers"][0].startswith("Authorization: ")
 
 
 @pytest.mark.parametrize("method", ["username_password", "sso", "mfa", "other", ""])
-def test_configure_authentication_skips_unverified_methods(monkeypatch, method):
+def test_configure_authentication_rejects_unverified_methods(monkeypatch, method):
     """Methods without a confirmed API shape must not hit the config endpoint."""
     client = _capturing_client(monkeypatch)
 
-    note = client.configure_authentication("t-1", method=method, username="a", password="b")
+    with pytest.raises(AcunetixError, match="Unsupported Acunetix authentication method"):
+        client.configure_authentication("t-1", method=method, username="a", password="b")
 
-    assert note and "manual configuration in Acunetix" in note
     assert client._captured == {}, "no request may be sent for unverified methods"

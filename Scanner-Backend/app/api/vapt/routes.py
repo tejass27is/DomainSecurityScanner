@@ -846,6 +846,7 @@ def _generate_checklist_pdf(checklist_data: dict) -> bytes:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from xml.sax.saxutils import escape
 
     output = io.BytesIO()
     document = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=12 * mm, leftMargin=12 * mm, topMargin=12 * mm, bottomMargin=12 * mm)
@@ -859,8 +860,14 @@ def _generate_checklist_pdf(checklist_data: dict) -> bytes:
         Paragraph(f"Region: {region}", styles["Heading3"]),
         Spacer(1, 5),
     ]
-    metadata_rows = [["Field", "Value"], *[[key, value] for key, value in _checklist_metadata_rows(checklist_data)]]
-    metadata_table = Table(metadata_rows, colWidths=[58 * mm, 130 * mm])
+    metadata_rows = [
+        [Paragraph("Field", header_style), Paragraph("Value", header_style)],
+        *[
+            [Paragraph(escape(str(key)), cell_style), Paragraph(escape(str(value)), cell_style)]
+            for key, value in _checklist_metadata_rows(checklist_data)
+        ],
+    ]
+    metadata_table = Table(metadata_rows, colWidths=[78 * mm, 190 * mm])
     metadata_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#205A87")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -868,10 +875,14 @@ def _generate_checklist_pdf(checklist_data: dict) -> bytes:
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F1F5F9")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     story.extend([metadata_table, Spacer(1, 8)])
     rows = _checklist_rows(checklist_data)
-    table_data = [[Paragraph(str(value).replace("&", "&amp;"), header_style if index == 0 else cell_style) for value in row] for index, row in enumerate(rows)]
+    table_data = [[Paragraph(escape(str(value)), header_style if index == 0 else cell_style) for value in row] for index, row in enumerate(rows)]
     table = Table(table_data, colWidths=[42 * mm, 92 * mm, 120 * mm], repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#205A87")),

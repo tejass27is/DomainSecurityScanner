@@ -689,6 +689,7 @@ class WebScan(Base):
     auth_method = Column(String(32), nullable=True)
     login_url = Column(Text, nullable=True)
     auth_username = Column(String(255), nullable=True)
+    excluded_paths = Column(JSON, nullable=False, default=list)
     auth_password = Column(Text, nullable=True)
     auth_header_name = Column(String(255), nullable=True)
     auth_token = Column(Text, nullable=True)

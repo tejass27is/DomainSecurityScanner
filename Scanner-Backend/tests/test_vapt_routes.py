@@ -28,6 +28,7 @@ from app.api.vapt.routes import (
     _closure_blockers,
     _closure_block_message,
     _evaluate_manual_verification,
+    _generate_checklist_pdf,
     _get_onboarding_or_create,
     _to_detail,
     _missing_required_uploads,
@@ -2277,3 +2278,23 @@ def test_approved_region_package_is_listed_and_org_checklist_can_download_for_re
             assert "07 Oct 2026, 11:34 PM PDT" in pdf_text
     finally:
         db.close()
+
+
+def test_checklist_pdf_preserves_long_timezone_metadata():
+    pdf = _generate_checklist_pdf(
+        {
+            "region_name": "KPGU USA",
+            "approved_at": datetime(2026, 10, 22, 5, 9, tzinfo=timezone.utc),
+            "testing_timezone": "America/Argentina/Buenos_Aires",
+            "testing_start_at": datetime(2026, 10, 23, 14, 34, tzinfo=timezone.utc),
+            "checklist_answers": {},
+        }
+    )
+
+    text = " ".join(
+        page.extract_text() or ""
+        for page in PdfReader(io.BytesIO(pdf)).pages
+    )
+    assert "Testing start (client local: America/Argentina/Buenos_Aires)" in text
+    assert "Testing timezone" in text
+    assert "America/Argentina/Buenos_Aires" in text

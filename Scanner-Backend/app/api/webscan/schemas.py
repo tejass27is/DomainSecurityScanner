@@ -1,7 +1,12 @@
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class WebScanCustomHeader(BaseModel):
+    name: str
+    value: str
 
 
 class WebScanCreateRequest(BaseModel):
@@ -16,18 +21,15 @@ class WebScanCreateRequest(BaseModel):
     scan_profile: Optional[str] = None
     criticality: Literal["critical", "high", "medium", "normal", "low"] = "medium"
     authentication_required: bool = False
-    auth_method: Optional[Literal["username_password", "api_token", "basic", "sso", "mfa", "other"]] = None
+    auth_method: Optional[Literal["basic", "form_login", "api_token", "custom_headers", "session_cookie"]] = None
     login_url: Optional[str] = None
     auth_username: Optional[str] = None
     auth_password: Optional[str] = None
     auth_header_name: Optional[str] = None
     auth_token: Optional[str] = None
-    session_cookie_name: Optional[str] = None
-    session_cookie_value: Optional[str] = None
-    auth_profile_id: Optional[str] = None
-    mfa_instructions: Optional[str] = None
-    auth_details: Optional[str] = None
-    login_sequence: Optional[str] = None
+    auth_headers: list[WebScanCustomHeader] = Field(default_factory=list)
+    session_cookie: Optional[str] = None
+    excluded_paths: list[str] = Field(default_factory=list)
 
 
 class WebScanListItem(BaseModel):
@@ -53,11 +55,7 @@ class WebScanListItem(BaseModel):
     login_url: Optional[str] = None
     auth_username: Optional[str] = None
     auth_header_name: Optional[str] = None
-    session_cookie_name: Optional[str] = None
-    auth_profile_id: Optional[str] = None
-    mfa_instructions: Optional[str] = None
-    auth_details: Optional[str] = None
-    login_sequence: Optional[str] = None
+    excluded_paths: list[str] = Field(default_factory=list)
     acunetix_scan_id: Optional[str] = None
     error_message: Optional[str] = None
     started_at: Optional[datetime] = None
