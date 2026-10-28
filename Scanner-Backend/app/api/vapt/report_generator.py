@@ -345,7 +345,7 @@ def _kv_table(rows, styles, key_w=34 * mm):
 
 def _card(inner_flowables, border_color=BORDER, bg=CARD_BG, pad=7, accent=None):
     """Wrap flowables in a bordered, lightly padded card (rounded corners)."""
-    t = Table([[inner_flowables]], colWidths=[CONTENT_W - 2 * pad * mm / mm if False else None])
+    t = Table([[inner_flowables]])
     style = [
         ("BACKGROUND", (0, 0), (-1, -1), bg),
         ("BOX", (0, 0), (-1, -1), 0.7, border_color),

@@ -20,6 +20,7 @@ from app.db.models import (
     VaptImport,
     User,
     VaptOnboardingChecklist,
+    VaptRescanSchedule,
 )
 from app.api.vapt.routes import (
     REGION_CHECKLIST_REQUIRED_QUESTIONS,
@@ -40,6 +41,8 @@ from app.api.vapt.routes import (
     _validate_rescan_prerequisites,
     _verification_display_name,
     _verification_download_filename,
+    DirectClosureRequest,
+    close_vapt_without_verification,
     approve_vapt_access,
     decide_region_checklist,
     delete_checklist_attachment,
@@ -53,9 +56,11 @@ from app.api.vapt.routes import (
     review_vapt_onboarding,
     submit_onboarding_checklist,
     submit_vapt_import,
+    submit_verification_review,
     upload_checklist_attachment,
     upload_vapt_report,
     update_vapt_finding_status,
+    update_verification_finding_status,
 )
 from app.api.vapt.normalizer import group_stored_findings, normalize_import
 from app.api.admin.service import get_users_by_org
@@ -345,7 +350,7 @@ def test_updating_grouped_legacy_finding_updates_each_underlying_row():
             file_name="test.nessus",
             file_format="xml",
             source_tool="nessus",
-            total_findings=2,
+            total_findings=3,
             unique_hosts=2,
             risk_score=50,
             severity="high",
@@ -819,7 +824,7 @@ def test_only_critical_high_and_medium_findings_require_triage():
     assert not _requires_vapt_finding_triage({"severity_label": "informational"})
 
 
-def test_low_finding_cannot_be_status_updated():
+def test_low_finding_can_be_marked_solved_with_required_remark():
     db = Session(bind=engine)
     try:
         record = VaptImport(
@@ -845,10 +850,149 @@ def test_low_finding_cannot_be_status_updated():
                 db=db,
                 current_user=SimpleNamespace(org_id="org-low-triage"),
             )
-            raise AssertionError("expected low-severity findings to reject triage updates")
+            raise AssertionError("expected a remark to be required for a solved low finding")
         except HTTPException as error:
             assert error.status_code == 400
-            assert "do not require triage" in error.detail
+
+        update_vapt_finding_status(
+            str(record.import_id),
+            "low-1",
+            VaptFindingStatusUpdate(status="solved", comment="Disabled the exposed service."),
+            db=db,
+            current_user=SimpleNamespace(org_id="org-low-triage", user_id="test-user"),
+        )
+        db.refresh(record)
+        assert record.findings[0]["severity_label"] == "low"
+        assert record.findings[0]["status"] == "solved"
+        assert record.findings[0]["comment"] == "Disabled the exposed service."
+    finally:
+        db.close()
+
+
+def test_low_finding_can_be_optionally_triaged_during_verification():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-low-verification",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            total_findings=1,
+            unique_hosts=1,
+            risk_score=10,
+            severity="low",
+            findings=[{
+                "id": "low-original",
+                "title": "Low finding",
+                "severity_label": "low",
+                "status": "solved",
+                "comment": "Disabled the exposed service.",
+            }],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id="org-low-verification",
+            created_by="soc-user",
+            scheduled_at=datetime.now(timezone.utc),
+            status="completed_with_errors",
+            result_data={
+                "remaining_findings": [{
+                    "id": "low-retest",
+                    "title": "Low finding",
+                    "severity_label": "low",
+                    "status": "solved",
+                    "comment": "Disabled the exposed service.",
+                }],
+                "new_findings": [],
+            },
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+        user = SimpleNamespace(org_id="org-low-verification", user_id="client-user")
+
+        try:
+            update_verification_finding_status(
+                str(record.import_id),
+                schedule.id,
+                "low-retest",
+                VaptFindingStatusUpdate(status="solved"),
+                db=db,
+                current_user=user,
+            )
+            raise AssertionError("expected a remark to be required for a solved low verification finding")
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "remark is required" in error.detail
+
+        update_verification_finding_status(
+            str(record.import_id),
+            schedule.id,
+            "low-retest",
+            VaptFindingStatusUpdate(status="solved", comment="Removed the exposed service."),
+            db=db,
+            current_user=user,
+        )
+        db.refresh(schedule)
+        updated = schedule.result_data["remaining_findings"][0]
+        assert updated["status"] == "solved"
+        assert updated["comment"] == "Removed the exposed service."
+
+        response = asyncio.run(submit_verification_review(
+            str(record.import_id),
+            schedule.id,
+            db=db,
+            current_user=user,
+        ))
+        assert response["success"] is True
+        assert schedule.result_data["client_review_status"] == "client_completed"
+    finally:
+        db.close()
+
+
+def test_low_verification_finding_can_remain_unreviewed_when_submitting_review():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-low-optional-review",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            findings=[{"id": "low-original", "severity_label": "low", "status": "pending"}],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id="org-low-optional-review",
+            created_by="soc-user",
+            scheduled_at=datetime.now(timezone.utc),
+            status="completed_with_errors",
+            result_data={
+                "remaining_findings": [{
+                    "id": "low-retest",
+                    "severity_label": "low",
+                    "status": "pending",
+                    "comment": "",
+                }],
+                "new_findings": [],
+            },
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+
+        response = asyncio.run(submit_verification_review(
+            str(record.import_id),
+            schedule.id,
+            db=db,
+            current_user=SimpleNamespace(org_id="org-low-optional-review", user_id="client-user"),
+        ))
+        assert response["success"] is True
     finally:
         db.close()
 
@@ -881,6 +1025,74 @@ def test_low_finding_does_not_block_report_submission():
 
         assert response["success"] is True
         assert record.status == "client_completed"
+    finally:
+        db.close()
+
+
+def test_solved_low_finding_without_remark_cannot_be_submitted():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-low-missing-remark",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            findings=[{
+                "id": "low-1",
+                "severity_label": "low",
+                "status": "solved",
+                "comment": "",
+            }],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        try:
+            asyncio.run(submit_vapt_import(
+                str(record.import_id),
+                db=db,
+                current_user=SimpleNamespace(org_id="org-low-missing-remark"),
+            ))
+            raise AssertionError("expected a remark requirement for solved low finding")
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "remark" in error.detail.lower()
+    finally:
+        db.close()
+
+
+def test_solved_low_finding_does_not_force_verification_for_closure():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-low-direct-close",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            status="client_completed",
+            remediation_review_status="approved",
+            findings=[{
+                "id": "low-1",
+                "title": "Low finding",
+                "severity_label": "low",
+                "status": "solved",
+                "comment": "Disabled the exposed service.",
+            }],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        response = asyncio.run(close_vapt_without_verification(
+            str(record.import_id),
+            DirectClosureRequest(note="Low finding is optional."),
+            db=db,
+            current_user=SimpleNamespace(user_id="soc-user", role="soc_analyst"),
+        ))
+
+        assert response["success"] is True
+        assert record.lifecycle_status == "closure_pending_client_due_date"
     finally:
         db.close()
 
@@ -2211,6 +2423,7 @@ def test_reopen_resets_only_findings_not_confirmed_fixed():
         findings=[
             {"id": "fixed", "title": "Fixed", "plugin_id": "1", "status": "solved", "comment": "patched"},
             {"id": "open", "title": "Open", "plugin_id": "2", "status": "solved", "comment": "patched"},
+            {"id": "low", "title": "Low", "plugin_id": "3", "severity_label": "low", "status": "solved", "comment": "Client fix remark"},
         ],
     )
     reopened = _reopen_unresolved_findings(record, {"fixed_findings": [record.findings[0]]})
@@ -2218,6 +2431,8 @@ def test_reopen_resets_only_findings_not_confirmed_fixed():
     assert reopened[0]["comment"] == "patched"
     assert reopened[1]["status"] == "pending"
     assert reopened[1]["comment"] == ""
+    assert reopened[2]["status"] == "solved"
+    assert reopened[2]["comment"] == "Client fix remark"
 
 
 def test_approved_region_package_is_listed_and_org_checklist_can_download_for_region():

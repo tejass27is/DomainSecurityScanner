@@ -1064,71 +1064,6 @@ async def review_vapt_onboarding(
     current_user: User = Depends(require_admin_or_soc_analyst),
 ):
     raise HTTPException(status_code=410, detail="Organization-level VAPT checklists have been retired.")
-    """SOC/admin reviews a client's initial VAPT checklist.
-
-    Three outcomes:
-      * ``approved`` — the checklist is accepted.
-      * ``changes_requested`` — some answers/documents are missing or wrong. The
-        submission is kept intact; the client only has to supply the flagged
-        items, so a single missing document never forces a full redo.
-      * ``rejected`` — the engagement is declined and the client must redo the
-        whole checklist.
-    """
-    status = str(payload.get("status") or "").strip().lower()
-    if status not in CHECKLIST_REVIEW_STATUSES:
-        raise HTTPException(
-            status_code=400,
-            detail="status must be approved, changes_requested or rejected",
-        )
-    checklist = db.query(VaptOnboardingChecklist).filter(VaptOnboardingChecklist.org_id == org_id).first()
-    if not checklist:
-        raise HTTPException(status_code=404, detail="VAPT checklist not found")
-    if status == "approved" and not _is_onboarding_complete(checklist):
-        raise HTTPException(status_code=400, detail="The client checklist is incomplete")
-
-    note = str(payload.get("note") or "").strip() or None
-    flags = _normalize_review_flags(payload.get("flags"))
-    if status in {"changes_requested", "rejected"} and not note and not flags:
-        raise HTTPException(
-            status_code=400,
-            detail="Add remarks or flag at least one checklist item.",
-        )
-
-    _apply_onboarding_review_decision(
-        checklist,
-        status,
-        current_user,
-        note,
-        flags,
-        datetime.now(timezone.utc),
-    )
-    db.add(checklist)
-    db.commit()
-    db.refresh(checklist)
-    _record_audit_log(
-        db,
-        current_user,
-        "VAPT_CHECKLIST_REVIEWED",
-        "vapt_onboarding",
-        org_id,
-        {"status": status, "flag_count": len(flags)},
-    )
-    event = {
-        "approved": "checklist_approved",
-        "changes_requested": "checklist_changes_requested",
-        "rejected": "checklist_rejected",
-    }[status]
-    email_note = _checklist_review_email_note(status, note, flags)
-    for email in {u.email for u in db.query(User).filter(User.org_id == org_id).all() if u.email}:
-        try:
-            send_vapt_access_event_email(email, event, org_id, "", "Organization onboarding", email_note)
-        except Exception:
-            pass
-    await ws_manager.send(
-        org_id,
-        {"event": "vapt_onboarding_reviewed", "status": status, "note": note or "", "flags": flags},
-    )
-    return _onboarding_to_dict(checklist)
 
 
 class InitialVaptDecision(BaseModel):
@@ -1188,58 +1123,6 @@ async def decide_initial_vapt_access(
     current_user: User = Depends(require_admin_or_soc_analyst),
 ):
     raise HTTPException(status_code=410, detail="Organization-level VAPT checklist decisions have been retired.")
-    """Atomically approve/reject the first checklist, region, and date."""
-    status = payload.status.strip().lower()
-    if status not in {"approved", "rejected"}:
-        raise HTTPException(status_code=400, detail="status must be approved or rejected")
-    checklist = db.query(VaptOnboardingChecklist).filter(VaptOnboardingChecklist.org_id == org_id).first()
-    if not checklist or not _is_onboarding_complete(checklist):
-        raise HTTPException(status_code=400, detail="The completed onboarding checklist is required.")
-    code = payload.region_code.strip().upper()
-    region = db.query(Region).filter(Region.code == code, Region.is_active.is_(True)).first()
-    if not region:
-        raise HTTPException(status_code=404, detail=f"Unknown region code: {code}")
-    org_region = db.query(OrganizationRegion).filter(
-        OrganizationRegion.org_id == org_id,
-        OrganizationRegion.region_id == region.region_id,
-    ).first()
-    if not org_region or org_region.status != "pending":
-        raise HTTPException(status_code=409, detail="The selected region is not a pending first-time request.")
-
-    if status == "approved":
-        _require_complete_region_checklist(db, org_region, code)
-
-    now = datetime.now(timezone.utc)
-    checklist.review_status = status
-    checklist.reviewed_by = current_user.user_id
-    checklist.reviewed_at = now
-    checklist.review_note = (payload.note or "").strip() or None
-    org_region.reviewed_by = current_user.user_id
-    org_region.reviewed_at = now
-    org_region.rejection_reason = checklist.review_note if status == "rejected" else None
-    org_region.status = status
-    org_region.checklist_review_status = status
-    org_region.checklist_review_note = checklist.review_note
-    org_region.checklist_flags = None
-    org_region.schedule_status = "confirmed" if status == "approved" else "rejected"
-    if status == "rejected":
-        checklist.completed_at = None
-    db.add(checklist)
-    db.add(org_region)
-    db.commit()
-    _record_audit_log(db, current_user, "VAPT_CHECKLIST_REVIEWED", "vapt_onboarding", org_id, {"status": status, "region": code})
-    _record_audit_log(db, current_user, "VAPT_REGION_REVIEWED", "organization_region", str(org_region.id), {"status": status, "region": code, "reason": checklist.review_note})
-    event = "initial_access_approved" if status == "approved" else "initial_access_rejected"
-    recipients = {u.email for u in db.query(User).filter(User.org_id == org_id).all() if u.email}
-    recipients.update(u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email)
-    for email in recipients:
-        try:
-            send_vapt_access_event_email(email, event, org_id, code, region.name, checklist.review_note or "")
-        except Exception:
-            pass
-    await ws_manager.send(org_id, {"event": "vapt_access_reviewed", "status": status, "region": code, "note": checklist.review_note or ""})
-    await ws_manager.send("platform", {"event": "vapt_access_reviewed", "org_id": org_id, "status": status, "region": code})
-    return {"success": True, "status": status, "region": code, "onboarding": _onboarding_to_dict(checklist), **_get_org_region_status(db, org_id)}
 
 
 @router.post("/admin/onboarding/{org_id}/propose-date")
@@ -2666,6 +2549,10 @@ def _requires_vapt_finding_triage(finding: dict) -> bool:
     return _finding_severity(finding) in {"critical", "high", "medium"}
 
 
+def _requires_vapt_solved_remark(finding: dict) -> bool:
+    return _finding_severity(finding) in {"low", "info", "informational"}
+
+
 def _new_findings_requiring_follow_up(findings: list[dict]) -> list[dict]:
     return [
         finding
@@ -2711,7 +2598,9 @@ def _reopen_unresolved_findings(record: VaptImport, verification_data: dict | No
     verification_data = verification_data or {}
     fixed_keys = {_verification_finding_key(finding) for finding in verification_data.get("fixed_findings") or []}
     return [
-        finding if _verification_finding_key(finding) in fixed_keys else {**finding, "status": "pending", "comment": ""}
+        finding
+        if _verification_finding_key(finding) in fixed_keys or _requires_vapt_solved_remark(finding)
+        else {**finding, "status": "pending", "comment": ""}
         for finding in record.findings or []
     ]
 
@@ -3050,10 +2939,12 @@ def update_vapt_finding_status(
         finding for finding in findings
         if _verification_finding_key(finding) == target_key
     ]
-    if not any(_requires_vapt_finding_triage(finding) for finding in matching_findings):
+    if normalized_status == "solved" and any(
+        _requires_vapt_solved_remark(finding) for finding in matching_findings
+    ) and not comment:
         raise HTTPException(
             status_code=400,
-            detail="Low and Informational findings do not require triage.",
+            detail="A remark is required when marking a Low or Informational finding Solved.",
         )
 
     updated_findings = []
@@ -3087,8 +2978,8 @@ async def submit_vapt_import(
 ):
     """User submits a VAPT report after triaging actionable findings.
 
-    Critical, High, and Medium findings must be marked; Low and Informational
-    findings remain in the report but do not require triage.
+    Critical, High, and Medium findings must be triaged. Low and Informational
+    findings are optional, but a client-reported Solved status requires a remark.
     Status flips to client_completed and SOC gets a live notification.
     """
     if not current_user.org_id:
@@ -3112,6 +3003,18 @@ async def submit_vapt_import(
         raise HTTPException(
             status_code=400,
             detail=f"All actionable findings must be triaged before submitting. {len(pending)} finding(s) still pending.",
+        )
+    solved_without_remarks = [
+        finding
+        for finding in findings
+        if _requires_vapt_solved_remark(finding)
+        and (finding.get("status") or "pending") == "solved"
+        and not (finding.get("comment") or "").strip()
+    ]
+    if solved_without_remarks:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Add a remark for every Low or Informational finding marked Solved. {len(solved_without_remarks)} finding(s) need a remark.",
         )
 
     # Count solved findings for the completion summary
@@ -3352,7 +3255,11 @@ async def close_vapt_without_verification(
         for finding in (record.findings or [])
     ):
         raise HTTPException(status_code=400, detail="All actionable findings must be triaged before closure.")
-    if any((finding.get("status") or "") == "solved" for finding in (record.findings or [])):
+    if any(
+        _requires_vapt_finding_triage(finding)
+        and (finding.get("status") or "") == "solved"
+        for finding in (record.findings or [])
+    ):
         raise HTTPException(status_code=400, detail="A verification schedule is required when any finding is Solved.")
     blockers = _closure_blockers(record)
     if blockers:
@@ -3429,7 +3336,11 @@ async def decide_vapt_verification(
                 status_code=409,
                 detail="New actionable findings must be remediated and verified in a follow-up scan before closure.",
             )
-        if (remaining or actionable_new) and verification_data.get("client_review_status") != "client_completed":
+        actionable_remaining = [
+            finding for finding in remaining
+            if _requires_vapt_finding_triage(finding)
+        ]
+        if (actionable_remaining or actionable_new) and verification_data.get("client_review_status") != "client_completed":
             raise HTTPException(status_code=409, detail="The client must review and submit all unresolved verification findings before closure.")
 
     schedule.verification_outcome = outcome
@@ -3524,16 +3435,20 @@ def update_verification_finding_status(
     """Let the client triage a finding that remained after a manual verification."""
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     _require_open_vapt_cycle(record)
+    try:
+        parsed_schedule_id = uuid.UUID(str(schedule_id))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Verification schedule not found")
     schedule = db.query(VaptRescanSchedule).filter(
-        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.id == parsed_schedule_id,
         VaptRescanSchedule.import_id == record.import_id,
         VaptRescanSchedule.status.in_(["completed", "completed_with_errors", "failed"]),
     ).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Verification schedule not found")
     normalized_status = _normalize_finding_status(payload.status)
-    if normalized_status not in VALID_VAPT_FINDING_STATUSES - {"pending"}:
-        raise HTTPException(status_code=400, detail="Verification findings must be Solved, Ignore, or False positive.")
+    if normalized_status not in VALID_VAPT_FINDING_STATUSES:
+        raise HTTPException(status_code=400, detail="Unsupported verification finding status.")
     comment = (payload.comment or "").strip()
     if normalized_status in {"ignore", "false_positive"} and not comment:
         raise HTTPException(status_code=400, detail="A comment is required when the status is ignore or false positive.")
@@ -3544,10 +3459,10 @@ def update_verification_finding_status(
         collection = list(result_data.get(collection_name) or [])
         for index, finding in enumerate(collection):
             if str(finding.get("id")) == finding_id:
-                if not _requires_vapt_finding_triage(finding):
+                if normalized_status == "solved" and _requires_vapt_solved_remark(finding) and not comment:
                     raise HTTPException(
                         status_code=400,
-                        detail="Low and Informational findings do not require triage.",
+                        detail="A remark is required when marking a Low or Informational verification finding Solved.",
                     )
                 updated = {**finding, "status": normalized_status, "comment": comment}
                 collection[index] = updated
@@ -3577,7 +3492,11 @@ async def submit_verification_review(
     """Submit the client's triage of findings still present after verification."""
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     _require_open_vapt_cycle(record)
-    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == schedule_id, VaptRescanSchedule.import_id == record.import_id).first()
+    try:
+        parsed_schedule_id = uuid.UUID(str(schedule_id))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Verification schedule not found")
+    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == parsed_schedule_id, VaptRescanSchedule.import_id == record.import_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Verification schedule not found")
     result_data = dict(schedule.result_data or {})
@@ -3594,14 +3513,22 @@ async def submit_verification_review(
     invalid = [
         finding
         for finding in review_findings
-        if _requires_vapt_finding_triage(finding)
-        and (finding.get("status") or "pending") in {"ignore", "false_positive"}
+        if (
+            (
+                _requires_vapt_finding_triage(finding)
+                and (finding.get("status") or "pending") in {"ignore", "false_positive"}
+            )
+            or (
+                _requires_vapt_solved_remark(finding)
+                and (finding.get("status") or "pending") == "solved"
+            )
+        )
         and not (finding.get("comment") or "").strip()
     ]
     if pending:
         raise HTTPException(status_code=400, detail=f"All actionable verification findings must be triaged before submitting. {len(pending)} still pending.")
     if invalid:
-        raise HTTPException(status_code=400, detail="Ignore and False positive verification decisions require comments.")
+        raise HTTPException(status_code=400, detail="Solved Low/Informational findings require remarks; Ignore and False positive decisions require comments.")
     result_data["client_review_status"] = "client_completed"
     result_data["client_reviewed_at"] = datetime.now(timezone.utc).isoformat()
     schedule.result_data = result_data

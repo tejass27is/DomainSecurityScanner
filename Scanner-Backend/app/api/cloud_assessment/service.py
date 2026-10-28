@@ -107,7 +107,7 @@ def validate_cloud_credentials(
         raise ValueError(f"Unsupported cloud provider: {provider}")
     prowler_path = shutil.which(PROWLER_EXECUTABLE)
     if not prowler_path:
-        raise RuntimeError("Prowler CLI is not installed on the scanner.")
+        raise RuntimeError("The cloud assessment scanner is not installed.")
 
     python_executable = PROWLER_PYTHON_EXECUTABLE or str(
         Path(prowler_path).resolve().with_name("python.exe" if os.name == "nt" else "python")
@@ -194,6 +194,7 @@ def _read_prowler_log_tail(log_path: Path) -> str:
         if character in "\n\t" or character.isprintable()
     )
     output = "\n".join(output.splitlines()[-PROWLER_LOG_TAIL_LINES:])
+    output = re.sub(r"prowler", "cloud scanner", output, flags=re.IGNORECASE)
     return output[-PROWLER_LOG_TAIL_MAX_CHARS:]
 
 
@@ -204,6 +205,7 @@ def _redact_prowler_log(output: str, credential_values: Mapping[str, str]) -> st
         reverse=True,
     ):
         output = output.replace(secret, "[REDACTED]")
+    output = re.sub(r"prowler", "cloud scanner", output, flags=re.IGNORECASE)
     return output[-PROWLER_LOG_TAIL_MAX_CHARS:]
 
 
@@ -261,7 +263,7 @@ def _format_prowler_progress(
     minutes, seconds = divmod(remainder, 60)
     duration = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     return (
-        f"Prowler scan active | elapsed {duration} | "
+        f"Cloud assessment active | elapsed {duration} | "
         f"{output_size:,} output bytes | {finding_count:,} findings discovered."
     )
 
@@ -398,7 +400,7 @@ def _provider_environment(
 def _load_csv_findings(output_directory: Path) -> list[dict[str, str]]:
     csv_files = sorted(output_directory.glob("*.csv"))
     if not csv_files:
-        raise RuntimeError("Prowler completed without producing a CSV report.")
+        raise RuntimeError("The cloud assessment completed without producing a report.")
     findings = []
     for csv_file in csv_files:
         findings.extend(_normalize_csv_findings(csv_file.read_text(encoding="utf-8-sig")))
@@ -572,7 +574,7 @@ def _run_prowler_with_progress(
                     part for part in (console_output, live_findings) if part
                 )[-PROWLER_LOG_TAIL_MAX_CHARS:]
             on_progress(
-                "Prowler finished; collecting the generated assessment report.",
+                "Scanner finished; collecting the generated assessment report.",
                 output_size,
                 console_output,
             )
@@ -607,7 +609,7 @@ def run_cloud_assessment(
             "Preparing the scanner and cloud assessment.",
         )
         if not shutil.which(PROWLER_EXECUTABLE):
-            raise RuntimeError("Prowler CLI is not installed on the scanner.")
+            raise RuntimeError("The cloud assessment scanner is not installed.")
 
         process_env = _provider_environment(os.environ, provider, credential_values)
         temp_context = tempfile.TemporaryDirectory(prefix="cloud-assessment-")
@@ -631,7 +633,7 @@ def run_cloud_assessment(
                 scan_id,
                 user_id,
                 "scanning",
-                "Prowler is checking the selected cloud scope.",
+                "The scanner is checking the selected cloud scope.",
             )
             returncode = _run_prowler_with_progress(
                 command,
@@ -652,7 +654,7 @@ def run_cloud_assessment(
                 scan_id,
                 user_id,
                 "collecting_results",
-                "Prowler finished; collecting the generated assessment report.",
+                "Scanner finished; collecting the generated assessment report.",
             )
             findings = _load_csv_findings(output_directory)
             if returncode != 0:
@@ -686,7 +688,7 @@ def run_cloud_assessment(
             db,
             scan_id,
             user_id,
-            "Prowler exceeded the one-hour assessment time limit.",
+            "The cloud assessment exceeded the one-hour time limit.",
         )
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as error:
         logger.warning("Cloud assessment %s failed: %s", scan_id, error)

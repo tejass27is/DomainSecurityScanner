@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { Outlet, Navigate, useLocation } from "react-router-dom";
 import Navbar from "../components/Navbar";
+import PageLoading from "../components/PageLoading";
 import Sidebar from "../components/Sidebar";
 
 function AdminLayout({ isDarkMode, onToggleDarkMode }) {
@@ -28,8 +29,7 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
 
 
   // SOC analysts only have read-only access to the platform VAPT report library.
-  // Guard every admin path except the VAPT library, rescan requests page, profile,
-  // and SOC console.
+  // Guard every admin path except the VAPT library, rescan requests page, and profile.
   if (
     isSocAnalyst &&
     location.pathname !== "/admin/vapt-reports" &&
@@ -37,7 +37,6 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
     location.pathname !== "/admin/vapt-upload" &&
     location.pathname !== "/admin/vapt-access-requests" &&
     location.pathname !== "/admin/rescan-requests" &&
-    location.pathname !== "/admin/soc-dashboard" &&
     location.pathname !== "/admin/profile"
   ) {
     return <Navigate to="/admin/vapt-reports" replace />;
@@ -70,15 +69,13 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
                 { to: "/admin/vapt-upload", label: "Upload Report", icon: "upload_file" },
                 { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
                 { to: "/admin/vapt-access-requests", label: "VAPT Access Requests", icon: "verified_user" },
-                { to: "/admin/soc-dashboard", label: "SOC Console", icon: "monitoring" },
               ]
             : [
                 { to: "/admin", label: "User Management", icon: "group" },
                 { to: "/admin/subscription", label: "Subscription Management", icon: "payments" },
                 { to: "/admin/audit", label: "Audit & Security", icon: "shield" },
-                { to: "/admin/cloud-assessments", label: "Cloud Assessments", icon: "cloud" },
+                { to: "/admin/cloud-assessment", label: "Cloud Assessment", icon: "cloud" },
                 { to: "/admin/reports", label: "Reported Issues", icon: "flag" },
-                { to: "/admin/soc-dashboard", label: "SOC Console", icon: "monitoring" },
                 { to: "/admin/semgrep", label: "Tool Updates", icon: "system_update_alt" },
                 { to: "/admin/vapt-access-requests", label: "VAPT Access Requests", icon: "verified_user" },
                 { to: "/admin/vapt-reports", label: "VAPT Reports", icon: "fact_check" },
@@ -96,7 +93,9 @@ function AdminLayout({ isDarkMode, onToggleDarkMode }) {
         <main className="flex-1 min-h-0 overflow-y-auto bg-[radial-gradient(circle_at_top_left,_rgba(128,0,128,0.16),_transparent_28%),linear-gradient(135deg,_#f8fafc_0%,_#f5f3ff_100%)] px-3 py-3 transition-colors duration-300 sm:px-4 sm:py-4 lg:px-6 lg:py-6 dark:bg-[radial-gradient(circle_at_top_left,_rgba(128,0,128,0.2),_transparent_30%),linear-gradient(135deg,_#020617_0%,_#111827_100%)]">
           <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-6">
             <div className="rounded-[1.5rem] border border-slate-200/70 bg-white/70 p-3 shadow-[0_20px_60px_rgba(15,23,42,0.06)] backdrop-blur-xl sm:rounded-[2rem] sm:p-5 lg:p-8 dark:border-slate-800 dark:bg-slate-900/70">
-              <Outlet />
+              <Suspense fallback={<PageLoading />}>
+                <Outlet />
+              </Suspense>
             </div>
           </div>
         </main>

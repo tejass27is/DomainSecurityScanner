@@ -8,6 +8,7 @@ if (!API_BASE) {
   );
 }
 const requestCache = new Map();
+const inFlightRequests = new Map();
 const CACHE_TTL_MS = 30000;
 
 function buildUrl(endpoint) {
@@ -42,41 +43,58 @@ async function request(endpoint, { method = "GET", body, token, signal, publicIp
     }
   }
 
-  const res = await fetch(buildUrl(endpoint), {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-    signal,
-    cache: skipCache ? "no-store" : "default",
-  });
+  const inFlightKey = method === "GET" && !signal
+    ? JSON.stringify([method, endpoint, token || "", publicIp || "", allowFailure, skipCache])
+    : null;
+  const inFlightRequest = inFlightKey ? inFlightRequests.get(inFlightKey) : null;
+  if (inFlightRequest) return inFlightRequest;
 
-  const contentType = res.headers.get("content-type") || "";
-  const data = contentType.includes("application/json")
-    ? await res.json().catch(() => null)
-    : await res.text().catch(() => null);
+  const fetchRequest = (async () => {
+    const res = await fetch(buildUrl(endpoint), {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal,
+      cache: skipCache ? "no-store" : "default",
+    });
 
-  if (!res.ok) {
-    if (allowFailure) {
-      return null;
+    const contentType = res.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await res.json().catch(() => null)
+      : await res.text().catch(() => null);
+
+    if (!res.ok) {
+      if (allowFailure) {
+        return null;
+      }
+
+      const message = typeof data === "object" && data?.detail
+        ? data.detail
+        : `Request failed (${res.status})`;
+      const error = new Error(message);
+      error.status = res.status;
+      throw error;
     }
 
-    const message = typeof data === "object" && data?.detail
-      ? data.detail
-      : `Request failed (${res.status})`;
-    const error = new Error(message);
-    error.status = res.status;
-    throw error;
-  }
+    if (method !== "GET") {
+      requestCache.clear();
+    }
 
-  if (method !== "GET") {
-    requestCache.clear();
-  }
+    if (cacheKey) {
+      requestCache.set(cacheKey, { value: data, timestamp: Date.now() });
+    }
 
-  if (cacheKey) {
-    requestCache.set(cacheKey, { value: data, timestamp: Date.now() });
-  }
+    return data;
+  })();
 
-  return data;
+  if (inFlightKey) inFlightRequests.set(inFlightKey, fetchRequest);
+  try {
+    return await fetchRequest;
+  } finally {
+    if (inFlightKey && inFlightRequests.get(inFlightKey) === fetchRequest) {
+      inFlightRequests.delete(inFlightKey);
+    }
+  }
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────────

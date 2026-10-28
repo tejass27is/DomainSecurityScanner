@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import Navbar from "../components/Navbar";
+import PageLoading from "../components/PageLoading";
 import { getCloudAssessmentAccessStatus, getVaptAccessStatus, getWebscanAccessStatus } from "../services/api";
 
 function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
@@ -143,7 +144,9 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
         <main className="flex-1 min-h-0 overflow-y-auto bg-[radial-gradient(circle_at_top_left,_rgba(128,0,128,0.16),_transparent_28%),linear-gradient(135deg,_#f8fafc_0%,_#f5f3ff_100%)] px-3 py-3 text-slate-900 transition-colors duration-300 sm:px-4 sm:py-4 lg:px-6 lg:py-6 dark:bg-[radial-gradient(circle_at_top_left,_rgba(128,0,128,0.2),_transparent_30%),linear-gradient(135deg,_#020617_0%,_#111827_100%)] dark:text-slate-100">
           <div className="w-full">
             <div className="rounded-[1.5rem] border border-slate-200/70 bg-white/70 p-3 shadow-[0_20px_60px_rgba(15,23,42,0.06)] backdrop-blur-xl sm:rounded-[2rem] sm:p-5 lg:p-8 dark:border-slate-800 dark:bg-slate-900/70">
-              <Outlet />
+              <Suspense fallback={<PageLoading />}>
+                <Outlet />
+              </Suspense>
             </div>
           </div>
         </main>

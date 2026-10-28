@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, useEffect, useState } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 
 import PublicLayout from "./layouts/PublicLayout";
@@ -24,14 +24,12 @@ const MalwareScanHistory = lazy(() => import("./pages/MalwareScanHistory"));
 const MalwareDashboard = lazy(() => import("./pages/MalwareDashboard"));
 const Profile = lazy(() => import("./pages/Profile"));
 const AdminReports = lazy(() => import("./pages/AdminReports"));
-const AdminCloudAssessments = lazy(() => import("./pages/AdminCloudAssessments"));
 const VaptUpload = lazy(() => import("./pages/VaptUpload"));
 const VaptReports = lazy(() => import("./pages/VaptReports"));
 const VaptReport = lazy(() => import("./pages/VaptReport"));
 const SocAnalystVaptReports = lazy(() => import("./pages/SocAnalystVaptReports"));
 const AdminRescanRequests = lazy(() => import("./pages/AdminRescanRequests"));
 const AdminVaptAccessRequests = lazy(() => import("./pages/AdminVaptAccessRequests"));
-const SocDashboard = lazy(() => import("./pages/SocDashboard"));
 const AdminSemgrep = lazy(() => import("./pages/AdminSemgrep"));
 
 function App() {
@@ -56,13 +54,6 @@ function App() {
   }, [isDarkMode]);
 
   return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-screen items-center justify-center bg-slate-50 text-slate-600 dark:bg-slate-950 dark:text-slate-300">
-          Loading…
-        </div>
-      }
-    >
       <Routes>
       <Route
         path="/"
@@ -120,19 +111,19 @@ function App() {
         <Route path="subscription" element={<AdminSubscription />} />
         <Route path="audit" element={<AdminAudit />} />
         <Route path="reports" element={<AdminReports />} />
-        <Route path="cloud-assessments" element={<AdminCloudAssessments />} />
+        <Route path="cloud-assessments" element={<Navigate to="/admin/cloud-assessment" replace />} />
+        <Route path="cloud-assessment" element={<CloudAssessment adminMode />} />
         <Route path="vapt-reports" element={<SocAnalystVaptReports />} />
         <Route path="vapt-reports/:importId" element={<VaptReport />} />
         <Route path="vapt-upload" element={<VaptUpload />} />
         <Route path="vapt-access-requests" element={<AdminVaptAccessRequests />} />
         <Route path="rescan-requests" element={<AdminRescanRequests />} />
-        <Route path="soc-dashboard" element={<SocDashboard />} />
+        <Route path="soc-dashboard" element={<Navigate to="/admin" replace />} />
         <Route path="semgrep" element={<AdminSemgrep />} />
         <Route path="prowler" element={<Navigate to="/admin/semgrep" replace />} />
         <Route path="profile" element={<Profile />} />
       </Route>
       </Routes>
-    </Suspense>
   );
 }
 

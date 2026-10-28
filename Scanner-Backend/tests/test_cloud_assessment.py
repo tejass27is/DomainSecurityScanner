@@ -137,6 +137,12 @@ def test_approved_user_can_pass_cloud_assessment_access_check():
     assert require_cloud_assessment_access(approved_user) is approved_user
 
 
+def test_admin_can_pass_cloud_assessment_access_without_client_approval():
+    admin_user = SimpleNamespace(role="admin", cloud_assessment_approved=False)
+
+    assert require_cloud_assessment_access(admin_user) is admin_user
+
+
 def test_cloud_assessment_scan_routes_require_approved_access():
     expected_paths = {
         ("POST", "/cloud-assessment/scans"),
@@ -167,7 +173,11 @@ def test_scan_serialization_hides_legacy_version_and_caller_metadata():
         status="completed",
         summary={
             "total_checks": 1,
-            "progress": {"output_tail": "recent Prowler output"},
+            "progress": {
+                "message": "Prowler is starting.",
+                "output_tail": "recent Prowler output",
+                "events": [{"message": "Prowler scan active"}],
+            },
             "metadata": {
                 "prowler_version": "5.45.0",
                 "caller_identity": {"Account": "123456789012"},
@@ -176,7 +186,13 @@ def test_scan_serialization_hides_legacy_version_and_caller_metadata():
         error=None,
         created_at=None,
         completed_at=None,
-        findings=[{"check_id": "check-1", "prowler_version": "5.45.0"}],
+        findings=[
+            {
+                "check_id": "check-1",
+                "title": "Prowler check",
+                "prowler_version": "5.45.0",
+            }
+        ],
     )
 
     serialized = cloud_assessment_routes._serialize_scan(scan, include_findings=True)
@@ -186,10 +202,13 @@ def test_scan_serialization_hides_legacy_version_and_caller_metadata():
 
     assert "metadata" not in serialized["summary"]
     assert serialized["summary"]["account_id"] == "123456789012"
-    assert serialized["summary"]["progress"]["output_tail"] == "recent Prowler output"
+    assert serialized["summary"]["progress"]["output_tail"] == "recent cloud scanner output"
+    assert serialized["summary"]["progress"]["message"] == "cloud scanner is starting."
+    assert serialized["summary"]["progress"]["events"][0]["message"] == "cloud scanner scan active"
     assert "output_tail" not in list_serialized["summary"]["progress"]
     assert "output_tail" in scan.summary["progress"]
     assert "prowler_version" not in serialized["findings"][0]
+    assert serialized["findings"][0]["title"] == "cloud scanner check"
     assert "metadata" in scan.summary
 
 
@@ -553,6 +572,51 @@ def test_assessment_reserves_quota_only_after_credentials_are_verified(monkeypat
     assert len(scheduled["args"]) == 5
 
 
+def test_admin_assessment_does_not_reserve_user_quota(monkeypatch):
+    request = TypeAdapter(CloudAssessmentRequest).validate_python(
+        {
+            "provider": "aws",
+            "access_key_id": "AKIAABCDEFGHIJKLMNOP",
+            "secret_access_key": "valid-secret",
+        }
+    )
+    events = []
+
+    class FakeDb:
+        def add(self, _scan):
+            events.append("persist")
+
+        def commit(self):
+            pass
+
+        def refresh(self, _scan):
+            pass
+
+    def schedule_task(function, *args):
+        events.append("schedule")
+
+    monkeypatch.setattr(
+        cloud_assessment_routes,
+        "validate_cloud_credentials",
+        lambda *_args: "123456789012",
+    )
+    monkeypatch.setattr(
+        cloud_assessment_routes,
+        "reserve_scan_quota",
+        lambda *_args: events.append("reserve"),
+    )
+
+    result = cloud_assessment_routes.create_cloud_assessment(
+        request,
+        SimpleNamespace(add_task=schedule_task),
+        FakeDb(),
+        SimpleNamespace(user_id="admin-1", role="admin"),
+    )
+
+    assert events == ["persist", "schedule"]
+    assert result["status"] == "running"
+
+
 def test_prowler_findings_are_normalized_and_summarized():
     findings = _normalize_csv_findings(
         "CHECK_ID;CHECK_TITLE;COMPLIANCE;PROWLER_VERSION;RESOURCE_TAGS;STATUS;"
@@ -652,10 +716,11 @@ def test_prowler_log_tail_is_bounded_and_redacts_credentials(tmp_path):
 
     assert len(output) <= cloud_assessment_service.PROWLER_LOG_TAIL_MAX_CHARS
     assert "old output" not in output
-    assert "Prowler check:" in output
+    assert "cloud scanner check:" in output
     assert "\x1b[" not in output
     assert "example-access-key" not in redacted
     assert "[REDACTED]" in redacted
+    assert "Prowler" not in redacted
 
 
 def test_prowler_log_tail_keeps_output_when_log_has_no_newline(tmp_path):
@@ -667,7 +732,7 @@ def test_prowler_log_tail_keeps_output_when_log_has_no_newline(tmp_path):
     output = _read_prowler_log_tail(log_path)
 
     assert output
-    assert "Prowler rendered terminal output" in output
+    assert "cloud scanner rendered terminal output" in output
     assert len(output) <= cloud_assessment_service.PROWLER_LOG_TAIL_MAX_CHARS
 
 
@@ -689,9 +754,9 @@ def test_live_prowler_findings_are_formatted_for_terminal(tmp_path):
     assert "Public access is enabled" in output
 
 
-def test_prowler_progress_message_shows_elapsed_output_and_finding_count():
+def test_cloud_assessment_progress_message_shows_elapsed_output_and_finding_count():
     assert _format_prowler_progress(187, 2508, 12) == (
-        "Prowler scan active | elapsed 00:03:07 | "
+        "Cloud assessment active | elapsed 00:03:07 | "
         "2,508 output bytes | 12 findings discovered."
     )
 
@@ -770,11 +835,12 @@ def test_nonzero_prowler_exit_with_csv_report_completes_assessment(monkeypatch):
     assert scan.summary["progress"]["stage"] == "collecting_results"
     assert scan.summary["progress"]["events"]
     assert any(
-        "Prowler scan active" in event["message"]
+        "Cloud assessment active" in event["message"]
         for event in scan.summary["progress"]["events"]
     )
     assert scan.summary["progress"]["started_at"]
-    assert "Prowler check started" in scan.summary["progress"]["output_tail"]
+    assert "cloud scanner check started" in scan.summary["progress"]["output_tail"]
+    assert "Prowler" not in scan.summary["progress"]["output_tail"]
     assert "Live findings written: 1" in scan.summary["progress"]["output_tail"]
     assert "MFA disabled" in scan.summary["progress"]["output_tail"]
     assert "example-access-key" not in scan.summary["progress"]["output_tail"]
@@ -833,6 +899,6 @@ def test_nonzero_prowler_exit_without_report_fails_assessment(monkeypatch):
     )
 
     assert scan.status == "failed"
-    assert "without producing a CSV report" in scan.error
+    assert "without producing a report" in scan.error
     assert scan.summary["progress"]["stage"] == "failed"
     assert scan.completed_at is not None

@@ -55,6 +55,16 @@ function requiresFindingTriage(finding) {
   return ["critical", "high", "medium"].includes(severity);
 }
 
+function isLowOrInformationalFinding(finding) {
+  if (!finding) return false;
+  const severity = String(finding.severity_label || finding.severity || "").trim().toLowerCase();
+  return ["low", "info", "informational"].includes(severity);
+}
+
+function requiresSolvedRemark(finding, status) {
+  return isLowOrInformationalFinding(finding) && status === "solved";
+}
+
 const LIFECYCLE_LABEL = {
   report_published: "Initial report published",
   awaiting_soc_remediation_acceptance: "Remediation review in progress",
@@ -202,6 +212,7 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
   const [status, setStatus] = useState(finding.status || "pending");
   const [comment, setComment] = useState(finding.comment || "");
   const requiresTriage = requiresFindingTriage(finding);
+  const solvedRemarkRequired = requiresSolvedRemark(finding, status);
   const cves = (finding.cves || []).filter(Boolean);
   const references = (finding.references || []).filter((r) =>
     r.startsWith("http://") || r.startsWith("https://"),
@@ -258,18 +269,17 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
       </td>
       <td className="min-w-[300px] px-3 py-3 align-top">
         <div className="space-y-3">
-          {readOnly || !requiresTriage ? (
+          {readOnly ? (
             <div className="space-y-2">
               <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_BADGE[status] || STATUS_BADGE.pending}`}>
                 <span className={`h-1.5 w-1.5 rounded-full ${status === "solved" ? "bg-emerald-500" : status === "ignore" || status === "false_positive" ? "bg-purple-500" : "bg-amber-500"}`} />
-                {!requiresTriage ? "No triage required" : STATUS_LABEL[status] || status}
+                {!requiresTriage && status === "pending"
+                  ? "No action taken (optional)"
+                  : !requiresTriage && status === "solved"
+                    ? "Client-reported solved"
+                    : STATUS_LABEL[status] || status}
               </span>
               <p className="whitespace-pre-wrap text-[12px] text-slate-600 dark:text-slate-300">{comment || "—"}</p>
-              {!readOnly && !requiresTriage && (
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Low and Informational findings remain visible in the report but do not need a status update.
-                </p>
-              )}
             </div>
           ) : (
             <div className="space-y-3">
@@ -279,7 +289,7 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
                   onChange={(e) => setStatus(e.target.value)}
                   className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
                 >
-                  <option value="pending">Pending</option>
+                  <option value="pending">{requiresTriage ? "Pending" : "No action (optional)"}</option>
                   <option value="solved">Solved</option>
                   <option value="ignore">Ignore</option>
                   <option value="false_positive">False positive</option>
@@ -287,6 +297,8 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                   {status === "ignore" || status === "false_positive"
                     ? "A comment is required when ignoring or marking a finding false positive."
+                    : solvedRemarkRequired
+                      ? "Add a remark describing the fix; it is required when you mark a Low or Informational finding Solved."
                     : "Add a note for this finding if you want; it is optional."}
                 </p>
               </div>
@@ -295,10 +307,12 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
                   rows={3}
-                  placeholder="Add a note about how the finding was resolved (optional)"
+                  placeholder={solvedRemarkRequired ? "Describe what you changed (required)" : "Add a note about this finding (optional)"}
                   className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
                 />
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">Add a note about how the finding was resolved (optional).</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {solvedRemarkRequired ? "Your remark will be shown to SOC as a client-reported fix, not an independently verified result." : "A remark is optional unless you choose Ignore or False positive."}
+                </p>
               </div>
             </div>
           )}
@@ -745,6 +759,7 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const result = schedule.result_data || {};
+  const hasUploadedResults = Boolean(result.uploaded_at || result.findings?.length || result.normalized_summary);
   const fixed = (result.fixed_findings || []).map((f) => ({ ...f, _verificationStatus: "fixed" }));
   const remaining = (result.remaining_findings || []).map((f) => ({ ...f, _verificationStatus: "unresolved" }));
   const newFindings = (result.new_findings || []).map((f) => ({ ...f, _verificationStatus: "new" }));
@@ -753,7 +768,7 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
   const scheduleIndex = record?._scheduleIndex ?? 0;
   const reviewComplete = result.client_review_status === "client_completed";
   const reviewFindings = [...remaining, ...newFindings];
-  const hasActionableReview = reviewFindings.some(requiresFindingTriage);
+  const hasReviewFindings = reviewFindings.length > 0;
 
   const updateDraft = (findingId, field, value) => setDrafts((prev) => ({ ...prev, [findingId]: { ...prev[findingId], [field]: value } }));
   const saveReview = async () => {
@@ -761,9 +776,22 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
     setMessage("");
     try {
       for (const finding of reviewFindings) {
-        if (!requiresFindingTriage(finding)) continue;
+        if (!Object.prototype.hasOwnProperty.call(drafts, finding.id)) continue;
         const draft = drafts[finding.id] || finding;
-        await updateVerificationFindingStatus(record.import_id, schedule.id, finding.id, { status: draft.status || "pending", comment: draft.comment || "" }, localStorage.getItem("token"));
+        const status = draft.status || "pending";
+        const comment = (draft.comment || "").trim();
+        if (
+          ((status === "ignore" || status === "false_positive") ||
+            requiresSolvedRemark(finding, status)) &&
+          !comment
+        ) {
+          throw new Error(
+            status === "solved"
+              ? "Add a remark before marking a Low or Informational verification finding Solved."
+              : "Add a comment before choosing Ignore or False positive.",
+          );
+        }
+        await updateVerificationFindingStatus(record.import_id, schedule.id, finding.id, { status, comment }, localStorage.getItem("token"));
       }
       await submitVerificationReview(record.import_id, schedule.id, localStorage.getItem("token"));
       setMessage("Verification review submitted to SOC.");
@@ -813,6 +841,7 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
             }`}>
               {schedule.status === "completed" && newFindings.length === 0 ? "All fixes confirmed" :
                schedule.status === "completed" ? "Verification complete; new findings listed" :
+               schedule.status === "failed" && hasUploadedResults ? "Verification complete; no fixes confirmed" :
                schedule.status === "failed" ? "Upload failed" :
                "Completed with errors"}
             </span>
@@ -891,7 +920,7 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
                     key={f.id || f.plugin_id || `${group.label}-${idx}`}
                     finding={f}
                     draft={drafts[f.id]}
-                    onDraftChange={!isPlatformView && f._verificationStatus !== "fixed" && !reviewComplete ? updateDraft : undefined}
+                    onDraftChange={!isPlatformView && f._verificationStatus !== "fixed" && f._verificationStatus !== "unverified" && !reviewComplete ? updateDraft : undefined}
                   />
                 )),
               ])}
@@ -903,7 +932,7 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
             <p className="text-sm text-slate-500 dark:text-slate-400">
               {statusCounts.fixed} confirmed fixed · {statusCounts.unresolved} still unresolved · {newFindings.length} new · {unverified.length} not verified
             </p>
-            {!isPlatformView && hasActionableReview && !reviewComplete && (
+            {!isPlatformView && hasReviewFindings && !reviewComplete && (
               <div className="flex items-center gap-3">
                 {message && <p className="text-xs font-semibold text-sky-800 dark:text-sky-200">{message}</p>}
                 <button
@@ -997,14 +1026,19 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
                 : `${hostsFixed.length} of ${finding.original_host_count} affected assets confirmed fixed${hostsUnverified.length ? `; ${hostsUnverified.length} not included in this scan` : ""}.`}
             </p>
           )}
-          {onDraftChange && !isFixed && requiresFindingTriage(finding) && (
+          {!isFixed && isLowOrInformationalFinding(finding) && status === "solved" && (
+            <p className="text-[11px] leading-4 text-emerald-700 dark:text-emerald-400">
+              Client-reported solved; this does not replace the verification result.
+            </p>
+          )}
+          {onDraftChange && !isFixed && (
             <div className="space-y-2">
               <select
                 value={status}
                 onChange={(e) => onDraftChange(finding.id, "status", e.target.value)}
                 className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
               >
-                <option value="pending">Pending</option>
+              <option value="pending">{requiresFindingTriage(finding) ? "Pending" : "No action (optional)"}</option>
                 <option value="solved">Solved</option>
                 <option value="ignore">Ignore</option>
                 <option value="false_positive">False positive</option>
@@ -1012,14 +1046,23 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
               <input
                 value={comment}
                 onChange={(e) => onDraftChange(finding.id, "comment", e.target.value)}
-                placeholder="Comment required for Ignore / False positive"
-                className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
+              placeholder={
+                requiresSolvedRemark(finding, status)
+                  ? "Remark required: describe what you changed"
+                  : "Comment required for Ignore / False positive"
+              }
+              className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
               />
+              {requiresSolvedRemark(finding, status) && (
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                SOC will see this as a client-reported fix; verification remains separate.
+              </p>
+              )}
             </div>
           )}
-          {onDraftChange && !isFixed && !requiresFindingTriage(finding) && (
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              Low and Informational findings remain visible but do not need a status update.
+          {!onDraftChange && comment && (
+            <p className="whitespace-pre-wrap text-[11px] text-slate-600 dark:text-slate-300">
+              <span className="font-semibold">Client remark:</span> {comment}
             </p>
           )}
         </div>
@@ -1531,10 +1574,19 @@ export default function VaptReport() {
     });
   }, [record, search, ipFilter, sevFilter, statusFilter, catFilter]);
 
-  const hasInvalidDraft = useMemo(() => Object.values(draftChanges).some((draft) => {
+  const hasInvalidDraft = useMemo(() => Object.entries(draftChanges).some(([findingId, draft]) => {
     const status = (draft.status || "").toLowerCase();
-    return (status === "ignore" || status === "false_positive") && !(draft.comment || "").trim();
-  }), [draftChanges]);
+    return (
+      ((status === "ignore" || status === "false_positive") ||
+        requiresSolvedRemark(record?.findings?.find((item) => String(item.id) === findingId), status)) &&
+      !(draft.comment || "").trim()
+    );
+  }) || (record?.findings || []).some((finding) => {
+    const draft = draftChanges[String(finding.id)];
+    const status = (draft?.status ?? finding.status ?? "pending").toLowerCase();
+    const comment = draft?.comment ?? finding.comment ?? "";
+    return requiresSolvedRemark(finding, status) && !comment.trim();
+  }), [draftChanges, record]);
 
   const hasPendingFindings = useMemo(() => {
     if (!record) return false;
@@ -2186,7 +2238,7 @@ export default function VaptReport() {
                 </button>
                 {hasPendingFindings && (
                   <div className="text-sm text-amber-600 dark:text-amber-400">
-                    Actionable findings must be marked Solved, Ignore, or False positive before submitting. Low and Informational findings do not require triage.
+                    Actionable findings must be triaged before submitting. Low and Informational findings are optional; if marked Solved, add a remark describing the fix.
                   </div>
                 )}
                 {submitError && (
@@ -2196,7 +2248,7 @@ export default function VaptReport() {
                 )}
                 {hasInvalidDraft && (
                   <div className="text-sm text-amber-600 dark:text-amber-400">
-                    Some rows require comments for Ignore / False positive before saving.
+                    Add required remarks for Low/Informational findings marked Solved and comments for Ignore / False positive before saving.
                   </div>
                 )}
               </div>
@@ -2277,7 +2329,7 @@ export default function VaptReport() {
                   </div>
                   {hasPendingFindings && (
                     <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
-                      Actionable findings must be marked Solved, Ignore, or False positive before submitting. Low and Informational findings do not require triage.
+                      Actionable findings must be marked Solved, Ignore, or False positive before submitting. Low and Informational findings are optional; if marked Solved, add a remark describing the fix.
                     </div>
                   )}
                   {submitError && (
@@ -2287,7 +2339,7 @@ export default function VaptReport() {
                   )}
                   {hasInvalidDraft && (
                     <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
-                      Some rows require comments for Ignore / False positive before saving.
+                      Add required remarks for Low/Informational findings marked Solved and comments for Ignore / False positive before saving.
                     </div>
                   )}
                 </>

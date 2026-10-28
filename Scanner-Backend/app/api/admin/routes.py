@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Text, cast
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.api.admin.schemas import (
     AssignPromoCodeRequest,
@@ -846,6 +846,18 @@ def list_cloud_assessments_for_admin(
 ):
     rows = (
         db.query(CloudSecurityAssessment, User, Organization)
+        .options(
+            load_only(
+                CloudSecurityAssessment.scan_id,
+                CloudSecurityAssessment.user_id,
+                CloudSecurityAssessment.provider,
+                CloudSecurityAssessment.status,
+                CloudSecurityAssessment.summary,
+                CloudSecurityAssessment.scope,
+                CloudSecurityAssessment.created_at,
+                CloudSecurityAssessment.completed_at,
+            )
+        )
         .outerjoin(User, CloudSecurityAssessment.user_id == User.user_id)
         .outerjoin(Organization, User.org_id == Organization.org_id)
         .order_by(CloudSecurityAssessment.created_at.desc())

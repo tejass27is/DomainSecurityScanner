@@ -13,6 +13,10 @@ function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+function hideScannerBrand(value) {
+  return String(value || "").replace(/prowler/gi, "cloud scanner");
+}
+
 function ScannerConnectionCard() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -93,7 +97,7 @@ function ToolUpdateCard({ name, tool, description, installedLabel, checkStatus }
       setStatus(result);
       setCheckedAt(new Date(result.checked_at || Date.now()).toLocaleString());
     } catch (err) {
-      setError(err.message || `Could not check the ${name} version.`);
+      setError(hideScannerBrand(err.message || `Could not check the ${name} version.`));
     } finally {
       setLoading(false);
     }
@@ -135,7 +139,7 @@ function ToolUpdateCard({ name, tool, description, installedLabel, checkStatus }
         `The ${name} update is still not confirmed. Check the deployment workflow before trying again.`
       );
     } catch (err) {
-      setError(err.message || `Could not start the ${name} update.`);
+      setError(hideScannerBrand(err.message || `Could not start the ${name} update.`));
       setUpdateMessage("");
     } finally {
       setUpdating(false);
@@ -261,7 +265,7 @@ function AdminSemgrep() {
       <ToolUpdateCard
         name="Prowler"
         tool="prowler"
-        description="Check the scanner's installed version and latest release."
+        description="Check the cloud scanner's installed version and latest release."
         installedLabel="Installed in backend image"
         checkStatus={getProwlerVersionStatus}
       />

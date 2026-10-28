@@ -12,6 +12,9 @@ class FakeQuery:
     def outerjoin(self, *_args):
         return self
 
+    def options(self, *_args):
+        return self
+
     def order_by(self, *_args):
         return self
 

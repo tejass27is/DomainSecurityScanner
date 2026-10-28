@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Cloud, Download, Filter, LoaderCircle, Play, Search, ShieldCheck, Terminal } from "lucide-react";
+import AlertTriangle from "lucide-react/dist/esm/icons/triangle-alert.js";
+import CheckCircle2 from "lucide-react/dist/esm/icons/circle-check.js";
+import Cloud from "lucide-react/dist/esm/icons/cloud.js";
+import Download from "lucide-react/dist/esm/icons/download.js";
+import Filter from "lucide-react/dist/esm/icons/list-filter.js";
+import LoaderCircle from "lucide-react/dist/esm/icons/loader-circle.js";
+import Play from "lucide-react/dist/esm/icons/play.js";
+import Search from "lucide-react/dist/esm/icons/search.js";
+import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.js";
+import Terminal from "lucide-react/dist/esm/icons/terminal.js";
 import {
   createCloudAssessment,
   downloadCloudAssessmentReport,
   getCloudAssessment,
   getCloudAssessmentAccessStatus,
+  getAdminCloudAssessments,
   listCloudAssessments,
 } from "../services/api";
 import {
@@ -65,6 +75,29 @@ function formatDate(value) {
   return new Date(value).toLocaleString();
 }
 
+function formatOrganizationDomain(domain) {
+  if (typeof domain === "string") return domain;
+  if (Array.isArray(domain)) return domain.join(", ");
+  if (domain && typeof domain === "object") return Object.values(domain).join(", ");
+  return "—";
+}
+
+function getAdminScopeDescription(scan) {
+  const scope = scan.scope || {};
+  if (scan.provider === "aws") {
+    return Array.isArray(scope.regions) && scope.regions.length
+      ? scope.regions.join(", ")
+      : "All configured regions";
+  }
+  if (scan.provider === "azure") {
+    return Array.isArray(scope.subscription_ids) ? scope.subscription_ids.join(", ") : "—";
+  }
+  if (scan.provider === "gcp") {
+    return Array.isArray(scope.project_ids) ? scope.project_ids.join(", ") : "—";
+  }
+  return "—";
+}
+
 function Field({ label, type = "text", value, onChange, placeholder, required = true, autoComplete }) {
   return (
     <label className={labelClass}>
@@ -117,16 +150,16 @@ function formatElapsedTime(totalSeconds) {
   return `${hours}:${minutes}:${seconds}`;
 }
 
-function formatProwlerTerminalOutput(scan, currentTime) {
+function formatScannerTerminalOutput(scan, currentTime) {
   const progress = scan?.summary?.progress || {};
   const activity = (progress.events || []).map((event) => {
     const timestamp = event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : "";
-    return `[${timestamp}] ${String(event.stage || "info").toUpperCase()}: ${event.message}`;
+    return `[${timestamp}] ${String(event.stage || "info").toUpperCase()}: ${hideScannerBrand(event.message)}`;
   });
-  const outputTail = String(progress.output_tail || "").trim();
+  const outputTail = hideScannerBrand(progress.output_tail).trim();
 
   if (progress.message) {
-    activity.push(`[${String(progress.stage || "info").toUpperCase()}] ${progress.message}`);
+    activity.push(`[${String(progress.stage || "info").toUpperCase()}] ${hideScannerBrand(progress.message)}`);
   }
   if (scan?.status === "running") {
     const startedAt = progress.started_at || progress.events?.[0]?.timestamp;
@@ -138,18 +171,22 @@ function formatProwlerTerminalOutput(scan, currentTime) {
     );
   }
   if (outputTail) {
-    activity.push("", "---- Prowler CLI output ----", outputTail);
+    activity.push("", "---- Cloud assessment scanner output ----", outputTail);
   } else if (scan?.status === "running") {
     activity.push(
       "",
-      progress.message || "Prowler is running; waiting for CLI output.",
+      hideScannerBrand(progress.message) || "The cloud assessment scanner is running; waiting for output.",
     );
   }
 
   return activity.join("\n");
 }
 
-function CloudAssessment() {
+function hideScannerBrand(value) {
+  return String(value || "").replace(/prowler/gi, "cloud scanner");
+}
+
+function CloudAssessment({ adminMode = false }) {
   const [provider, setProvider] = useState("aws");
   const [form, setForm] = useState({
     accessKeyId: "",
@@ -166,6 +203,9 @@ function CloudAssessment() {
   const [selectedAwsRegions, setSelectedAwsRegions] = useState([]);
   const [scans, setScans] = useState([]);
   const [selectedScan, setSelectedScan] = useState(null);
+  const [adminHistory, setAdminHistory] = useState([]);
+  const [adminHistoryLoading, setAdminHistoryLoading] = useState(false);
+  const [adminHistoryError, setAdminHistoryError] = useState("");
   const [loading, setLoading] = useState(true);
   const [accessApproved, setAccessApproved] = useState(null);
   const [scanQuota, setScanQuota] = useState(null);
@@ -178,7 +218,7 @@ function CloudAssessment() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [terminalClock, setTerminalClock] = useState(Date.now());
-  const prowlerOutputRef = useRef(null);
+  const scannerOutputRef = useRef(null);
 
   const refreshScans = useCallback(async () => {
     const token = localStorage.getItem("token");
@@ -198,11 +238,32 @@ function CloudAssessment() {
     }
   }, []);
 
+  const refreshAdminHistory = useCallback(async () => {
+    setAdminHistoryLoading(true);
+    setAdminHistoryError("");
+    try {
+      const result = await getAdminCloudAssessments(localStorage.getItem("token"));
+      setAdminHistory(Array.isArray(result) ? result : []);
+    } catch (requestError) {
+      setAdminHistoryError(requestError.message || "Could not load all cloud assessments.");
+    } finally {
+      setAdminHistoryLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) {
       setError("Please sign in to access Cloud Assessment.");
       setLoading(false);
+      return undefined;
+    }
+
+    if (adminMode) {
+      setAccessApproved(true);
+      setScanQuota(null);
+      refreshScans();
+      refreshAdminHistory();
       return undefined;
     }
 
@@ -228,13 +289,18 @@ function CloudAssessment() {
     return () => {
       cancelled = true;
     };
-  }, [refreshScans]);
+  }, [adminMode, refreshAdminHistory, refreshScans]);
 
   useEffect(() => {
-    if (!scans.some((scan) => scan.status === "running")) return undefined;
-    const intervalId = window.setInterval(refreshScans, 5000);
+    const hasRunningScans = scans.some((scan) => scan.status === "running")
+      || (adminMode && adminHistory.some((scan) => scan.status === "running"));
+    if (!hasRunningScans) return undefined;
+    const intervalId = window.setInterval(() => {
+      refreshScans();
+      if (adminMode) refreshAdminHistory();
+    }, 5000);
     return () => window.clearInterval(intervalId);
-  }, [refreshScans, scans]);
+  }, [adminMode, adminHistory, refreshAdminHistory, refreshScans, scans]);
 
   useEffect(() => {
     if (selectedScan?.status !== "running") return undefined;
@@ -243,8 +309,8 @@ function CloudAssessment() {
   }, [selectedScan?.status]);
 
   useEffect(() => {
-    if (selectedScan?.status === "running" && prowlerOutputRef.current) {
-      prowlerOutputRef.current.scrollTop = prowlerOutputRef.current.scrollHeight;
+    if (selectedScan?.status === "running" && scannerOutputRef.current) {
+      scannerOutputRef.current.scrollTop = scannerOutputRef.current.scrollHeight;
     }
   }, [selectedScan?.status, selectedScan?.summary?.progress?.output_tail]);
 
@@ -307,10 +373,15 @@ function CloudAssessment() {
 
     try {
       const scan = await createCloudAssessment(body, token);
-      setScanQuota((current) => current ? { ...current, used: current.used + 1 } : current);
+      if (adminMode) refreshAdminHistory();
+      if (!adminMode) {
+        setScanQuota((current) => current ? { ...current, used: current.used + 1 } : current);
+      }
       setScans((current) => [scan, ...current.filter((item) => item.scan_id !== scan.scan_id)]);
       setSelectedScan(null);
-      setNotice("Assessment started. Your credentials were sent securely for this scan and are not saved.");
+      setNotice(adminMode
+        ? "Assessment started with no scan limit. Your credentials were sent securely for this scan and are not saved."
+        : "Assessment started. Your credentials were sent securely for this scan and are not saved.");
       setForm((current) => ({
         ...current,
         accessKeyId: "",
@@ -436,18 +507,20 @@ function CloudAssessment() {
     return <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>;
   }
 
-  const scanLimitReached = !scanQuota || scanQuota.used >= scanQuota.limit;
+  const scanLimitReached = !adminMode && (!scanQuota || scanQuota.used >= scanQuota.limit);
 
   return (
     <div className="mx-auto max-w-7xl space-y-8 p-4 sm:p-6">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="mb-2 text-xs font-bold uppercase tracking-[0.28em] text-indigo-600">Prowler-powered</p>
+          <p className="mb-2 text-xs font-bold uppercase tracking-[0.28em] text-indigo-600">
+            {adminMode ? "Admin tools · No scan limit" : "Cloud security scan"}
+          </p>
           <h1 className="font-headline text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white sm:text-4xl">
-            Cloud Security Assessment
+            {adminMode ? "Run Cloud Security Assessment" : "Cloud Security Assessment"}
           </h1>
           <p className="mt-2 max-w-2xl text-slate-600 dark:text-slate-400">
-            Assess AWS, Azure, and Google Cloud configurations with Prowler security checks.
+            Assess AWS, Azure, and Google Cloud configurations and security checks.
           </p>
         </div>
         <div className="flex items-center gap-2 self-start rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm font-semibold text-indigo-800 dark:border-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-200">
@@ -456,9 +529,11 @@ function CloudAssessment() {
         </div>
       </header>
 
-      <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-        Cloud Assessment scans used: {scanQuota?.used ?? 0} of {scanQuota?.limit ?? 0}
-      </p>
+      {!adminMode && (
+        <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+          Cloud Assessment scans used: {scanQuota?.used ?? 0} of {scanQuota?.limit ?? 0}
+        </p>
+      )}
       {scanLimitReached && (
         <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
           Your scan allowance is used or has not been configured. Ask an administrator to increase the limit or reset usage.
@@ -631,22 +706,118 @@ function CloudAssessment() {
           </div>
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">Credentials are not retained</h2>
           <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-400">
-            Cloud credentials are used only to run this assessment. They are not stored with your scan history. Prowler results, scan status, and the selected scope are saved to your account.
+            Cloud credentials are used only to run this assessment. They are not stored with your scan history. Assessment results, scan status, and the selected scope are saved to your account.
           </p>
           <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-            Use least-privilege read-only permissions. The scanner service must have Prowler installed and network access to the selected cloud APIs.
+            Use least-privilege read-only permissions. The scanner service must be available and have network access to the selected cloud APIs.
           </p>
           <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-slate-400">
-            Credentials are authenticated before an assessment starts, so failed credential checks do not use your scan allowance. This verifies identity only; it does not confirm read-only access to every assessment check. Permission gaps appear in the completed report as checks that could not run.
+            {adminMode
+              ? "Credentials are authenticated before an assessment starts. This verifies identity only; it does not confirm read-only access to every assessment check. Permission gaps appear in the completed report as checks that could not run."
+              : "Credentials are authenticated before an assessment starts, so failed credential checks do not use your scan allowance. This verifies identity only; it does not confirm read-only access to every assessment check. Permission gaps appear in the completed report as checks that could not run."}
           </p>
         </aside>
       </section>
 
+      {adminMode && (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.24em] text-indigo-600">Admin overview</p>
+              <h2 className="mt-1 text-2xl font-extrabold text-slate-900 dark:text-white">
+                Assessments across all users
+              </h2>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                See who ran each assessment, its cloud scope, and current status.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-slate-500 dark:text-slate-400">
+                {adminHistory.length} recent scans
+              </span>
+              <button
+                type="button"
+                onClick={refreshAdminHistory}
+                disabled={adminHistoryLoading}
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                {adminHistoryLoading ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
+          </div>
+
+          {adminHistoryError && (
+            <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
+              {adminHistoryError}
+            </p>
+          )}
+
+          <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800">
+            {adminHistoryLoading && adminHistory.length === 0 ? (
+              <p className="p-6 text-sm text-slate-600 dark:text-slate-300">Loading assessments…</p>
+            ) : adminHistory.length === 0 ? (
+              <p className="p-6 text-sm text-slate-600 dark:text-slate-300">No cloud assessments have been run yet.</p>
+            ) : (
+              <table className="w-full min-w-[58rem] text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-950 dark:text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3">Run by</th>
+                    <th className="px-4 py-3">Organization</th>
+                    <th className="px-4 py-3">Provider / scope</th>
+                    <th className="px-4 py-3">Account</th>
+                    <th className="px-4 py-3">Started</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Completed</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {adminHistory.map((scan) => (
+                    <tr key={scan.scan_id} className="bg-white dark:bg-slate-900">
+                      <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
+                        {scan.client_email || "Unknown user"}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
+                        {formatOrganizationDomain(scan.organization_domain)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-bold uppercase text-slate-900 dark:text-white">{scan.provider || "Unknown"}</div>
+                        <div className="mt-1 max-w-64 truncate text-xs text-slate-500 dark:text-slate-400" title={getAdminScopeDescription(scan)}>
+                          {getAdminScopeDescription(scan)}
+                        </div>
+                      </td>
+                      <td className="max-w-48 break-all px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
+                        {scan.account_id || "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-slate-600 dark:text-slate-300">
+                        {formatDate(scan.created_at)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={scan.status || "unknown"} />
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-slate-600 dark:text-slate-300">
+                        {formatDate(scan.completed_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          {adminHistory.length === 500 && (
+            <p className="text-xs text-slate-500 dark:text-slate-400">Showing the latest 500 assessments.</p>
+          )}
+        </section>
+      )}
+
       <section className="space-y-4">
         <div className="flex items-end justify-between gap-4">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.24em] text-indigo-600">Your account</p>
-            <h2 className="mt-1 text-2xl font-extrabold text-slate-900 dark:text-white">Assessment history</h2>
+            <p className="text-xs font-bold uppercase tracking-[0.24em] text-indigo-600">
+              {adminMode ? "Admin account" : "Your account"}
+            </p>
+            <h2 className="mt-1 text-2xl font-extrabold text-slate-900 dark:text-white">
+              {adminMode ? "Assessments" : "Assessment history"}
+            </h2>
           </div>
           <span className="text-sm text-slate-500 dark:text-slate-400">{scans.length} recent scans</span>
         </div>
@@ -735,25 +906,25 @@ function CloudAssessment() {
 
           {selectedScan.status === "running" && (
             <section
-              aria-label="Prowler terminal output"
+              aria-label="Cloud assessment scanner output"
               className="overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-inner"
             >
               <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
                 <h3 className="flex items-center gap-2 text-sm font-bold text-slate-100">
                   <Terminal size={16} className="text-emerald-400" />
-                  Prowler output
+                  Assessment output
                 </h3>
                 <span className="font-mono text-xs uppercase tracking-wide text-emerald-300">
                   LIVE
                 </span>
               </div>
               <pre
-                ref={prowlerOutputRef}
+                ref={scannerOutputRef}
                 role="log"
-                aria-label="Recent Prowler CLI output"
+                aria-label="Recent assessment output"
                 className="max-h-80 min-h-24 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-xs leading-5 text-emerald-100"
               >
-                {formatProwlerTerminalOutput(selectedScan, terminalClock)}
+                {formatScannerTerminalOutput(selectedScan, terminalClock)}
               </pre>
               <p className="border-t border-slate-800 px-4 py-2 text-xs text-slate-400">
                 {selectedScan.summary?.progress?.updated_at
@@ -810,7 +981,7 @@ function CloudAssessment() {
               {selectedScan.findings?.length ? (
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="font-bold text-slate-900 dark:text-white">Prowler checks</h3>
+                    <h3 className="font-bold text-slate-900 dark:text-white">Security checks</h3>
                     <span className="text-xs text-slate-500 dark:text-slate-400">
                       Showing {filteredFindings.length} of {findings.length} checks
                     </span>

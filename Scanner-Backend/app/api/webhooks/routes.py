@@ -216,8 +216,6 @@ async def scanner_webhook(
     if not _verify_webhook_signature(payload_bytes, x_webhook_signature):
         logger.warning("Webhook signature verification failed")
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
-        # For now, just warn and continue for backward compatibility
-        pass
 
     event_map = {
         "subdomain_discovery_completed": "subdomain_discovery",

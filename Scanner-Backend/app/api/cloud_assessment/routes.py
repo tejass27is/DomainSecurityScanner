@@ -1,3 +1,4 @@
+import re
 import uuid
 from typing import Any
 
@@ -19,6 +20,17 @@ from app.db.base import get_db
 from app.db.models import CloudSecurityAssessment, User
 
 router = APIRouter(prefix="/cloud-assessment", tags=["Cloud Assessment"])
+_SCANNER_BRAND = re.compile(r"prowler", re.IGNORECASE)
+
+
+def _hide_scanner_brand(value: Any) -> Any:
+    if isinstance(value, str):
+        return _SCANNER_BRAND.sub("cloud scanner", value)
+    if isinstance(value, list):
+        return [_hide_scanner_brand(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _hide_scanner_brand(item) for key, item in value.items()}
+    return value
 
 
 @router.get("/access-status")
@@ -59,8 +71,8 @@ def _serialize_scan(
         "provider": scan.provider,
         "scope": scan.scope or {},
         "status": scan.status,
-        "summary": summary,
-        "error": scan.error,
+        "summary": _hide_scanner_brand(summary),
+        "error": _hide_scanner_brand(scan.error),
         "created_at": scan.created_at.isoformat() if scan.created_at else None,
         "completed_at": scan.completed_at.isoformat() if scan.completed_at else None,
     }
@@ -71,7 +83,7 @@ def _serialize_scan(
             {key: value for key, value in finding.items() if key != "prowler_version"}
             if isinstance(finding, dict)
             else finding
-            for finding in (scan.findings or [])
+            for finding in _hide_scanner_brand(scan.findings or [])
         ]
     return result
 
@@ -88,7 +100,8 @@ def create_cloud_assessment(
         aws_account_id = validate_cloud_credentials(provider, credentials)
     except CloudCredentialValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    reserve_scan_quota(db, current_user.user_id, "cloud_assessment")
+    if getattr(current_user, "role", None) != "admin":
+        reserve_scan_quota(db, current_user.user_id, "cloud_assessment")
     scan_id = str(uuid.uuid4())
     account_id = aws_account_id
     if provider == "azure":

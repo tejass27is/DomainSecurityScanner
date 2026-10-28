@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { getAdminCloudAssessments } from "../services/api";
 
 function formatDate(value) {
@@ -68,14 +69,22 @@ function AdminCloudAssessments() {
               See which client ran each AWS, Azure, or GCP assessment, its scope, and its status.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={loadScans}
-            disabled={loading}
-            className="rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <Link
+              to="/admin/cloud-assessment"
+              className="rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-indigo-700"
+            >
+              Start assessment
+            </Link>
+            <button
+              type="button"
+              onClick={loadScans}
+              disabled={loading}
+              className="rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              {loading ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
         </div>
       </section>
 
