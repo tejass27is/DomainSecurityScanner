@@ -152,9 +152,7 @@ export function verifyEmail(token) {
 }
 
 export function getProfile(token) {
-  // skipCache so access flags (e.g. VAPT approval/block) reflect immediately
-  // in the sidebar instead of being served from the 30s request cache.
-  return request("/auth/profile", { token, skipCache: true });
+  return request("/auth/profile", { token });
 }
 
 export function forgotPassword(email) {
@@ -286,7 +284,7 @@ export function listCloudAssessments(token) {
 }
 
 export function getCloudAssessmentAccessStatus(token) {
-  return request("/cloud-assessment/access-status", { token, skipCache: true });
+  return request("/cloud-assessment/access-status", { token });
 }
 
 export function getCloudAssessment(scanId, token) {
@@ -1021,7 +1019,7 @@ export function decideInitialVaptDate(regionCode, body, token) {
 }
 
 export function getVaptAccessStatus(token) {
-  return request("/vapt/access-status", { token, skipCache: true });
+  return request("/vapt/access-status", { token });
 }
 
 export function getAdminVaptAccessRequests(token) {
@@ -1164,10 +1162,10 @@ export function postAdminVerificationDecision(scheduleId, outcome, note, token, 
   });
 }
 
-export function postAdminRemediationReview(importId, decision, token) {
+export function postAdminRemediationReview(importId, decision, token, flags = []) {
   return request(`/vapt/admin/imports/${encodeURIComponent(importId)}/remediation-review`, {
     method: "POST",
-    body: { decision },
+    body: { decision, flags },
     token,
   });
 }
@@ -1191,6 +1189,14 @@ export function postClientNextVaptDueDate(importId, nextDueAt, token) {
 export function approveClientNextVaptDueDate(importId, token) {
   return request(`/vapt/admin/imports/${encodeURIComponent(importId)}/approve-next-due-date`, {
     method: "POST",
+    token,
+  });
+}
+
+export function rejectClientNextVaptDueDate(importId, reason, token) {
+  return request(`/vapt/admin/imports/${encodeURIComponent(importId)}/reject-next-due-date`, {
+    method: "POST",
+    body: { reason },
     token,
   });
 }
@@ -1453,5 +1459,5 @@ export function resetCloudAssessmentScanUsage(userId, token) {
 }
 
 export function getWebscanAccessStatus(token) {
-  return request("/auth/profile", { token, skipCache: true });
+  return request("/auth/profile", { token });
 }

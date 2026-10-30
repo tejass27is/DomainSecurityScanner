@@ -5,7 +5,7 @@ import {
   AlertCircle, Server, Activity, FileSpreadsheet, FileDigit, ShieldCheck,
   Building2,
 } from "lucide-react";
-import { getAllVaptImports, downloadVaptReportAdmin, getAdminVaptRescanRequests, getWebSocketUrl, approveClientNextVaptDueDate } from "../services/api";
+import { getAllVaptImports, downloadVaptReportAdmin, getAdminVaptRescanRequests, getWebSocketUrl, approveClientNextVaptDueDate, rejectClientNextVaptDueDate } from "../services/api";
 import {
   severityMeta,
   riskTone,
@@ -86,6 +86,8 @@ export default function SocAnalystVaptReports() {
   const [yearFilter, setYearFilter] = useState(null);
   const [monthFilter, setMonthFilter] = useState(null);
   const [dueDateApprovalLoading, setDueDateApprovalLoading] = useState({});
+  const [dueDateRejectionLoading, setDueDateRejectionLoading] = useState({});
+  const [dueDateRejectionDraft, setDueDateRejectionDraft] = useState({});
 
   const wsRef = useRef(null);
 
@@ -132,7 +134,7 @@ export default function SocAnalystVaptReports() {
           if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_rescan_reminder"].includes(message.event)) {
             refreshRescanRequests();
           }
-          if (["report_published", "client_review_completed"].includes(message.event)) {
+          if (["report_published", "client_review_completed", "vapt_due_date_proposed", "vapt_due_date_rejected", "vapt_cycle_closed"].includes(message.event)) {
             loadImports();
           }
         } catch {
@@ -176,6 +178,30 @@ export default function SocAnalystVaptReports() {
       setDueDateApprovalLoading((prev) => ({ ...prev, [importId]: false }));
     }
   }, [loadImports]);
+
+  const handleRejectDueDate = useCallback(async (importId) => {
+    const reason = dueDateRejectionDraft[importId]?.reason?.trim();
+    if (!reason) {
+      setError("Enter a reason before rejecting the client's due date.");
+      return;
+    }
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    setDueDateRejectionLoading((prev) => ({ ...prev, [importId]: true }));
+    try {
+      await rejectClientNextVaptDueDate(importId, reason, token);
+      setDueDateRejectionDraft((prev) => {
+        const next = { ...prev };
+        delete next[importId];
+        return next;
+      });
+      await loadImports();
+    } catch (err) {
+      setError(err?.message || "Failed to reject the client due date.");
+    } finally {
+      setDueDateRejectionLoading((prev) => ({ ...prev, [importId]: false }));
+    }
+  }, [dueDateRejectionDraft, loadImports]);
 
   // Distinct clients (organizations) with report counts; newest activity tracked.
   const clientOptions = useMemo(() => {
@@ -541,14 +567,69 @@ export default function SocAnalystVaptReports() {
                               <Download size={15} />
                             </button>
                             {item.lifecycle_status === "closure_pending_soc_due_date" && (
-                              <button
-                                type="button"
-                                onClick={() => handleApproveDueDate(item.import_id)}
-                                disabled={dueDateApprovalLoading[item.import_id]}
-                                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-emerald-700 hover:shadow-md active:translate-y-0 active:scale-[0.97] disabled:cursor-wait disabled:opacity-60"
-                              >
-                                {dueDateApprovalLoading[item.import_id] ? "Approving…" : "Approve due date"}
-                              </button>
+                              <div className="flex flex-col items-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleApproveDueDate(item.import_id);
+                                  }}
+                                  disabled={dueDateApprovalLoading[item.import_id] || dueDateRejectionLoading[item.import_id]}
+                                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-emerald-700 hover:shadow-md active:translate-y-0 active:scale-[0.97] disabled:cursor-wait disabled:opacity-60"
+                                >
+                                  {dueDateApprovalLoading[item.import_id] ? "Approving…" : "Approve due date"}
+                                </button>
+                                {!dueDateRejectionDraft[item.import_id]?.open ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setDueDateRejectionDraft((prev) => ({
+                                        ...prev,
+                                        [item.import_id]: { ...prev[item.import_id], open: true },
+                                      }));
+                                    }}
+                                    className="text-xs font-semibold text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                                    disabled={dueDateApprovalLoading[item.import_id] || dueDateRejectionLoading[item.import_id]}
+                                  >
+                                    Reject with reason
+                                  </button>
+                                ) : (
+                                  <div className="w-64 space-y-2" onClick={(event) => event.stopPropagation()}>
+                                    <textarea
+                                      value={dueDateRejectionDraft[item.import_id]?.reason || ""}
+                                      onChange={(event) => setDueDateRejectionDraft((prev) => ({
+                                        ...prev,
+                                        [item.import_id]: { ...prev[item.import_id], reason: event.target.value },
+                                      }))}
+                                      placeholder="Explain why a different date is needed"
+                                      rows={2}
+                                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-800 outline-none focus:border-red-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                                    />
+                                    <div className="flex justify-end gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => setDueDateRejectionDraft((prev) => {
+                                          const next = { ...prev };
+                                          delete next[item.import_id];
+                                          return next;
+                                        })}
+                                        className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                                      >
+                                        Cancel
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRejectDueDate(item.import_id)}
+                                        disabled={dueDateRejectionLoading[item.import_id] || !dueDateRejectionDraft[item.import_id]?.reason?.trim()}
+                                        className="rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        {dueDateRejectionLoading[item.import_id] ? "Rejecting…" : "Reject date"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </div>
                         </td>

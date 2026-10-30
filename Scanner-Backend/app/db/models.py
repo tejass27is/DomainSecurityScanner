@@ -313,6 +313,7 @@ class CloudSecurityAssessment(Base):
 
     scan_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    client_name = Column(String(255), nullable=True)
     provider = Column(String(20), nullable=False)
     scope = Column(JSON, nullable=False, default=dict)
     status = Column(String(20), nullable=False, default="running")
@@ -446,6 +447,8 @@ class VaptImport(Base):
     remediation_review_status = Column(String(24), nullable=False, default="not_submitted", server_default="'not_submitted'")
     remediation_reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     remediation_reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    client_review_activity_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    client_review_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     next_vapt_due_at = Column(TIMESTAMP(timezone=True), nullable=True)
     # Due-date reminder tracking (hourly background job):
     # due_soon_reminder_sent_at — set once when the 7-days-before reminder fires.
@@ -578,8 +581,12 @@ class VaptRescanSchedule(Base):
     scheduled_timezone = Column(String(64), nullable=False, default="UTC", server_default="'UTC'")
     recurrence = Column(JSON, nullable=True)
     result_data = Column(JSON, nullable=True)
+    date_proposed_by = Column(String(16), nullable=True)
+    date_proposal_status = Column(String(16), nullable=False, default="pending", server_default="'pending'")
     uploaded_at = Column(TIMESTAMP(timezone=True), nullable=True)
     uploaded_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    client_review_activity_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    client_review_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     verification_outcome = Column(String(20), nullable=False, default="pending", server_default="'pending'")
     verified_at = Column(TIMESTAMP(timezone=True), nullable=True)
     verified_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)

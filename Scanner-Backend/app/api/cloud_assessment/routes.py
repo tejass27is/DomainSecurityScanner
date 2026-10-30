@@ -47,7 +47,6 @@ def get_cloud_assessment_access_status(
 def _serialize_scan(
     scan: CloudSecurityAssessment,
     include_findings: bool = False,
-    client_name: str | None = None,
     include_output_tail: bool = True,
 ) -> dict[str, Any]:
     summary = dict(scan.summary) if isinstance(scan.summary, dict) else scan.summary
@@ -76,6 +75,7 @@ def _serialize_scan(
         "created_at": scan.created_at.isoformat() if scan.created_at else None,
         "completed_at": scan.completed_at.isoformat() if scan.completed_at else None,
     }
+    client_name = getattr(scan, "client_name", None)
     if client_name:
         result["client_name"] = client_name
     if include_findings:
@@ -121,6 +121,7 @@ def create_cloud_assessment(
     scan = CloudSecurityAssessment(
         scan_id=scan_id,
         user_id=current_user.user_id,
+        client_name=request.client_name,
         provider=provider,
         scope=scope,
         status="running",
@@ -192,7 +193,7 @@ def download_cloud_assessment_report(
         )
 
     report = generate_cloud_assessment_pdf(
-        _serialize_scan(scan, include_findings=True, client_name=current_user.email)
+        _serialize_scan(scan, include_findings=True)
     )
     provider = scan.provider if scan.provider in {"aws", "azure", "gcp"} else "cloud"
     return Response(

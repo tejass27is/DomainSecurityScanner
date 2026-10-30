@@ -3,7 +3,7 @@ import { Outlet } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import Navbar from "../components/Navbar";
 import PageLoading from "../components/PageLoading";
-import { getCloudAssessmentAccessStatus, getVaptAccessStatus, getWebscanAccessStatus } from "../services/api";
+import { getProfile, getVaptAccessStatus } from "../services/api";
 
 function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -30,70 +30,24 @@ function DashboardLayout({ isDarkMode, onToggleDarkMode }) {
     if (!token) return;
 
     let cancelled = false;
-    const load = () => {
-      getCloudAssessmentAccessStatus(token)
-        .then((status) => {
-          if (!cancelled) setCloudAssessmentVisible(Boolean(status?.cloud_assessment_approved));
-        })
-        .catch(() => {
-          // Keep the last known visibility on transient errors.
-        });
+    const load = async () => {
+      const [profileResult, vaptResult] = await Promise.allSettled([
+        getProfile(token),
+        getVaptAccessStatus(token),
+      ]);
+
+      if (cancelled) return;
+      if (profileResult.status === "fulfilled") {
+        setCloudAssessmentVisible(Boolean(profileResult.value?.cloud_assessment_approved));
+        setWebscanVisible(Boolean(profileResult.value?.webscan_approved));
+      }
+      if (vaptResult.status === "fulfilled") {
+        setVaptVisible(Boolean(vaptResult.value?.vapt_access_enabled));
+      }
     };
 
     load();
-    const intervalId = setInterval(load, 20000);
-    window.addEventListener("focus", load);
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-      window.removeEventListener("focus", load);
-    };
-  }, [isSocAnalyst]);
-
-  useEffect(() => {
-    if (isSocAnalyst || typeof window === "undefined") return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
-
-    let cancelled = false;
-    const load = () => {
-      getVaptAccessStatus(token)
-        .then((status) => {
-          if (!cancelled) setVaptVisible(Boolean(status?.vapt_access_enabled));
-        })
-        .catch(() => {
-          // Keep the last known visibility on transient errors.
-        });
-    };
-
-    load();
-    const intervalId = setInterval(load, 20000);
-    window.addEventListener("focus", load);
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-      window.removeEventListener("focus", load);
-    };
-  }, [isSocAnalyst]);
-
-  useEffect(() => {
-    if (isSocAnalyst || typeof window === "undefined") return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
-
-    let cancelled = false;
-    const load = () => {
-      getWebscanAccessStatus(token)
-        .then((status) => {
-          if (!cancelled) setWebscanVisible(Boolean(status?.webscan_approved));
-        })
-        .catch(() => {
-          // Keep the last known visibility on transient errors.
-        });
-    };
-
-    load();
-    const intervalId = setInterval(load, 20000);
+    const intervalId = setInterval(load, 60000);
     window.addEventListener("focus", load);
     return () => {
       cancelled = true;

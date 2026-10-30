@@ -410,6 +410,7 @@ async def schedule_vapt_rescan_admin(
         recurrence=body.recurrence,
         note=body.note,
         scheduled_timezone=body.scheduled_timezone,
+        date_proposed_by="soc",
     )
 
     try:

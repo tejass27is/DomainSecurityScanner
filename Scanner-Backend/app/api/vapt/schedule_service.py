@@ -8,7 +8,7 @@ from app.db.models import VaptRescanSchedule, VaptImport
 from app.api.admin.service import _maybe_create_alert, _record_audit_log
 
 
-async def create_schedule(db: Session, import_record: VaptImport, user, scheduled_at: datetime, hosts: List[str] | None = None, recurrence: dict | None = None, note: str | None = None, scheduled_timezone: str = "UTC") -> VaptRescanSchedule:
+async def create_schedule(db: Session, import_record: VaptImport, user, scheduled_at: datetime, hosts: List[str] | None = None, recurrence: dict | None = None, note: str | None = None, scheduled_timezone: str = "UTC", date_proposed_by: str = "client") -> VaptRescanSchedule:
     """Create a database-only schedule for a manual SOC verification upload."""
     schedule = VaptRescanSchedule(
         id=uuid.uuid4(),
@@ -21,6 +21,8 @@ async def create_schedule(db: Session, import_record: VaptImport, user, schedule
         recurrence=recurrence,
         note=note,
         status="scheduled",
+        date_proposed_by=date_proposed_by,
+        date_proposal_status="pending",
     )
     db.add(schedule)
     db.commit()
@@ -43,6 +45,4 @@ async def create_schedule(db: Session, import_record: VaptImport, user, schedule
         pass
 
     return schedule
-
-
 

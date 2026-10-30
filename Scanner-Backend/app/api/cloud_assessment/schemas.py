@@ -5,7 +5,21 @@ from typing import Annotated, Literal, Union
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
-class AwsAssessmentRequest(BaseModel):
+class CloudAssessmentBaseRequest(BaseModel):
+    client_name: str | None = Field(default=None, min_length=1, max_length=255)
+
+    @field_validator("client_name")
+    @classmethod
+    def normalize_client_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Enter the client name.")
+        return normalized
+
+
+class AwsAssessmentRequest(CloudAssessmentBaseRequest):
     provider: Literal["aws"]
     access_key_id: str = Field(min_length=16, max_length=128)
     secret_access_key: SecretStr = Field(min_length=1, max_length=4096)
@@ -45,7 +59,7 @@ class AwsAssessmentRequest(BaseModel):
         return self
 
 
-class AzureAssessmentRequest(BaseModel):
+class AzureAssessmentRequest(CloudAssessmentBaseRequest):
     provider: Literal["azure"]
     tenant_id: str = Field(min_length=1, max_length=128)
     client_id: str = Field(min_length=1, max_length=128)
@@ -61,7 +75,7 @@ class AzureAssessmentRequest(BaseModel):
         return normalized
 
 
-class GcpAssessmentRequest(BaseModel):
+class GcpAssessmentRequest(CloudAssessmentBaseRequest):
     provider: Literal["gcp"]
     service_account_json: SecretStr = Field(max_length=65536)
     project_ids: list[str] = Field(min_length=1, max_length=20)

@@ -706,6 +706,57 @@ def send_vapt_report_published_email(to_email: str, file_name: str, import_id: s
     return True
 
 
+def send_vapt_client_review_reminder_email(
+    to_email: str,
+    file_name: str,
+    import_id: str,
+    report_type: str,
+    verification_number: int | None = None,
+):
+    """Remind a client to start reviewing an unmarked VAPT report."""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
+    if not FRONTEND_URL:
+        raise ValueError("FRONTEND_URL must be configured.")
+
+    is_verification = report_type == "verification"
+    title = "Verification report review pending" if is_verification else "VAPT report review pending"
+    safe_file_name = html.escape(file_name)
+    report_label = (
+        f"Verification report {verification_number or ''}".strip()
+        if is_verification
+        else "Initial VAPT report"
+    )
+    safe_report_label = html.escape(report_label)
+    message = (
+        f"The SOC uploaded verification report {verification_number or ''} for {file_name}. "
+        "Please review the findings that remain or were newly identified and submit your review."
+        if is_verification
+        else f"The SOC uploaded {file_name}. Please review the findings and submit your report review."
+    )
+    safe_message = html.escape(message)
+    report_link = f"{FRONTEND_URL.rstrip('/')}/vapt/reports/{import_id}"
+    plain = f"{title}\n\n{message}\n\nView report: {report_link}"
+    body_html = f"""
+        <p style="font-size:14px;color:#334155;margin:0 0 16px">Hello,</p>
+        <p style="font-size:14px;color:#334155;margin:0 0 20px">{safe_message}</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0">
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px;width:140px">Report</td><td style="padding:9px 0;font-weight:600;font-size:13px">{safe_file_name}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Review</td><td style="padding:9px 0;font-weight:600;font-size:13px">{safe_report_label}</td></tr>
+        </table>
+        <p style="margin:20px 0"><a href="{report_link}" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 24px;border-radius:6px;font-size:13px;font-weight:600">Review VAPT Report</a></p>
+        <p style="font-size:13px;color:#64748b;margin:24px 0 0">Regards,<br><strong>{EMAIL_FROM_NAME}</strong></p>
+    """
+    html_body = _vapt_email_shell(title, body_html)
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"{title}: {file_name}"
+    msg["To"] = to_email
+    msg.attach(MIMEText(plain, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+    _smtp_send(msg)
+    return True
+
+
 def send_vapt_cycle_reopened_email(to_email: str, file_name: str, import_id: str):
     """Notify the client that SOC reopened remediation after verification."""
     if not SMTP_USER or not SMTP_PASSWORD:
@@ -947,17 +998,26 @@ def send_vapt_remediation_review_email(
     import_id: str,
     decision: str,
 ):
-    """Notify the client when SOC accepts or rejects remediation."""
+    """Notify the client when SOC accepts, rejects, or requests remediation changes."""
     if not SMTP_USER or not SMTP_PASSWORD:
         raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
     if not FRONTEND_URL:
         raise ValueError("FRONTEND_URL must be configured.")
 
     approved = decision == "approved"
-    title = "Remediation Accepted" if approved else "More Remediation Required"
+    changes_requested = decision == "changes_requested"
+    title = (
+        "Remediation Accepted"
+        if approved
+        else "SOC Follow-up Requested"
+        if changes_requested
+        else "More Remediation Required"
+    )
     message = (
         "Your remediation review was accepted. You can now schedule a verification scan."
         if approved
+        else "SOC flagged specific finding decisions. Review the reasons in your VAPT report, update each flagged decision or its note, and resubmit."
+        if changes_requested
         else "SOC reviewed your remediation and requires additional fixes before verification."
     )
     report_link = f"{FRONTEND_URL.rstrip('/')}/vapt/reports/{import_id}"
@@ -967,7 +1027,7 @@ def send_vapt_remediation_review_email(
         <p style="font-size:14px;color:#334155;margin:0 0 20px">{message}</p>
         <table style="width:100%;border-collapse:collapse;margin:16px 0">
             <tr><td style="padding:9px 0;color:#64748b;font-size:13px;width:140px">Report</td><td style="padding:9px 0;font-weight:600;font-size:13px">{file_name}</td></tr>
-            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Status</td><td style="padding:9px 0;font-weight:600;font-size:13px">{"Approved" if approved else "Requires Fixes"}</td></tr>
+            <tr><td style="padding:9px 0;color:#64748b;font-size:13px">Status</td><td style="padding:9px 0;font-weight:600;font-size:13px">{"Approved" if approved else "Client follow-up requested" if changes_requested else "Requires Fixes"}</td></tr>
         </table>
         <p style="margin:20px 0"><a href="{report_link}" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 24px;border-radius:6px;font-size:13px;font-weight:600">View VAPT Report</a></p>
         <p style="font-size:13px;color:#64748b;margin:24px 0 0">Regards,<br><strong>{EMAIL_FROM_NAME}</strong></p>

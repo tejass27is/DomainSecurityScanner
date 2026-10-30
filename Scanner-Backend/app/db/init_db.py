@@ -25,6 +25,7 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS webscan_scans_used INTEGER NOT NULL DEFAULT 0"))
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS cloud_assessment_scan_limit INTEGER NOT NULL DEFAULT 3"))
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS cloud_assessment_scans_used INTEGER NOT NULL DEFAULT 0"))
+        conn.execute(text("ALTER TABLE IF EXISTS cloud_security_assessments ADD COLUMN IF NOT EXISTS client_name VARCHAR(255) NULL"))
         conn.execute(text("ALTER TABLE users ALTER COLUMN webscan_scan_limit SET DEFAULT 3"))
         conn.execute(text("ALTER TABLE users ALTER COLUMN cloud_assessment_scan_limit SET DEFAULT 3"))
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true"))
@@ -79,6 +80,8 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_review_status VARCHAR(24) NOT NULL DEFAULT 'not_submitted'"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reviewed_by VARCHAR(36) NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reviewed_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS client_review_activity_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS client_review_reminder_sent_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS next_vapt_due_at TIMESTAMPTZ NULL"))
         # Due-date reminder tracking: one shot 7 days before the due date and
         # one shot when it passes (overdue). NULL = never sent.
@@ -93,12 +96,18 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ALTER COLUMN status TYPE VARCHAR(32)"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS notified BOOLEAN NOT NULL DEFAULT false"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS result_data JSONB NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS date_proposed_by VARCHAR(16) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS date_proposal_status VARCHAR(16) NOT NULL DEFAULT 'pending'"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS scheduled_timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS uploaded_by VARCHAR(36) NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS client_review_activity_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS client_review_reminder_sent_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS verification_outcome VARCHAR(20) NOT NULL DEFAULT 'pending'"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS verified_by VARCHAR(36) NULL"))
+        conn.execute(text("UPDATE vapt_rescan_schedules SET date_proposed_by = 'soc' WHERE status = 'requested' AND date_proposed_by IS NULL"))
+        conn.execute(text("UPDATE vapt_rescan_schedules SET date_proposed_by = 'client' WHERE status = 'scheduled' AND date_proposed_by IS NULL"))
         # Schedules created by the retired automatic runner remain manual SOC
         # review items after deployment of the manual verification workflow.
         conn.execute(text("UPDATE vapt_rescan_schedules SET status = 'approved' WHERE status IN ('running', 'stalled')"))

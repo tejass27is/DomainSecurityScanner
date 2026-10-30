@@ -425,7 +425,7 @@ def generate_cloud_assessment_pdf(scan: dict[str, Any]) -> bytes:
         [
             Paragraph("<b>TARGET ACCOUNT</b>", style["label"]),
             Paragraph("<b>CLOUD PROVIDER</b>", style["label"]),
-            Paragraph("<b>CLIENT CONTACT</b>", style["label"]),
+            Paragraph("<b>CLIENT NAME</b>", style["label"]),
             Paragraph("<b>SCAN TIMESTAMP</b>", style["label"]),
         ],
         [

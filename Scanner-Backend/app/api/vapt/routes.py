@@ -1433,6 +1433,13 @@ def _get_org_import_or_404(db: Session, import_id: str, org_id: str) -> VaptImpo
     return record
 
 
+def _parse_schedule_id(schedule_id: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(schedule_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+
 def _require_open_vapt_cycle(record: VaptImport) -> None:
     if record.lifecycle_status == "closed":
         raise HTTPException(
@@ -2549,6 +2556,14 @@ def _requires_vapt_finding_triage(finding: dict) -> bool:
     return _finding_severity(finding) in {"critical", "high", "medium"}
 
 
+def _open_vapt_review_flags(finding: dict) -> list[dict]:
+    return [
+        flag
+        for flag in finding.get("soc_review_flags") or []
+        if isinstance(flag, dict) and not flag.get("responded_at")
+    ]
+
+
 def _requires_vapt_solved_remark(finding: dict) -> bool:
     return _finding_severity(finding) in {"low", "info", "informational"}
 
@@ -2647,7 +2662,8 @@ async def upload_vapt_verification(
     `display_name` is an optional human-readable report name the SOC analyst can
     give this verification; it becomes the report title and download filename.
     """
-    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == schedule_id).first()
+    parsed_schedule_id = _parse_schedule_id(schedule_id)
+    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == parsed_schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Rescan schedule not found.")
     if schedule.status != "approved":
@@ -2719,6 +2735,10 @@ async def upload_vapt_verification(
 
     schedule.status = status
     schedule.error_message = error_message
+    schedule.uploaded_at = datetime.now(timezone.utc)
+    schedule.uploaded_by = current_user.user_id
+    schedule.client_review_activity_at = None
+    schedule.client_review_reminder_sent_at = None
     clean_display_name = _clean_verification_display_name(display_name)
     schedule.result_data = {
         "verification_file_name": filename,
@@ -2842,8 +2862,9 @@ def download_vapt_verification_report(
 ):
     """Download only one verification scan's report data."""
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    parsed_schedule_id = _parse_schedule_id(schedule_id)
     schedule = db.query(VaptRescanSchedule).filter(
-        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.id == parsed_schedule_id,
         VaptRescanSchedule.import_id == record.import_id,
     ).first()
     if not schedule:
@@ -2916,6 +2937,11 @@ def update_vapt_finding_status(
         )
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     _require_open_vapt_cycle(record)
+    if record.remediation_review_status not in {"not_submitted", "rejected", "changes_requested"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Finding decisions can only be changed before submission or after SOC requests changes.",
+        )
     normalized_status = _normalize_finding_status(payload.status)
     if normalized_status not in VALID_VAPT_FINDING_STATUSES:
         raise HTTPException(status_code=400, detail="Unsupported status value.")
@@ -2939,22 +2965,52 @@ def update_vapt_finding_status(
         finding for finding in findings
         if _verification_finding_key(finding) == target_key
     ]
-    if normalized_status == "solved" and any(
-        _requires_vapt_solved_remark(finding) for finding in matching_findings
-    ) and not comment:
-        raise HTTPException(
-            status_code=400,
-            detail="A remark is required when marking a Low or Informational finding Solved.",
-        )
+    now = datetime.now(timezone.utc)
+    record.client_review_activity_at = now
+    if record.remediation_review_status == "changes_requested":
+        open_flags = [
+            _open_vapt_review_flags(finding)
+            for finding in matching_findings
+        ]
+        if any(not flags for flags in open_flags):
+            raise HTTPException(
+                status_code=400,
+                detail="Only findings flagged by SOC can be changed during this review.",
+            )
+        if any(
+            normalized_status == flags[-1].get("client_status_at_flag")
+            and comment == (flags[-1].get("client_comment_at_flag") or "")
+            for flags in open_flags
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Update the finding decision or its note before responding to the SOC flag.",
+            )
 
     updated_findings = []
     for finding in findings:
         if _verification_finding_key(finding) == target_key:
-            updated_findings.append({
+            updated_finding = {
                 **finding,
                 "status": normalized_status,
                 "comment": comment,
-            })
+            }
+            if record.remediation_review_status == "changes_requested":
+                review_flags = list(finding.get("soc_review_flags") or [])
+                for index in range(len(review_flags) - 1, -1, -1):
+                    flag = review_flags[index]
+                    if not isinstance(flag, dict) or flag.get("responded_at"):
+                        continue
+                    review_flags[index] = {
+                        **flag,
+                        "responded_at": now.isoformat(),
+                        "responded_by": str(current_user.user_id),
+                        "response_status": normalized_status,
+                        "response_comment": comment,
+                    }
+                    break
+                updated_finding["soc_review_flags"] = review_flags
+            updated_findings.append(updated_finding)
         else:
             updated_findings.append(finding)
 
@@ -2979,7 +3035,8 @@ async def submit_vapt_import(
     """User submits a VAPT report after triaging actionable findings.
 
     Critical, High, and Medium findings must be triaged. Low and Informational
-    findings are optional, but a client-reported Solved status requires a remark.
+    findings are optional. Ignore and false-positive statuses require a comment;
+    Solved comments are optional at every severity.
     Status flips to client_completed and SOC gets a live notification.
     """
     if not current_user.org_id:
@@ -2989,6 +3046,11 @@ async def submit_vapt_import(
         )
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
     _require_open_vapt_cycle(record)
+    if record.remediation_review_status not in {"not_submitted", "rejected", "changes_requested"}:
+        raise HTTPException(
+            status_code=409,
+            detail="This report is not waiting for a client review submission.",
+        )
     findings = record.findings or []
 
     # Completion gate: only Critical, High, and Medium findings require triage.
@@ -3004,17 +3066,25 @@ async def submit_vapt_import(
             status_code=400,
             detail=f"All actionable findings must be triaged before submitting. {len(pending)} finding(s) still pending.",
         )
-    solved_without_remarks = [
+    ignored_without_comments = [
         finding
         for finding in findings
-        if _requires_vapt_solved_remark(finding)
-        and (finding.get("status") or "pending") == "solved"
+        if (finding.get("status") or "pending") in {"ignore", "false_positive"}
         and not (finding.get("comment") or "").strip()
     ]
-    if solved_without_remarks:
+    if ignored_without_comments:
         raise HTTPException(
             status_code=400,
-            detail=f"Add a remark for every Low or Informational finding marked Solved. {len(solved_without_remarks)} finding(s) need a remark.",
+            detail=f"Add a comment for every finding marked Ignore or False positive. {len(ignored_without_comments)} finding(s) need a comment.",
+        )
+    open_flags = [
+        finding for finding in findings
+        if _open_vapt_review_flags(finding)
+    ]
+    if open_flags:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Respond to every SOC-flagged finding before resubmitting. {len(open_flags)} finding(s) still need an update.",
         )
 
     # Count solved findings for the completion summary
@@ -3146,6 +3216,7 @@ async def schedule_vapt_rescan(
         recurrence=body.recurrence,
         note=body.note,
         scheduled_timezone=body.scheduled_timezone,
+        date_proposed_by="client",
     )
 
     # Notify SOC that a client requested a verification slot. Confirmation
@@ -3173,10 +3244,13 @@ async def review_client_remediation(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_soc_analyst),
 ):
-    """SOC accepts or rejects the client's remediation decisions."""
+    """SOC accepts, rejects, or requests targeted client changes to remediation."""
     decision = str(payload.get("decision") or "").strip().lower()
-    if decision not in {"approved", "rejected"}:
-        raise HTTPException(status_code=400, detail="decision must be approved or rejected")
+    if decision not in {"approved", "rejected", "changes_requested"}:
+        raise HTTPException(
+            status_code=400,
+            detail="decision must be approved, rejected or changes_requested",
+        )
     try:
         parsed_import_id = uuid.UUID(import_id)
     except ValueError:
@@ -3185,16 +3259,79 @@ async def review_client_remediation(
     if not record:
         raise HTTPException(status_code=404, detail="VAPT import not found")
     _require_open_vapt_cycle(record)
+    if record.status != "client_completed" or record.remediation_review_status != "pending_soc_review":
+        raise HTTPException(status_code=409, detail="This client review is not awaiting SOC review.")
+
+    findings = list(record.findings or [])
+    review_flags = []
+    if decision == "changes_requested":
+        raw_flags = payload.get("flags")
+        if not isinstance(raw_flags, list) or not raw_flags:
+            raise HTTPException(status_code=400, detail="Flag at least one finding for client follow-up.")
+        findings_by_id = {
+            str(finding.get("id")): finding
+            for finding in findings
+            if finding.get("id") is not None
+        }
+        seen_keys = set()
+        for item in raw_flags:
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=400, detail="Each finding flag must include an id and reason.")
+            finding_id = str(item.get("finding_id") or "").strip()
+            note = str(item.get("note") or "").strip()
+            finding = findings_by_id.get(finding_id)
+            if not finding:
+                raise HTTPException(status_code=404, detail=f"Finding not found: {finding_id}")
+            if (finding.get("status") or "pending") not in {"ignore", "false_positive"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="SOC can request follow-up only for findings marked Ignore or False positive.",
+                )
+            if not note:
+                raise HTTPException(status_code=400, detail="Add a reason for every finding flagged for follow-up.")
+            if len(note) > 2000:
+                raise HTTPException(status_code=400, detail="Flag reasons must be 2000 characters or fewer.")
+            finding_key = _verification_finding_key(finding)
+            if finding_key in seen_keys:
+                raise HTTPException(status_code=400, detail="A finding can only be flagged once per review.")
+            seen_keys.add(finding_key)
+            review_flags.append((finding_key, note))
+
+    now = datetime.now(timezone.utc)
+    if decision == "changes_requested":
+        updated_findings = []
+        for finding in findings:
+            finding_key = _verification_finding_key(finding)
+            note = next((flag_note for key, flag_note in review_flags if key == finding_key), None)
+            if note is None:
+                updated_findings.append(finding)
+                continue
+            flags = list(finding.get("soc_review_flags") or [])
+            flags.append({
+                "note": note,
+                "flagged_by": str(current_user.user_id),
+                "flagged_at": now.isoformat(),
+                "client_status_at_flag": finding.get("status") or "pending",
+                "client_comment_at_flag": finding.get("comment") or "",
+            })
+            updated_findings.append({**finding, "soc_review_flags": flags})
+        record.findings = updated_findings
+
     record.remediation_review_status = decision
     record.remediation_reviewed_by = current_user.user_id
-    record.remediation_reviewed_at = datetime.now(timezone.utc)
+    record.remediation_reviewed_at = now
     if decision == "approved":
         record.lifecycle_status = "revalidation_required"
+    elif decision == "changes_requested":
+        record.lifecycle_status = "remediation_required"
     else:
         record.lifecycle_status = "remediation_required"
     db.add(record)
     db.commit()
-    _record_audit_log(db, current_user, "VAPT_REMEDIATION_REVIEWED", "vapt_import", str(record.import_id), {"decision": decision})
+    _record_audit_log(db, current_user, "VAPT_REMEDIATION_REVIEWED", "vapt_import", str(record.import_id), {
+        "decision": decision,
+        "flagged_finding_count": len(review_flags),
+    })
     # Notify every user in the client organization, not only through the live
     # socket, so the decision is visible even when the client is offline.
     for email in {u.email for u in db.query(User).filter(User.org_id == record.org_id).all() if u.email}:
@@ -3212,13 +3349,24 @@ async def review_client_remediation(
             "event": "vapt_remediation_reviewed",
             "import_id": str(record.import_id),
             "decision": decision,
-            "message": "SOC accepted your remediation review. You may schedule re-validation." if decision == "approved" else "SOC needs further remediation before re-validation.",
+            "message": (
+                "SOC accepted your remediation review. You may schedule re-validation."
+                if decision == "approved"
+                else "SOC flagged findings for your review. Update the flagged decisions and resubmit."
+                if decision == "changes_requested"
+                else "SOC needs further remediation before re-validation."
+            ),
         }
         await ws_manager.send(record.org_id, payload)
         await ws_manager.send("platform", {**payload, "org_id": record.org_id})
     except Exception:
         pass
-    return {"success": True, "decision": decision, "lifecycle_status": record.lifecycle_status}
+    return {
+        "success": True,
+        "decision": decision,
+        "lifecycle_status": record.lifecycle_status,
+        "findings": group_stored_findings(record.findings or []),
+    }
 
 
 class VerificationDecisionRequest(BaseModel):
@@ -3289,7 +3437,8 @@ async def decide_vapt_verification(
     if outcome not in {"closed", "reopened"}:
         raise HTTPException(status_code=400, detail="outcome must be closed or reopened")
 
-    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == schedule_id).first()
+    parsed_schedule_id = _parse_schedule_id(schedule_id)
+    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == parsed_schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
     if schedule.status not in {"completed", "completed_with_errors", "failed"}:
@@ -3453,17 +3602,13 @@ def update_verification_finding_status(
     if normalized_status in {"ignore", "false_positive"} and not comment:
         raise HTTPException(status_code=400, detail="A comment is required when the status is ignore or false positive.")
     result_data = dict(schedule.result_data or {})
+    schedule.client_review_activity_at = datetime.now(timezone.utc)
     target_findings = None
     target_collection = None
     for collection_name in ("remaining_findings", "new_findings"):
         collection = list(result_data.get(collection_name) or [])
         for index, finding in enumerate(collection):
             if str(finding.get("id")) == finding_id:
-                if normalized_status == "solved" and _requires_vapt_solved_remark(finding) and not comment:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="A remark is required when marking a Low or Informational verification finding Solved.",
-                    )
                 updated = {**finding, "status": normalized_status, "comment": comment}
                 collection[index] = updated
                 target_findings = collection
@@ -3513,24 +3658,16 @@ async def submit_verification_review(
     invalid = [
         finding
         for finding in review_findings
-        if (
-            (
-                _requires_vapt_finding_triage(finding)
-                and (finding.get("status") or "pending") in {"ignore", "false_positive"}
-            )
-            or (
-                _requires_vapt_solved_remark(finding)
-                and (finding.get("status") or "pending") == "solved"
-            )
-        )
+        if (finding.get("status") or "pending") in {"ignore", "false_positive"}
         and not (finding.get("comment") or "").strip()
     ]
     if pending:
         raise HTTPException(status_code=400, detail=f"All actionable verification findings must be triaged before submitting. {len(pending)} still pending.")
     if invalid:
-        raise HTTPException(status_code=400, detail="Solved Low/Informational findings require remarks; Ignore and False positive decisions require comments.")
+        raise HTTPException(status_code=400, detail="Ignore and False positive decisions require comments.")
     result_data["client_review_status"] = "client_completed"
     result_data["client_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+    schedule.client_review_activity_at = datetime.now(timezone.utc)
     schedule.result_data = result_data
     db.add(schedule)
     db.commit()
@@ -3546,6 +3683,10 @@ async def submit_verification_review(
 
 class ClientDueDateRequest(BaseModel):
     next_vapt_due_at: str
+
+
+class ClientDueDateRejectionRequest(BaseModel):
+    reason: str
 
 
 @router.post("/imports/{import_id}/next-due-date")
@@ -3570,6 +3711,9 @@ async def set_client_next_vapt_due_date(
 
     record.lifecycle_status = "closure_pending_soc_due_date"
     record.next_vapt_due_at = next_due
+    summary = dict(record.summary or {})
+    summary.pop("next_vapt_due_date_rejection_reason", None)
+    record.summary = summary
     db.add(record)
     db.commit()
     _record_audit_log(db, current_user, "VAPT_DUE_DATE_PROPOSED", "vapt_import", str(record.import_id), {"next_vapt_due_at": next_due.isoformat(), "selected_by": "client"})
@@ -3580,6 +3724,64 @@ async def set_client_next_vapt_due_date(
     except Exception:
         pass
     return {"success": True, "import_id": import_id, "lifecycle_status": record.lifecycle_status, "next_vapt_due_at": next_due}
+
+
+@router.post("/admin/imports/{import_id}/reject-next-due-date")
+async def reject_client_next_vapt_due_date(
+    import_id: str,
+    body: ClientDueDateRejectionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_soc_analyst),
+):
+    """Return a rejected client due date to the client for a new proposal."""
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A rejection reason is required.")
+
+    try:
+        parsed_import_id = uuid.UUID(import_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="VAPT import not found")
+    record = db.query(VaptImport).filter(VaptImport.import_id == parsed_import_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="VAPT import not found")
+    _require_open_vapt_cycle(record)
+    if record.lifecycle_status != "closure_pending_soc_due_date" or not record.next_vapt_due_at:
+        raise HTTPException(status_code=409, detail="No client due date is awaiting SOC review.")
+
+    record.lifecycle_status = "closure_pending_client_due_date"
+    record.next_vapt_due_at = None
+    summary = dict(record.summary or {})
+    summary["next_vapt_due_date_rejection_reason"] = reason
+    record.summary = summary
+    db.add(record)
+    db.commit()
+    _record_audit_log(
+        db,
+        current_user,
+        "VAPT_DUE_DATE_REJECTED",
+        "vapt_import",
+        str(record.import_id),
+        {"reason": reason},
+    )
+    payload = {
+        "event": "vapt_due_date_rejected",
+        "import_id": str(record.import_id),
+        "org_id": record.org_id,
+        "reason": reason,
+    }
+    try:
+        await ws_manager.send(record.org_id, payload)
+        await ws_manager.send("platform", payload)
+    except Exception:
+        pass
+    return {
+        "success": True,
+        "import_id": import_id,
+        "lifecycle_status": record.lifecycle_status,
+        "next_vapt_due_at": None,
+        "reason": reason,
+    }
 
 
 @router.post("/admin/imports/{import_id}/approve-next-due-date")
@@ -3688,6 +3890,8 @@ def list_admin_rescan_requests(
             "scheduled_at": s.scheduled_at,
             "scheduled_timezone": s.scheduled_timezone,
             "status": s.status,
+            "date_proposed_by": s.date_proposed_by,
+            "date_proposal_status": s.date_proposal_status,
             "error_message": getattr(s, 'error_message', None),
             "created_at": s.created_at,
         })
@@ -3708,6 +3912,7 @@ async def _confirm_rescan_schedule(db: Session, schedule: VaptRescanSchedule, cu
     """
     _require_open_schedule_cycle(db, schedule)
     schedule.status = "approved"
+    schedule.date_proposal_status = "accepted"
     db.add(schedule)
     db.commit()
 
@@ -3765,9 +3970,17 @@ async def admin_approve_reschedule(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_soc_analyst),
 ):
-    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == schedule_id).first()
+    parsed_schedule_id = _parse_schedule_id(schedule_id)
+    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == parsed_schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    can_approve = schedule.status == "scheduled" or (
+        schedule.status == "requested"
+        and schedule.date_proposed_by == "client"
+        and schedule.date_proposal_status == "pending"
+    )
+    if not can_approve:
+        raise HTTPException(status_code=409, detail="Only a client-proposed date can be approved.")
 
     await _confirm_rescan_schedule(db, schedule, current_user)
 
@@ -3781,10 +3994,20 @@ async def admin_request_new_date(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_soc_analyst),
 ):
-    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == schedule_id).first()
+    parsed_schedule_id = _parse_schedule_id(schedule_id)
+    schedule = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.id == parsed_schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
     _require_open_schedule_cycle(db, schedule)
+    can_propose = schedule.status == "scheduled" or (
+        schedule.status == "requested"
+        and (
+            schedule.date_proposed_by == "client"
+            or schedule.date_proposal_status == "rejected"
+        )
+    )
+    if not can_propose:
+        raise HTTPException(status_code=409, detail="A new date can only be proposed after the other party has responded.")
 
     try:
         proposed = datetime.fromisoformat(body.proposed_at)
@@ -3803,6 +4026,8 @@ async def admin_request_new_date(
     if body.note is not None:
         schedule.note = body.note.strip() or None
     schedule.status = "requested"
+    schedule.date_proposed_by = "soc"
+    schedule.date_proposal_status = "pending"
     db.add(schedule)
     db.commit()
     recipients = {u.email for u in db.query(User).filter(User.org_id == schedule.org_id).all() if u.email}
@@ -3844,6 +4069,8 @@ async def admin_request_new_date(
         "proposed_at": proposed.isoformat(),
         "note": schedule.note,
         "status": schedule.status,
+        "date_proposed_by": schedule.date_proposed_by,
+        "date_proposal_status": schedule.date_proposal_status,
     }
 
 
@@ -3867,7 +4094,7 @@ def list_vapt_rescan_schedules(
         if current_user.org_id != record.org_id:
             raise HTTPException(status_code=403, detail="Not authorized")
 
-    schedules = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.import_id == record.import_id).order_by(VaptRescanSchedule.scheduled_at.asc()).all()
+    schedules = db.query(VaptRescanSchedule).filter(VaptRescanSchedule.import_id == record.import_id).order_by(VaptRescanSchedule.updated_at.desc()).all()
 
     # Build a list of findings that were solved in this import (eligible for verification)
     findings = record.findings or []
@@ -3883,6 +4110,8 @@ def list_vapt_rescan_schedules(
             "scheduled_timezone": s.scheduled_timezone,
             "hosts": s.hosts or [],
             "status": s.status,
+            "date_proposed_by": s.date_proposed_by,
+            "date_proposal_status": s.date_proposal_status,
             "created_at": s.created_at,
             "note": s.note if hasattr(s, 'note') else None,
             "error_message": s.error_message if hasattr(s, 'error_message') else None,
@@ -3909,14 +4138,20 @@ async def client_request_new_date(
     if current_user.org_id != record.org_id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    parsed_schedule_id = _parse_schedule_id(schedule_id)
     schedule = db.query(VaptRescanSchedule).filter(
-        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.id == parsed_schedule_id,
         VaptRescanSchedule.import_id == record.import_id,
     ).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
-    if schedule.status == "requested":
-        raise HTTPException(status_code=400, detail="This schedule is already awaiting a decision.")
+    can_propose = schedule.status == "scheduled" or (
+        schedule.status == "requested"
+        and schedule.date_proposed_by == "soc"
+        and schedule.date_proposal_status == "pending"
+    )
+    if not can_propose:
+        raise HTTPException(status_code=409, detail="A new date can only be proposed while the schedule is awaiting your response.")
 
     try:
         proposed = datetime.fromisoformat(body.proposed_at)
@@ -3938,6 +4173,8 @@ async def client_request_new_date(
     if body.note is not None:
         schedule.note = body.note.strip() or None
     schedule.status = "requested"
+    schedule.date_proposed_by = "client"
+    schedule.date_proposal_status = "pending"
     db.add(schedule)
     db.commit()
 
@@ -3964,6 +4201,8 @@ async def client_request_new_date(
         "proposed_at": proposed.isoformat(),
         "note": schedule.note,
         "status": schedule.status,
+        "date_proposed_by": schedule.date_proposed_by,
+        "date_proposal_status": schedule.date_proposal_status,
     }
 
 
@@ -3980,13 +4219,18 @@ async def accept_proposed_date(
     if current_user.org_id != record.org_id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    parsed_schedule_id = _parse_schedule_id(schedule_id)
     schedule = db.query(VaptRescanSchedule).filter(
-        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.id == parsed_schedule_id,
         VaptRescanSchedule.import_id == record.import_id,
     ).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
-    if schedule.status != "requested":
+    if (
+        schedule.status != "requested"
+        or schedule.date_proposed_by != "soc"
+        or schedule.date_proposal_status != "pending"
+    ):
         raise HTTPException(status_code=400, detail="This schedule is not awaiting acceptance.")
 
     await _confirm_rescan_schedule(db, schedule, current_user)
@@ -4016,17 +4260,22 @@ async def reject_proposed_date(
     if current_user.org_id != record.org_id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    parsed_schedule_id = _parse_schedule_id(schedule_id)
     schedule = db.query(VaptRescanSchedule).filter(
-        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.id == parsed_schedule_id,
         VaptRescanSchedule.import_id == record.import_id,
     ).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
-    if schedule.status != "requested":
+    if (
+        schedule.status != "requested"
+        or schedule.date_proposed_by != "soc"
+        or schedule.date_proposal_status != "pending"
+    ):
         raise HTTPException(status_code=400, detail="This schedule is not awaiting acceptance.")
 
     # Keep the workflow open and let SOC propose a replacement date.
-    schedule.status = "requested"
+    schedule.date_proposal_status = "rejected"
     schedule.note = (schedule.note or "") + ("; client rejected proposed date" if schedule.note else "client rejected proposed date")
     db.add(schedule)
     db.commit()
@@ -4053,7 +4302,12 @@ async def reject_proposed_date(
     except Exception:
         pass
 
-    return {"success": True, "schedule_id": schedule_id, "status": schedule.status}
+    return {
+        "success": True,
+        "schedule_id": schedule_id,
+        "status": schedule.status,
+        "date_proposal_status": schedule.date_proposal_status,
+    }
 
 
 @router.get("/imports/{import_id}/report/excel")
@@ -4088,8 +4342,9 @@ def download_vapt_verification_report_excel(
 ):
     """Download one verification scan's report as Excel."""
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    parsed_schedule_id = _parse_schedule_id(schedule_id)
     schedule = db.query(VaptRescanSchedule).filter(
-        VaptRescanSchedule.id == schedule_id,
+        VaptRescanSchedule.id == parsed_schedule_id,
         VaptRescanSchedule.import_id == record.import_id,
     ).first()
     if not schedule:

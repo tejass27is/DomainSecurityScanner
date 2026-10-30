@@ -103,7 +103,7 @@ export default function AdminRescanRequests() {
           message={
             confirmModal.action === "approve"
               ? "Approve this rescan request? The SOC team will perform the retest manually and upload the verification result."
-              : `Propose ${proposedMap[confirmModal.scheduleId] ? new Date(proposedMap[confirmModal.scheduleId]).toLocaleString("en-GB", { timeZone: "Asia/Kolkata", hour12: true }) : "this date"} to the user? They will be notified and can accept or reject it.`
+              : `Propose ${proposedMap[confirmModal.scheduleId] ? new Date(proposedMap[confirmModal.scheduleId]).toLocaleString("en-GB", { timeZone: "Asia/Kolkata", hour12: true }) : "this date"} to the user? They can accept, reject, or counter-propose.`
           }
           confirmLabel={confirmModal.action === "approve" ? "Approve" : "Propose Date"}
           variant={confirmModal.action === "approve" ? "primary" : "primary"}
@@ -178,7 +178,7 @@ export default function AdminRescanRequests() {
                           ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
                           : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400"
                       }`}>
-                        {r.status === "failed" ? "Failed" : r.status === "completed_with_errors" ? "Completed with errors" : r.status === "completed" ? "Completed" : r.status === "rejected" ? "Rejected by client" : r.status === "scheduled" || r.status === "approval_pending" ? "Awaiting approval" : "Awaiting client decision"}
+                        {r.status === "failed" ? "Failed" : r.status === "completed_with_errors" ? "Completed with errors" : r.status === "completed" ? "Completed" : r.status === "approved" ? "Approved — verification ready" : r.status === "scheduled" || r.status === "approval_pending" ? "Awaiting SOC approval" : r.date_proposal_status === "rejected" ? "Client rejected — SOC action needed" : r.date_proposed_by === "client" ? "Client counter-proposed — SOC review" : "Awaiting client decision"}
                       </span>
                       {r.error_message && (
                         <span className="text-xs text-red-600 dark:text-red-400">{r.error_message}</span>
@@ -219,7 +219,7 @@ export default function AdminRescanRequests() {
                         </a>
                       ) : (r.status === "scheduled" || r.status === "requested" || r.status === "approval_pending" || r.status === "rejected") ? (
                         <>
-                          {r.status !== "rejected" && r.status !== "requested" && (
+                          {(r.status === "scheduled" || (r.status === "requested" && r.date_proposed_by === "client" && r.date_proposal_status === "pending")) && (
                             <button
                               onClick={() => handleApprove(r.id)}
                               disabled={actionLoading[r.id]}
@@ -229,18 +229,23 @@ export default function AdminRescanRequests() {
                               Approve
                             </button>
                           )}
-                          {r.status === "rejected" && (
-                            <p className="text-xs font-semibold text-red-600 dark:text-red-400">Client rejected this date — propose a new date below.</p>
+                          {r.date_proposal_status === "rejected" && (
+                            <p className="text-xs font-semibold text-red-600 dark:text-red-400">Client rejected this date — propose another date below.</p>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => setDatePickerOpen((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}
-                            className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400 dark:hover:bg-amber-950/60"
-                          >
-                            <Clock size={14} />
-                            {datePickerOpen[r.id] ? "Cancel" : "Propose new date"}
-                          </button>
-                          {datePickerOpen[r.id] && (
+                          {r.status === "requested" && r.date_proposed_by === "soc" && r.date_proposal_status === "pending" && (
+                            <p className="text-xs font-semibold text-amber-600 dark:text-amber-400">Waiting for the client to accept or counter-propose.</p>
+                          )}
+                          {(r.status === "scheduled" || r.status === "rejected" || (r.status === "requested" && (r.date_proposed_by === "client" || r.date_proposal_status === "rejected"))) && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setDatePickerOpen((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}
+                                className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-50 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400 dark:hover:bg-amber-950/60"
+                              >
+                                <Clock size={14} />
+                                {datePickerOpen[r.id] ? "Cancel" : "Propose new date"}
+                              </button>
+                              {datePickerOpen[r.id] && (
                             <div className="mt-3 flex w-full flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
                               <input
                                 type="datetime-local"
@@ -257,6 +262,8 @@ export default function AdminRescanRequests() {
                                 Send new date
                               </button>
                             </div>
+                              )}
+                            </>
                           )}
                         </>
                       ) : null}

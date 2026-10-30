@@ -236,7 +236,7 @@ Copy `Scanner-Backend/.env.example` → `.env`. All config is env-driven — not
 
 | Group | Vars |
 |---|---|
-| Database | `DATABASE_URL` |
+| Database | `DATABASE_URL`, `SQLALCHEMY_ECHO` |
 | Redis | `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` |
 | Security | `JWT_SECRET`, `DOMAIN_EMAIL_VALIDATION_ENABLED`, `ADMIN_LOGIN_OTP_BYPASS`, `ADMIN_TOTP_REQUIRED`, `PUBLIC_EMAIL_DOMAINS` |
 | SMTP / email | `SMTP_SERVER`, `SMTP_PORT` (465 SSL or 587 STARTTLS), `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_TIMEOUT_SECONDS`, `EMAIL_FROM_NAME`, `OTP_EXPIRY_MINUTES`, `FRONTEND_URL` |
@@ -247,6 +247,8 @@ Copy `Scanner-Backend/.env.example` → `.env`. All config is env-driven — not
 | Third-party | `ABUSEIPDB_API_KEY`, `QUTTERA_API_KEY` |
 | Admin tool updates | `TOOL_UPDATE_GITHUB_TOKEN`, `TOOL_UPDATE_REPOSITORY` (defaults to `tejass27is/DomainSecurityScanner`), `TOOL_UPDATE_REF` (defaults to `main`) |
 | Malware poller | `MALWARE_POLL_INTERVAL_SEC`, `MALWARE_POLL_TIMEOUT_SEC` |
+
+`SQLALCHEMY_ECHO` defaults to `false`. Set it to `true` only for temporary database debugging; SQL logs may include sensitive values. API responses include `Server-Timing` values for total app handling and aggregate database execution time, and backend logs record both by route template. Compare these with the browser's request/response timing to distinguish server and database work from transfer time; request bodies, credentials, and SQL text are not logged.
 
 The Scanner updates admin page can automatically update Semgrep and Prowler and redeploy the backend. To enable it in production, create a fine-grained GitHub token restricted to the configured repository with **Actions: write** permission, set it as `TOOL_UPDATE_GITHUB_TOKEN` in `Scanner-Backend/.env` on the deployment server, and rebuild/restart the backend once so Docker Compose loads it. Keep this token server-side; never put it in a frontend environment variable. The backend deployment workflow also needs its existing SSH secrets and a `GITHUB_TOKEN` with `contents: write` permission (already declared in the workflow) to commit the new version pin before rebuilding the production image.
 

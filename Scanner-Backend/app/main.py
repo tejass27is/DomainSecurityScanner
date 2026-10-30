@@ -16,16 +16,21 @@ from app.api.analyzer.routes import router as analyzer_router
 from app.api.fix.routes import router as fix_router
 from app.api.admin.routes import router as admin_router
 from app.api.malware.routes import router as malware_router
-from app.db.base import SessionLocal
+from app.db.base import SessionLocal, request_db_metrics
 from app.api.report_issue.routes import router as report_issue_router
 from app.api.public.routes import router as public_router
 from app.api.vapt.routes import router as vapt_router
-from app.api.vapt.maintenance import run_remediation_followup_reminders, run_vapt_due_date_reminders
+from app.api.vapt.maintenance import (
+    run_remediation_followup_reminders,
+    run_vapt_client_review_reminders,
+    run_vapt_due_date_reminders,
+)
 from app.api.webscan.routes import router as webscan_router
 from app.api.admin.service import seed_default_subscription_plans, delete_expired_unclaimed_promo_codes, check_escalation_rules
 import threading
 import time
 import logging
+from time import perf_counter
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,21 @@ def cleanup_expired_promo_codes():
         except Exception:
             logger.exception("Background maintenance cycle failed")
 
+
+def send_vapt_client_review_reminders_periodically():
+    """Check client review reminders every minute so the 3-day deadline is timely."""
+    while True:
+        try:
+            time.sleep(60)
+            db = SessionLocal()
+            try:
+                run_vapt_client_review_reminders(db)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("Client VAPT review reminder cycle failed")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
@@ -57,6 +77,7 @@ async def lifespan(_app: FastAPI):
 
         # Clean up expired unclaimed promo codes on startup
         delete_expired_unclaimed_promo_codes(db)
+        run_vapt_client_review_reminders(db)
 
         from scripts.create_admin import create_admin_user, create_soc_analyst_user
         create_admin_user()
@@ -71,10 +92,42 @@ async def lifespan(_app: FastAPI):
 
     cleanup_thread = threading.Thread(target=cleanup_expired_promo_codes, daemon=True)
     cleanup_thread.start()
+    client_review_reminder_thread = threading.Thread(
+        target=send_vapt_client_review_reminders_periodically,
+        daemon=True,
+    )
+    client_review_reminder_thread.start()
     yield
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.middleware("http")
+async def measure_api_request(request, call_next):
+    started_at = perf_counter()
+    db_metrics = {"duration_ms": 0.0}
+    db_metrics_token = request_db_metrics.set(db_metrics)
+    try:
+        response = await call_next(request)
+        duration_ms = (perf_counter() - started_at) * 1000
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", "unmatched")
+        db_duration_ms = db_metrics["duration_ms"]
+        response.headers["Server-Timing"] = (
+            f"app;dur={duration_ms:.2f}, db;dur={db_duration_ms:.2f}"
+        )
+        logger.info(
+            "API request completed method=%s route=%s status=%s duration_ms=%.2f db_duration_ms=%.2f",
+            request.method,
+            route_path,
+            response.status_code,
+            duration_ms,
+            db_duration_ms,
+        )
+        return response
+    finally:
+        request_db_metrics.reset(db_metrics_token)
 
 
 def include_api_compatibility_routes(app_instance: FastAPI) -> None:
@@ -141,6 +194,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Server-Timing"],
 )
 
 

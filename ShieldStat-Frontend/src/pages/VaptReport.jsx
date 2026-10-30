@@ -6,7 +6,7 @@ import {
   ShieldAlert, FilterX, Database, Clock, CheckCircle2,
 } from "lucide-react";
 import { getVaptImport, getVaptImportAdmin, updateVaptFindingStatus, submitVaptImport, deleteVaptImport, deleteVaptImportAdmin, getVaptAccessStatus, getWebSocketUrl, postAdminRemediationReview, requestRescanDateChange, updateVerificationFindingStatus, submitVerificationReview } from "../services/api";
-import { downloadVaptClosureBundle, downloadVaptReportExcel, downloadVaptReportAdminExcel, logSupportOffered, postAdminCloseWithoutVerification, postClientNextVaptDueDate, approveClientNextVaptDueDate } from "../services/api";
+import { downloadVaptClosureBundle, downloadVaptReportExcel, downloadVaptReportAdminExcel, logSupportOffered, postAdminCloseWithoutVerification, postClientNextVaptDueDate, approveClientNextVaptDueDate, rejectClientNextVaptDueDate } from "../services/api";
 import { getVaptRescanSchedules, postAdminApproveReschedule, postAdminRequestNewDate, postAdminVerificationDecision, acceptRescanDate, rejectRescanDate } from "../services/api";
 import RescanModal from "../components/RescanModal";
 import {
@@ -61,8 +61,9 @@ function isLowOrInformationalFinding(finding) {
   return ["low", "info", "informational"].includes(severity);
 }
 
-function requiresSolvedRemark(finding, status) {
-  return isLowOrInformationalFinding(finding) && status === "solved";
+function hasOpenSocReviewFlag(finding) {
+  return Array.isArray(finding.soc_review_flags)
+    && finding.soc_review_flags.some((flag) => !flag.responded_at);
 }
 
 const LIFECYCLE_LABEL = {
@@ -208,11 +209,18 @@ function ExpandableText({ text = "", maxLength = 160 }) {
   );
 }
 
-function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
+function FindingTableRow({
+  finding,
+  onDraftChange,
+  readOnly = false,
+  allowSocFlag = false,
+  socReviewFlagDraft,
+  onSocReviewFlagDraftChange,
+}) {
   const [status, setStatus] = useState(finding.status || "pending");
   const [comment, setComment] = useState(finding.comment || "");
   const requiresTriage = requiresFindingTriage(finding);
-  const solvedRemarkRequired = requiresSolvedRemark(finding, status);
+  const socReviewFlags = Array.isArray(finding.soc_review_flags) ? finding.soc_review_flags : [];
   const cves = (finding.cves || []).filter(Boolean);
   const references = (finding.references || []).filter((r) =>
     r.startsWith("http://") || r.startsWith("https://"),
@@ -297,8 +305,6 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                   {status === "ignore" || status === "false_positive"
                     ? "A comment is required when ignoring or marking a finding false positive."
-                    : solvedRemarkRequired
-                      ? "Add a remark describing the fix; it is required when you mark a Low or Informational finding Solved."
                     : "Add a note for this finding if you want; it is optional."}
                 </p>
               </div>
@@ -307,13 +313,68 @@ function FindingTableRow({ finding, onDraftChange, readOnly = false }) {
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
                   rows={3}
-                  placeholder={solvedRemarkRequired ? "Describe what you changed (required)" : "Add a note about this finding (optional)"}
+                  placeholder={status === "ignore" || status === "false_positive"
+                    ? "Comment required"
+                    : "Add a note about this finding (optional)"}
                   className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
                 />
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  {solvedRemarkRequired ? "Your remark will be shown to SOC as a client-reported fix, not an independently verified result." : "A remark is optional unless you choose Ignore or False positive."}
+                  {status === "ignore" || status === "false_positive"
+                    ? "A comment is required for Ignore or False positive."
+                    : "A remark is optional unless you choose Ignore or False positive."}
                 </p>
               </div>
+            </div>
+          )}
+          {socReviewFlags.map((flag, index) => (
+            <div
+              key={`${flag.flagged_at || "soc-flag"}-${index}`}
+              className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[11px] dark:border-amber-900 dark:bg-amber-950/30"
+            >
+              <p className="font-bold text-amber-800 dark:text-amber-200">
+                {flag.responded_at ? "SOC follow-up (answered)" : "SOC requests follow-up"}
+              </p>
+              <p className="mt-1 whitespace-pre-wrap text-amber-800 dark:text-amber-200">{flag.note}</p>
+              {flag.client_status_at_flag && (
+                <p className="mt-1 text-slate-600 dark:text-slate-300">
+                  Original client decision: {formatLabel(flag.client_status_at_flag)}
+                  {flag.client_comment_at_flag ? ` — ${flag.client_comment_at_flag}` : ""}
+                </p>
+              )}
+              {flag.responded_at && (
+                <p className="mt-1 whitespace-pre-wrap text-slate-600 dark:text-slate-300">
+                  Client response: {formatLabel(flag.response_status || "")}
+                  {flag.response_comment ? ` — ${flag.response_comment}` : ""}
+                </p>
+              )}
+            </div>
+          ))}
+          {allowSocFlag && ["ignore", "false_positive"].includes(status) && (
+            <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900 dark:bg-amber-950/20">
+              <label className="flex items-center gap-2 text-xs font-semibold text-amber-900 dark:text-amber-200">
+                <input
+                  type="checkbox"
+                  checked={Boolean(socReviewFlagDraft?.enabled)}
+                  onChange={(event) => onSocReviewFlagDraftChange?.(finding.id, {
+                    enabled: event.target.checked,
+                    note: socReviewFlagDraft?.note || "",
+                  })}
+                />
+                Flag this decision for client follow-up
+              </label>
+              {socReviewFlagDraft?.enabled && (
+                <textarea
+                  value={socReviewFlagDraft.note || ""}
+                  onChange={(event) => onSocReviewFlagDraftChange?.(finding.id, {
+                    enabled: true,
+                    note: event.target.value,
+                  })}
+                  rows={2}
+                  maxLength={2000}
+                  placeholder="Explain what the client should clarify or change (required)"
+                  className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-2 text-xs text-slate-900 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200 dark:border-amber-800 dark:bg-slate-950 dark:text-slate-100"
+                />
+              )}
             </div>
           )}
         </div>
@@ -415,13 +476,19 @@ function RescanRequestsPanel({
           <tbody>
             {schedules.map((s) => {
               const draft = drafts[s.id] || {};
-              const isActionable = ["scheduled", "requested"].includes((s.status || "scheduled").toLowerCase());
+              const isInitialRequest = s.status === "scheduled";
+              const clientCounterPending = s.status === "requested" && s.date_proposed_by === "client" && s.date_proposal_status === "pending";
+              const clientRejected = s.status === "requested" && s.date_proposal_status === "rejected";
+              const isActionable = isInitialRequest || clientCounterPending || clientRejected;
+              const canApprove = isInitialRequest || clientCounterPending;
               return (
                 <tr key={s.id} className="border-t border-slate-100 align-top dark:border-slate-800">
                   <td className="px-4 py-3 font-mono text-[12px]">{fmtDate(s.scheduled_at || s.requested_date || s.proposed_date)}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_BADGE[s.status] || STATUS_BADGE.pending}`}>
-                      {STATUS_LABEL[s.status] || s.status || "Pending"}
+                      {s.status === "requested"
+                        ? clientRejected ? "Client rejected — SOC action needed" : clientCounterPending ? "Client counter-proposed — SOC review" : "Awaiting client decision"
+                        : STATUS_LABEL[s.status] || s.status || "Pending"}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-[12px] text-slate-600 dark:text-slate-300">{s.note || "—"}</td>
@@ -452,20 +519,20 @@ function RescanRequestsPanel({
                     ) : isActionable ? (
                       <div className="space-y-3">
                         <div className="flex flex-wrap gap-2">
-                          <button
+                          {canApprove && <button
                             type="button"
                             onClick={() => onApprove(s.id)}
                             disabled={actionLoading[s.id]}
                             className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
                           >
                             {actionLoading[s.id] ? "Working…" : "Approve"}
-                          </button>
+                          </button>}
                           <button
                             type="button"
                             onClick={() => onToggleNewDate(s.id)}
                             className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-purple-300 hover:text-purple-700 dark:border-slate-700 dark:text-slate-300"
                           >
-                            Request new date
+                            {clientRejected ? "Propose replacement date" : "Propose another date"}
                           </button>
                         </div>
                         {draft.open && (
@@ -503,6 +570,10 @@ function RescanRequestsPanel({
                           <p className="text-xs text-red-600 dark:text-red-400">{actionError[s.id]}</p>
                         )}
                       </div>
+                    ) : s.status === "requested" && s.date_proposed_by === "soc" && s.date_proposal_status === "pending" ? (
+                      <span className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                        Waiting for the client to accept, reject, or counter-propose.
+                      </span>
                     ) : (
                       <span className="text-xs text-slate-400">No action needed</span>
                     )}
@@ -630,8 +701,16 @@ function NotificationPanel({ record, schedules, isPlatformView }) {
       items.push({
         key: "requested",
         icon: Clock,
-        title: "New date requested",
-        description: `SOC requested a new scan date for ${fmtDate(next.scheduled_at)}. ${next.note ? `Note: ${next.note}` : ""}`,
+        title: next.date_proposal_status === "rejected"
+          ? "Client rejected the proposed date"
+          : next.date_proposed_by === "client"
+            ? "Client counter-proposed a date"
+            : "SOC proposed a new date",
+        description: next.date_proposal_status === "rejected"
+          ? `SOC needs to propose another scan date. ${next.note ? `Note: ${next.note}` : ""}`
+          : next.date_proposed_by === "client"
+            ? `The client proposed ${fmtDate(next.scheduled_at)}. SOC review is pending. ${next.note ? `Note: ${next.note}` : ""}`
+            : `SOC proposed ${fmtDate(next.scheduled_at)}. The client can accept, reject, or counter-propose. ${next.note ? `Note: ${next.note}` : ""}`,
       });
     } else if (status === "approved") {
       items.push({
@@ -780,16 +859,8 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
         const draft = drafts[finding.id] || finding;
         const status = draft.status || "pending";
         const comment = (draft.comment || "").trim();
-        if (
-          ((status === "ignore" || status === "false_positive") ||
-            requiresSolvedRemark(finding, status)) &&
-          !comment
-        ) {
-          throw new Error(
-            status === "solved"
-              ? "Add a remark before marking a Low or Informational verification finding Solved."
-              : "Add a comment before choosing Ignore or False positive.",
-          );
+        if ((status === "ignore" || status === "false_positive") && !comment) {
+          throw new Error("Add a comment before choosing Ignore or False positive.");
         }
         await updateVerificationFindingStatus(record.import_id, schedule.id, finding.id, { status, comment }, localStorage.getItem("token"));
       }
@@ -1046,18 +1117,11 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
               <input
                 value={comment}
                 onChange={(e) => onDraftChange(finding.id, "comment", e.target.value)}
-              placeholder={
-                requiresSolvedRemark(finding, status)
-                  ? "Remark required: describe what you changed"
-                  : "Comment required for Ignore / False positive"
-              }
+              placeholder={status === "ignore" || status === "false_positive"
+                ? "Comment required for Ignore / False positive"
+                : "Add a note (optional)"}
               className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
               />
-              {requiresSolvedRemark(finding, status) && (
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                SOC will see this as a client-reported fix; verification remains separate.
-              </p>
-              )}
             </div>
           )}
           {!onDraftChange && comment && (
@@ -1127,6 +1191,7 @@ export default function VaptReport() {
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [reportRefreshError, setReportRefreshError] = useState("");
   const [search, setSearch] = useState("");
   const [ipFilter, setIpFilter] = useState("");
   const [sevFilter, setSevFilter] = useState(null);
@@ -1142,10 +1207,14 @@ export default function VaptReport() {
   const [rescanSchedules, setRescanSchedules] = useState([]);
   const [rescanLoading, setRescanLoading] = useState(false);
   const [dueDateApprovalLoading, setDueDateApprovalLoading] = useState(false);
+  const [dueDateRejectionLoading, setDueDateRejectionLoading] = useState(false);
+  const [dueDateRejectionOpen, setDueDateRejectionOpen] = useState(false);
+  const [dueDateRejectionReason, setDueDateRejectionReason] = useState("");
   // Rescan request row actions (platform/admin view)
   const [rescanActionLoading, setRescanActionLoading] = useState({});
   const [rescanActionError, setRescanActionError] = useState({});
   const [remediationReviewLoading, setRemediationReviewLoading] = useState(false);
+  const [socReviewFlagDrafts, setSocReviewFlagDrafts] = useState({});
   const [newDateDraft, setNewDateDraft] = useState({}); // { [scheduleId]: { date, note, open } }
   // Report view switcher: "initial" or a schedule id string
   const [selectedReport, setSelectedReport] = useState("initial");
@@ -1165,6 +1234,21 @@ export default function VaptReport() {
       setRescanLoading(false);
     }
   }, [importId]);
+
+  const refreshReport = useCallback(async () => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    try {
+      const loadFn = isPlatformView ? getVaptImportAdmin : getVaptImport;
+      const data = await loadFn(importId, token);
+      if (data) {
+        setRecord(data);
+        setReportRefreshError("");
+      }
+    } catch (err) {
+      setReportRefreshError(err?.message || "Could not refresh the report status.");
+    }
+  }, [importId, isPlatformView]);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -1205,6 +1289,41 @@ export default function VaptReport() {
     return () => { cancelled = true; };
   }, [importId, isPlatformView, navigate, refreshRescanSchedules]);
 
+  const waitingForSocReview = !isPlatformView
+    && record?.status === "client_completed"
+    && record?.remediation_review_status === "pending_soc_review";
+
+  useEffect(() => {
+    if (!waitingForSocReview) return undefined;
+    let active = true;
+    const refresh = async () => {
+      const token = localStorage.getItem("token");
+      if (!token) return;
+      try {
+        const data = await getVaptImport(importId, token);
+        if (active && data) {
+          setRecord(data);
+          setReportRefreshError("");
+        }
+      } catch (err) {
+        if (active) {
+          setReportRefreshError(err?.message || "Could not refresh the report status.");
+        }
+      }
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const intervalId = window.setInterval(refresh, 15000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [importId, waitingForSocReview]);
 
 
   // ── WebSocket listener for rescan + report events ──
@@ -1212,24 +1331,30 @@ export default function VaptReport() {
     if (typeof window === "undefined" || !window.WebSocket) return;
     const token = localStorage.getItem("token");
     if (!token) return;
+    let user;
+    try {
+      user = JSON.parse(localStorage.getItem("user") || "null");
+    } catch {
+      return;
+    }
+    const channel = isPlatformView ? "platform" : user?.org_id;
+    if (!channel) return;
 
-    const ws = new WebSocket(getWebSocketUrl("platform"));
+    const ws = new WebSocket(getWebSocketUrl(channel));
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
+        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_due_date_proposed", "vapt_due_date_rejected", "vapt_cycle_closed"].includes(message.event)) {
           refreshRescanSchedules();
-          if (["report_published", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
-            const token2 = localStorage.getItem("token");
-            if (token2) {
-              const loadFn = isPlatformView ? getVaptImportAdmin : getVaptImport;
-              loadFn(importId, token2).then(data => { if (data) setRecord(data); }).catch(() => {});
-            }
+          if (["report_published", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_due_date_proposed", "vapt_due_date_rejected", "vapt_cycle_closed"].includes(message.event)) {
+            refreshReport();
           }
           // User-facing toasts
           if (!isPlatformView) {
             if (message.event === "vapt_closure_pending_client_due_date") {
               setToast({ text: "SOC approved closure. Choose the next VAPT due date to finish closing the cycle.", type: "info" });
+            } else if (message.event === "vapt_due_date_rejected") {
+              setToast({ text: "SOC requested a different next VAPT date. Review the reason and submit a new date.", type: "info" });
             } else if (message.event === "vapt_cycle_closed") {
               setToast({ text: "VAPT cycle closed", type: "success" });
             } else if (message.event === "report_published") {
@@ -1252,7 +1377,7 @@ export default function VaptReport() {
       }
     };
     return () => { ws.close(); };
-  }, [refreshRescanSchedules, importId, isPlatformView]);
+  }, [refreshRescanSchedules, refreshReport, importId, isPlatformView]);
 
   const handleDraftChange = useCallback((findingId, changes) => {
     const key = String(findingId);
@@ -1359,17 +1484,51 @@ export default function VaptReport() {
   const handleRemediationReview = useCallback(async (decision) => {
     const token = localStorage.getItem("token");
     if (!token || !record) return;
+    const flags = decision === "changes_requested"
+      ? Object.entries(socReviewFlagDrafts)
+        .filter(([, draft]) => draft.enabled)
+        .map(([findingId, draft]) => ({ finding_id: findingId, note: (draft.note || "").trim() }))
+      : [];
+    if (decision === "changes_requested" && (!flags.length || flags.some((flag) => !flag.note))) {
+      setToast({ text: "Select at least one finding and add a reason for every SOC flag.", type: "error" });
+      return;
+    }
     setRemediationReviewLoading(true);
     try {
-      const result = await postAdminRemediationReview(record.import_id, decision, token);
-      setRecord((prev) => prev ? { ...prev, remediation_review_status: decision, lifecycle_status: result.lifecycle_status } : prev);
-      setToast({ text: decision === "approved" ? "Remediation accepted; client may schedule verification" : "Remediation rejected; client must continue fixing findings", type: decision === "approved" ? "success" : "error" });
+      const result = await postAdminRemediationReview(record.import_id, decision, token, flags);
+      setRecord((prev) => prev ? {
+        ...prev,
+        remediation_review_status: decision,
+        lifecycle_status: result.lifecycle_status,
+        findings: result.findings || prev.findings,
+      } : prev);
+      setSocReviewFlagDrafts({});
+      setToast({
+        text: decision === "approved"
+          ? "Remediation accepted; client may schedule verification"
+          : decision === "changes_requested"
+            ? "SOC flags sent to the client for follow-up"
+            : "Remediation rejected; client must continue fixing findings",
+        type: decision === "approved" ? "success" : decision === "changes_requested" ? "info" : "error",
+      });
     } catch (err) {
       setToast({ text: err?.message || "Failed to review remediation", type: "error" });
     } finally {
       setRemediationReviewLoading(false);
     }
-  }, [record]);
+  }, [record, socReviewFlagDrafts]);
+
+  const handleSocReviewFlagDraftChange = useCallback((findingId, draft) => {
+    const key = String(findingId);
+    setSocReviewFlagDrafts((previous) => {
+      if (!draft.enabled) {
+        const next = { ...previous };
+        delete next[key];
+        return next;
+      }
+      return { ...previous, [key]: draft };
+    });
+  }, []);
 
   const handleDirectClosure = useCallback(async () => {
     if (!record) return;
@@ -1388,9 +1547,14 @@ export default function VaptReport() {
     if (!record || !clientDueDate) return;
     try {
       const result = await postClientNextVaptDueDate(record.import_id, new Date(clientDueDate).toISOString(), localStorage.getItem("token"));
-      setRecord((prev) => prev ? { ...prev, lifecycle_status: result.lifecycle_status, next_vapt_due_at: result.next_vapt_due_at } : prev);
+      setRecord((prev) => {
+        if (!prev) return prev;
+        const summary = { ...(prev.summary || {}) };
+        delete summary.next_vapt_due_date_rejection_reason;
+        return { ...prev, lifecycle_status: result.lifecycle_status, next_vapt_due_at: result.next_vapt_due_at, summary };
+      });
       setClientDueDate("");
-      setToast({ text: "VAPT cycle closed and next due date saved", type: "success" });
+      setToast({ text: "Next VAPT due date submitted for SOC approval", type: "success" });
     } catch (err) {
       setToast({ text: err?.message || "Failed to save the next VAPT due date", type: "error" });
     }
@@ -1413,6 +1577,34 @@ export default function VaptReport() {
       setDueDateApprovalLoading(false);
     }
   }, [record]);
+
+  const handleRejectClientDueDate = useCallback(async () => {
+    if (!record || !dueDateRejectionReason.trim()) return;
+    setDueDateRejectionLoading(true);
+    try {
+      const result = await rejectClientNextVaptDueDate(
+        record.import_id,
+        dueDateRejectionReason.trim(),
+        localStorage.getItem("token"),
+      );
+      setRecord((prev) => prev ? {
+        ...prev,
+        lifecycle_status: result.lifecycle_status,
+        next_vapt_due_at: null,
+        summary: {
+          ...(prev.summary || {}),
+          next_vapt_due_date_rejection_reason: result.reason,
+        },
+      } : prev);
+      setDueDateRejectionOpen(false);
+      setDueDateRejectionReason("");
+      setToast({ text: "Client must submit a different next VAPT due date", type: "success" });
+    } catch (err) {
+      setToast({ text: err?.message || "Failed to reject the client's next VAPT due date", type: "error" });
+    } finally {
+      setDueDateRejectionLoading(false);
+    }
+  }, [dueDateRejectionReason, record]);
 
   const toggleNewDateForm = useCallback((scheduleId) => {
     setNewDateDraft((prev) => ({
@@ -1440,7 +1632,14 @@ export default function VaptReport() {
       setRescanSchedules((prev) =>
         prev.map((s) =>
           String(s.id) === String(scheduleId)
-            ? { ...s, status: "requested", scheduled_at: updated.proposed_at, note: updated.note || s.note }
+            ? {
+              ...s,
+              status: "requested",
+              date_proposed_by: updated.date_proposed_by,
+              date_proposal_status: updated.date_proposal_status,
+              scheduled_at: updated.proposed_at,
+              note: updated.note || s.note,
+            }
             : s
         )
       );
@@ -1465,7 +1664,14 @@ export default function VaptReport() {
       setRescanSchedules((prev) =>
         prev.map((s) =>
           String(s.id) === String(scheduleId)
-            ? { ...s, status: "requested", scheduled_at: updated.proposed_at, note: updated.note || s.note }
+            ? {
+              ...s,
+              status: "requested",
+              date_proposed_by: updated.date_proposed_by,
+              date_proposal_status: updated.date_proposal_status,
+              scheduled_at: updated.proposed_at,
+              note: updated.note || s.note,
+            }
             : s
         )
       );
@@ -1507,9 +1713,13 @@ export default function VaptReport() {
     setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
     setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
     try {
-      await rejectRescanDate(record?.import_id, scheduleId, token);
-      setRescanSchedules((prev) => prev.filter((s) => String(s.id) !== String(scheduleId)));
-      setToast({ text: "Proposed date rejected", type: "success" });
+      const updated = await rejectRescanDate(record?.import_id, scheduleId, token);
+      setRescanSchedules((prev) =>
+        prev.map((s) => String(s.id) === String(scheduleId)
+          ? { ...s, date_proposal_status: updated.date_proposal_status }
+          : s)
+      );
+      setToast({ text: "Date rejected — SOC can propose another time", type: "success" });
     } catch (err) {
       setRescanActionError((p) => ({ ...p, [scheduleId]: err?.message || "Failed to reject." }));
     } finally {
@@ -1574,18 +1784,14 @@ export default function VaptReport() {
     });
   }, [record, search, ipFilter, sevFilter, statusFilter, catFilter]);
 
-  const hasInvalidDraft = useMemo(() => Object.entries(draftChanges).some(([findingId, draft]) => {
+  const hasInvalidDraft = useMemo(() => Object.values(draftChanges).some((draft) => {
     const status = (draft.status || "").toLowerCase();
-    return (
-      ((status === "ignore" || status === "false_positive") ||
-        requiresSolvedRemark(record?.findings?.find((item) => String(item.id) === findingId), status)) &&
-      !(draft.comment || "").trim()
-    );
+    return (status === "ignore" || status === "false_positive") && !(draft.comment || "").trim();
   }) || (record?.findings || []).some((finding) => {
     const draft = draftChanges[String(finding.id)];
     const status = (draft?.status ?? finding.status ?? "pending").toLowerCase();
     const comment = draft?.comment ?? finding.comment ?? "";
-    return requiresSolvedRemark(finding, status) && !comment.trim();
+    return (status === "ignore" || status === "false_positive") && !comment.trim();
   }), [draftChanges, record]);
 
   const hasPendingFindings = useMemo(() => {
@@ -1596,6 +1802,17 @@ export default function VaptReport() {
       return requiresFindingTriage(finding) && status === "pending";
     });
   }, [record, draftChanges]);
+  const canSubmitClientReview = !isPlatformView && (
+    record?.status !== "client_completed"
+    || ["changes_requested", "rejected"].includes(record?.remediation_review_status)
+  );
+  const hasOpenSocReviewFlags = (record?.findings || []).some((finding) =>
+    hasOpenSocReviewFlag(finding),
+  );
+  const hasSelectedSocFlags = Object.values(socReviewFlagDrafts).some((draft) => draft.enabled);
+  const hasInvalidSocFlags = Object.values(socReviewFlagDrafts).some(
+    (draft) => draft.enabled && !String(draft.note || "").trim(),
+  );
 
   const handleSubmitReport = useCallback(async () => {
     if (!record) return;
@@ -1604,7 +1821,7 @@ export default function VaptReport() {
       return;
     }
     if (hasPendingFindings) {
-      setSubmitError("All findings must be marked Solved, Ignore, or False positive before submitting.");
+      setSubmitError("Critical, High, and Medium findings must be marked Solved, Ignore, or False positive before submitting.");
       return;
     }
 
@@ -1617,8 +1834,18 @@ export default function VaptReport() {
       if (!saved) throw new Error("Unable to save status updates before submitting.");
       await submitVaptImport(record.import_id, token);
       setSubmitStatus("completed");
-      setRecord((prev) => prev ? { ...prev, status: "client_completed" } : prev);
-      setToast({ text: "Report submitted successfully, contact SOC team for next scan.", type: "success" });
+      setRecord((prev) => prev ? {
+        ...prev,
+        status: "client_completed",
+        remediation_review_status: "pending_soc_review",
+        lifecycle_status: "awaiting_soc_remediation_acceptance",
+      } : prev);
+      setToast({
+        text: record.remediation_review_status === "changes_requested"
+          ? "Your updates were resubmitted to SOC for review."
+          : "Report submitted successfully, contact SOC team for next scan.",
+        type: "success",
+      });
     } catch (err) {
       setSubmitError(err?.message || "Failed to submit report.");
       setSubmitStatus("");
@@ -1671,6 +1898,11 @@ export default function VaptReport() {
   return (
     <div className="min-h-screen text-slate-900 dark:text-slate-100">
       <div className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6 lg:px-10">
+        {reportRefreshError && (
+          <div role="alert" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            {reportRefreshError} The report will be checked again automatically.
+          </div>
+        )}
         {toast?.text && (
           <div
             role="status"
@@ -1842,6 +2074,11 @@ export default function VaptReport() {
                 SOC requested more remediation before a verification scan can be scheduled.
               </p>
             )}
+            {!isPlatformView && record.remediation_review_status === "changes_requested" && (
+              <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                SOC flagged specific Ignore / False positive decisions. Review the reasons in the findings, update each flagged decision or its note, save, then resubmit to SOC.
+              </p>
+            )}
             {record.next_vapt_due_at && record.lifecycle_status === "closed" && (
               <p className="mt-2 text-sm text-emerald-700 dark:text-emerald-400">
                 Next VAPT assessment: <strong>{fmtDate(record.next_vapt_due_at)}</strong>
@@ -1851,6 +2088,11 @@ export default function VaptReport() {
               <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30">
                 <p className="text-sm font-bold text-sky-800 dark:text-sky-200">SOC approved closure</p>
                 <p className="mt-1 text-sm text-sky-700 dark:text-sky-300">Choose the next VAPT due date and time to complete closure.</p>
+                {record.summary?.next_vapt_due_date_rejection_reason && (
+                  <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                    <strong>SOC requested a different date:</strong> {record.summary.next_vapt_due_date_rejection_reason}
+                  </p>
+                )}
                 <div className="mt-3 flex flex-wrap items-end gap-3">
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                     Next VAPT due date/time
@@ -1861,11 +2103,19 @@ export default function VaptReport() {
               </div>
             )}
             {isPlatformView && record.remediation_review_status === "pending_soc_review" && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" onClick={() => handleRemediationReview("approved")} disabled={remediationReviewLoading} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-emerald-700 hover:shadow-md active:translate-y-0 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-70">
-                  {remediationReviewLoading ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} {remediationReviewLoading ? "Accepting…" : "Accept client remediation"}
-                </button>
-                <button type="button" onClick={() => handleRemediationReview("rejected")} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">Request more remediation</button>
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  To ask the client to revisit an Ignore or False positive decision, flag it in the finding row and provide a reason before requesting follow-up.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => handleRemediationReview("approved")} disabled={remediationReviewLoading || hasSelectedSocFlags} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-emerald-700 hover:shadow-md active:translate-y-0 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-70">
+                    {remediationReviewLoading ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} {remediationReviewLoading ? "Reviewing…" : "Accept client remediation"}
+                  </button>
+                  <button type="button" onClick={() => handleRemediationReview("changes_requested")} disabled={remediationReviewLoading || !hasSelectedSocFlags || hasInvalidSocFlags} className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
+                    {remediationReviewLoading ? "Sending…" : "Request client follow-up"}
+                  </button>
+                  <button type="button" onClick={() => handleRemediationReview("rejected")} disabled={remediationReviewLoading || hasSelectedSocFlags} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 disabled:cursor-not-allowed disabled:opacity-50">Request more remediation</button>
+                </div>
               </div>
             )}
             {isPlatformView && record.status === "client_completed" && !(record.findings || []).some((finding) => (finding.status || "") === "solved") && !rescanSchedules.length && (
@@ -1917,7 +2167,13 @@ export default function VaptReport() {
                   ) : record.lifecycle_status === "closed" && record.next_vapt_due_at ? (
                     <p className="mt-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">Next VAPT assessment date approved by SOC</p>
                   ) : rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && !isPlatformView && (
-                    <p className="mt-1 text-xs font-semibold text-amber-600 dark:text-amber-400">SOC proposed a new date — review below</p>
+                    <p className="mt-1 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                      {rescanSchedules[0].date_proposal_status === "rejected"
+                        ? "You rejected SOC's date — waiting for another proposal"
+                        : rescanSchedules[0].date_proposed_by === "client"
+                          ? "Your counter-proposal is waiting for SOC"
+                          : "SOC proposed a new date — review or counter-propose below"}
+                    </p>
                   )}
                   {!(record.next_vapt_due_at && ["closure_pending_soc_due_date", "closed"].includes(record.lifecycle_status)) && rescanSchedules.length > 0 && ["completed", "completed_with_errors", "failed"].includes(rescanSchedules[0].status) && (
                     <p className={`mt-1 text-xs font-semibold ${rescanSchedules[0].status === "failed" || rescanSchedules[0].status === "completed_with_errors" ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>{rescanSchedules[0].status === "failed" ? "Verification upload failed" : rescanSchedules[0].status === "completed_with_errors" ? "Completed with remaining findings" : "Verification upload completed"}</p>
@@ -1925,7 +2181,7 @@ export default function VaptReport() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {/* User: accept/reject proposed dates */}
-                  {!(record.lifecycle_status === "closed" && record.next_vapt_due_at) && !isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && (
+                  {!(record.lifecycle_status === "closed" && record.next_vapt_due_at) && !isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "requested" && rescanSchedules[0].date_proposed_by === "soc" && rescanSchedules[0].date_proposal_status === "pending" && (
                     <>
                       <button
                         type="button"
@@ -1946,26 +2202,59 @@ export default function VaptReport() {
                       </button>
                     </>
                   )}
-                  {!(record.lifecycle_status === "closed" && record.next_vapt_due_at) && !isPlatformView && rescanSchedules.length > 0 && rescanSchedules[0].status === "scheduled" && (
+                  {!(record.lifecycle_status === "closed" && record.next_vapt_due_at) && !isPlatformView && rescanSchedules.length > 0 && (rescanSchedules[0].status === "scheduled" || (rescanSchedules[0].status === "requested" && rescanSchedules[0].date_proposed_by === "soc" && rescanSchedules[0].date_proposal_status === "pending")) && (
                     <button
                       type="button"
                       onClick={() => toggleNewDateForm(rescanSchedules[0].id)}
                       className="inline-flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400 dark:hover:bg-amber-950/60"
                     >
                       <Clock size={15} />
-                      Propose new date
+                      Counter-propose date
                     </button>
                   )}
                   {/* SOC: schedule next scan */}
                   {isPlatformView && record.lifecycle_status === "closure_pending_soc_due_date" && record.next_vapt_due_at && (
-                    <button
-                      type="button"
-                      onClick={handleApproveClientDueDate}
-                      disabled={dueDateApprovalLoading}
-                      className="inline-flex items-center rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60"
-                    >
-                      {dueDateApprovalLoading ? "Approving…" : "Approve client date"}
-                    </button>
+                    <div className="flex flex-col items-start gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={handleApproveClientDueDate}
+                          disabled={dueDateApprovalLoading || dueDateRejectionLoading}
+                          className="inline-flex items-center rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60"
+                        >
+                          {dueDateApprovalLoading ? "Approving…" : "Approve client date"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDueDateRejectionOpen((open) => !open)}
+                          disabled={dueDateApprovalLoading || dueDateRejectionLoading}
+                          className="inline-flex items-center rounded-xl border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-60 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
+                        >
+                          Reject with reason
+                        </button>
+                      </div>
+                      {dueDateRejectionOpen && (
+                        <div className="w-full max-w-md space-y-2">
+                          <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                            Reason for requesting a different date
+                            <textarea
+                              value={dueDateRejectionReason}
+                              onChange={(event) => setDueDateRejectionReason(event.target.value)}
+                              rows={3}
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-red-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={handleRejectClientDueDate}
+                            disabled={dueDateRejectionLoading || !dueDateRejectionReason.trim()}
+                            className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {dueDateRejectionLoading ? "Rejecting…" : "Send rejection"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   )}
                   {isPlatformView && record.status === "client_completed" && record.lifecycle_status === "revalidation_required" && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
                     <button
@@ -1994,7 +2283,11 @@ export default function VaptReport() {
                   ? "The next VAPT assessment date has been approved by SOC."
                   : rescanSchedules.length > 0
                   ? rescanSchedules[0].status === "requested"
-                    ? "SOC has proposed a new date for the verification scan. You can accept or reject it."
+                    ? rescanSchedules[0].date_proposal_status === "rejected"
+                      ? "You rejected the proposed time. SOC will propose another date."
+                      : rescanSchedules[0].date_proposed_by === "client"
+                        ? "Your counter-proposed date is waiting for SOC approval."
+                        : "SOC proposed a date. You can accept it, reject it, or counter-propose another time."
                     : ["completed", "completed_with_errors", "failed"].includes(rescanSchedules[0].status)
                       ? rescanSchedules[0].status === "failed" ? "The manual verification upload could not confirm a fix. SOC must review the result before closing the cycle." : rescanSchedules[0].status === "completed_with_errors" ? "Some previously solved findings remain. SOC must review the result before closing the cycle." : "The manual verification upload has been completed."
                       : "SOC has scheduled the next verification scan for this report."
@@ -2048,7 +2341,7 @@ export default function VaptReport() {
               <ShieldAlert size={13} />
               Informational findings are excluded automatically so the report focuses on real vulnerabilities.
             </p>
-            {!isPlatformView && record.status !== "client_completed" && (
+            {canSubmitClientReview && (
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 <button
                   type="button"
@@ -2056,7 +2349,11 @@ export default function VaptReport() {
                   disabled={submitStatus === "loading" || bulkSaving || hasInvalidDraft || hasPendingFindings}
                   className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {submitStatus === "loading" ? "Submitting…" : "Submit to SOC Analyst"}
+                  {submitStatus === "loading"
+                    ? "Submitting…"
+                    : record.remediation_review_status === "changes_requested" || record.remediation_review_status === "rejected"
+                      ? "Resubmit to SOC Analyst"
+                      : "Submit to SOC Analyst"}
                 </button>
                 {hasPendingFindings && (
                   <p className="text-sm text-amber-600 dark:text-amber-400">
@@ -2227,18 +2524,18 @@ export default function VaptReport() {
             <p className="mt-1 text-xs text-slate-400">Try a different search term or clear the severity / category filters.</p>
             {!isPlatformView && record.status !== "client_completed" && (
               <div className="mt-6 flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left dark:border-slate-800 dark:bg-slate-950/70">
-                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Submit this report to SOC once all findings are triaged.</p>
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Submit this report to SOC once required findings are triaged.</p>
                 <button
                   type="button"
                   onClick={handleSubmitReport}
-                  disabled={submitStatus === "loading" || hasInvalidDraft || bulkSaving || hasPendingFindings}
+                  disabled={submitStatus === "loading" || hasInvalidDraft || bulkSaving || hasPendingFindings || hasOpenSocReviewFlags}
                   className="w-full rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {submitStatus === "loading" ? "Submitting…" : "Submit to SOC Analyst"}
                 </button>
                 {hasPendingFindings && (
                   <div className="text-sm text-amber-600 dark:text-amber-400">
-                    Actionable findings must be triaged before submitting. Low and Informational findings are optional; if marked Solved, add a remark describing the fix.
+                    Critical, High, and Medium findings must be triaged before submitting. Low and Informational findings are optional.
                   </div>
                 )}
                 {submitError && (
@@ -2248,7 +2545,7 @@ export default function VaptReport() {
                 )}
                 {hasInvalidDraft && (
                   <div className="text-sm text-amber-600 dark:text-amber-400">
-                    Add required remarks for Low/Informational findings marked Solved and comments for Ignore / False positive before saving.
+                    Add a comment to every finding marked Ignore or False positive before saving.
                   </div>
                 )}
               </div>
@@ -2283,19 +2580,30 @@ export default function VaptReport() {
                 <tbody>
                   {filteredFindings.map((f) => (
                     <FindingTableRow
-                      key={`${f.id}-${f.status || "pending"}-${f.comment || ""}`}
+                      key={`${f.id}-${f.status || "pending"}-${f.comment || ""}-${f.soc_review_flags?.length || 0}`}
                       finding={f}
-                      onDraftChange={handleDraftChange}
-                      readOnly={isPlatformView}
+                      onDraftChange={
+                        canSubmitClientReview
+                        && (
+                          record.remediation_review_status !== "changes_requested"
+                          || hasOpenSocReviewFlag(f)
+                        )
+                          ? handleDraftChange
+                          : undefined
+                      }
+                      readOnly={isPlatformView || !canSubmitClientReview}
+                      allowSocFlag={isPlatformView && record.remediation_review_status === "pending_soc_review"}
+                      socReviewFlagDraft={socReviewFlagDrafts[String(f.id)]}
+                      onSocReviewFlagDraftChange={handleSocReviewFlagDraftChange}
                     />
                   ))}
                 </tbody>
               </table>
             </div>
             <div className="rounded-b-2xl border-t border-slate-200 bg-slate-50 px-4 py-4 dark:border-slate-800 dark:bg-slate-950/70">
-              {isPlatformView ? (
+              {isPlatformView || !canSubmitClientReview ? (
                 <p className="text-sm text-slate-500 dark:text-slate-400">
-                  Read-only view — this library cannot be modified.
+                  {isPlatformView ? "Read-only view — this library cannot be modified." : "Your review is with SOC. No changes can be made until SOC requests follow-up."}
                 </p>
               ) : (
                 <>
@@ -2315,21 +2623,30 @@ export default function VaptReport() {
                       >
                         {bulkSaving ? "Saving changes…" : "Save changes"}
                       </button>
-                      {!isPlatformView && record.status !== "client_completed" && (
+                      {canSubmitClientReview && (
                         <button
                           type="button"
                           onClick={handleSubmitReport}
-                          disabled={submitStatus === "loading" || hasInvalidDraft || bulkSaving || hasPendingFindings}
+                          disabled={submitStatus === "loading" || hasInvalidDraft || bulkSaving || hasPendingFindings || hasOpenSocReviewFlags}
                           className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {submitStatus === "loading" ? "Submitting…" : "Submit to SOC Analyst"}
+                          {submitStatus === "loading"
+                            ? "Submitting…"
+                            : record.remediation_review_status === "changes_requested" || record.remediation_review_status === "rejected"
+                              ? "Resubmit to SOC Analyst"
+                              : "Submit to SOC Analyst"}
                         </button>
                       )}
                     </div>
                   </div>
                   {hasPendingFindings && (
                     <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
-                      Actionable findings must be marked Solved, Ignore, or False positive before submitting. Low and Informational findings are optional; if marked Solved, add a remark describing the fix.
+                      Critical, High, and Medium findings must be marked Solved, Ignore, or False positive before submitting. Low and Informational findings are optional.
+                    </div>
+                  )}
+                  {hasOpenSocReviewFlags && (
+                    <div className="mt-2 text-sm text-amber-700 dark:text-amber-400">
+                      Update and save every SOC-flagged finding before resubmitting.
                     </div>
                   )}
                   {submitError && (
@@ -2339,7 +2656,7 @@ export default function VaptReport() {
                   )}
                   {hasInvalidDraft && (
                     <div className="mt-2 text-sm text-amber-600 dark:text-amber-400">
-                      Add required remarks for Low/Informational findings marked Solved and comments for Ignore / False positive before saving.
+                      Add a comment to every finding marked Ignore or False positive before saving.
                     </div>
                   )}
                 </>

@@ -99,7 +99,7 @@ party's reading underneath.
 | `revalidation_scheduled` | Client (or SOC) creates a rescan schedule | SOC approves the slot |
 | `revalidation_verification_pending` | SOC uploads the manual verification export | SOC records a decision |
 | `closure_pending_client_due_date` | SOC closes verification, or closes without verification | Client picks the next VAPT due date |
-| `closure_pending_soc_due_date` | Client submits the next due date | SOC approves it |
+| `closure_pending_soc_due_date` | Client submits the next due date | SOC approves it or rejects with a reason for client resubmission |
 | `closed` | SOC approves the client's due date | Due-soon / overdue reminders run |
 
 ```
@@ -136,6 +136,9 @@ party's reading underneath.
                                                                       closed
 ```
 
+If SOC rejects the proposed due date, the cycle returns to `closure_pending_client_due_date`;
+the client sees the reason and submits another future date.
+
 ---
 
 ## 4. Client journey
@@ -165,15 +168,23 @@ sees a banner with the proposed start/end in **their own zone** plus the SOC clo
 ### 4.3 Report review and triage
 
 5. **Read the published report** — `GET /vapt/imports/{id}` (client-scoped to their org).
-6. **Triage every finding** — `PATCH /vapt/imports/{id}/findings/{finding_id}` with one of
-   `solved` / `ignore` / `false_positive`. `ignore` and `false_positive` **require a comment**.
-7. **Submit the review** — `POST /vapt/imports/{id}/submit`. All findings must be triaged first.
+6. **Triage findings** — `PATCH /vapt/imports/{id}/findings/{finding_id}` with one of
+   `solved` / `ignore` / `false_positive`. Critical, High, and Medium findings must be triaged;
+   Low and Informational findings are optional. A note for `solved` is optional at every severity.
+   `ignore` and `false_positive` **require a comment at every severity**.
+7. **Submit the review** — `POST /vapt/imports/{id}/submit`. All Critical, High, and Medium
+   findings must be triaged first.
    → `status = client_completed`, lifecycle `awaiting_soc_remediation_acceptance`.
+8. **SOC reviews the client decisions** — SOC may approve, reject for further remediation, or
+   flag specific `ignore` / `false_positive` decisions with a required reason. A flag preserves the
+   client's original decision and comment. The client can update only flagged findings and must
+   change the decision or its note before resubmitting; every SOC flag must be answered first.
+   The report returns to `pending_soc_review` after resubmission.
 
 ### 4.4 Verification (rescan) scheduling
 
-8. **Wait for SOC acceptance** of the remediation review → lifecycle `revalidation_required`.
-9. **Schedule a verification scan** — `POST /vapt/imports/{id}/rescan-schedule`. Guards:
+9. **Wait for SOC acceptance** of the remediation review → lifecycle `revalidation_required`.
+10. **Schedule a verification scan** — `POST /vapt/imports/{id}/rescan-schedule`. Guards:
    - caller must be org `owner` or `admin`
    - `status == client_completed` and `remediation_review_status == approved`
    - **at least one finding must be `solved`**
@@ -181,22 +192,26 @@ sees a banner with the proposed start/end in **their own zone** plus the SOC clo
    - **only one active schedule** at a time (`scheduled` / `requested` / `approved`) → otherwise `409`
    - submitted as a wall clock + IANA zone; the modal previews the IST and UTC instant
    → lifecycle `revalidation_scheduled`.
-10. **Accept / reject / counter-propose the slot** while `status == requested`:
+11. **Accept / reject / counter-propose the slot** while `status == requested`:
     - `POST .../rescan-schedule/{sid}/accept` → confirmed (emails client requester + all SOC)
     - `POST .../rescan-schedule/{sid}/reject` → the request loop stays open, SOC is emailed, a new
       date is needed
     - `POST .../rescan-schedule/{sid}/request-date` → client proposes its own alternative
-11. **Triage findings that survived verification** — `PATCH .../rescan-schedule/{sid}/findings/{fid}`,
+12. **Triage findings that survived verification** — `PATCH .../rescan-schedule/{sid}/findings/{fid}`,
     then `POST .../rescan-schedule/{sid}/submit` (`client_review_status = client_completed`). Every
-    remaining finding must be triaged and `ignore`/`false_positive` need comments.
+    Critical, High, and Medium remaining findings must be triaged; `ignore`/`false_positive`
+    require comments at every severity, while `solved` notes are optional.
 
 ### 4.5 Closing the cycle
 
 12. **Choose the next VAPT due date** — `POST /vapt/imports/{id}/next-due-date`, only valid while
     lifecycle is `closure_pending_client_due_date`, must be in the future.
     → `closure_pending_soc_due_date`.
-13. **After SOC approval** the cycle is `closed` and the next assessment date is displayed on the
-    report ("Next VAPT assessment").
+13. **SOC reviews the proposed date**:
+    - Approve → the cycle is `closed` and the next assessment date is displayed on the report.
+    - Reject with a reason → the cycle returns to `closure_pending_client_due_date`; the client
+      sees SOC's reason and submits a different future date. The new proposal clears the previous
+      rejection reason and returns to SOC review.
 
 ### 4.6 What the client sees
 
@@ -304,6 +319,19 @@ findings**, **no `solved` findings** and no closure blockers. Goes straight to
   reminders can fire
 - audit entry `VAPT_CYCLE_CLOSED`
 
+### 5.8.1 Rejecting the next due date
+
+`POST /vapt/admin/imports/{id}/reject-next-due-date` while
+`closure_pending_soc_due_date`, with a non-empty `reason`:
+
+- lifecycle → `closure_pending_client_due_date`
+- proposed `next_vapt_due_at` is cleared, so the client must submit a replacement
+- the reason is retained in the report summary and shown to the client until they resubmit
+- audit entry `VAPT_DUE_DATE_REJECTED`; a WebSocket event refreshes both the SOC and client views
+
+The client uses the existing `POST /vapt/imports/{id}/next-due-date` action to propose another
+future date. This clears the displayed rejection reason and sends the cycle back to SOC approval.
+
 ### 5.9 Supporting actions
 
 | Action | Endpoint | Notes |
@@ -328,7 +356,7 @@ off-platform tools, then uploads the exports here.
 | 2. Onboard | Review the submitted checklist and region. Approve, request specific changes, or reject with a reason; negotiate the testing window where needed. | Request access for a region, complete required questions/uploads, resubmit flagged answers, and accept or reject a proposed window. | The SOC must approve the checklist and region before publishing an assessment. A rejected checklist requires a fresh completion; `changes_requested` requires updates to all flagged answers. |
 | 3. Assess off-platform | Run the authorized assessment during the agreed window; document material scope deviations, outages, and test limitations. Stop and escalate if testing may affect availability or reaches an unauthorized asset. | Keep the named technical contact reachable, notify SOC about unexpected impact or changed scope, and avoid changing the agreed targets/window without coordination. | Assessment execution, stop-work decisions, and incident coordination are operational steps, not platform state transitions. |
 | 4. Validate and publish | Review the export for the correct organization, region, scope, and usable findings; upload a supported export. Resolve parser/input problems before treating the assessment as published. | Review the published report and confirm the assessed assets and findings are understood; raise discrepancies with SOC through the agreed support channel. | Successful upload creates the report and notifies the client. The prior cycle must be closed before a subsequent full report can be uploaded. |
-| 5. Remediate and submit | Review the client's triage. Approve it to enable verification, or reject it to return the cycle to remediation. Give actionable follow-up through the SOC support process. | For each finding, record `solved`, `ignore`, or `false_positive`; add a reason for `ignore`/`false_positive`; submit only after every finding is triaged. Remediate in the client's environment. | All findings must be triaged before submission. `solved` findings are candidates for verification; the client cannot schedule a verification until SOC approves the remediation review. |
+| 5. Remediate and submit | Review the client's triage. Approve it to enable verification, reject it for further remediation, or flag specific `ignore`/`false_positive` decisions with reasons and request a client update. | Triage Critical, High, and Medium findings; Low and Informational findings are optional. Add a comment for `ignore`/`false_positive`; a `solved` note is optional at every severity. Respond to every SOC flag by changing that finding's decision or note, then resubmit. | Critical, High, and Medium findings must be triaged before submission. Open flags block resubmission; after resubmission, SOC reviews again. `solved` findings are candidates for verification; the client cannot schedule a verification until SOC approves. |
 | 6. Agree and perform verification | Approve the requested slot or propose a new one. Run the manual retest against the agreed hosts/findings and upload its supported export. | Have an org owner/admin schedule the slot; accept a SOC-proposed date or coordinate another slot; make the systems available for retest. | Only one active schedule is allowed. The schedule must be approved before SOC can upload verification results. The app evaluates the export against findings marked solved; it does not initiate the scan. |
 | 7. Review verification and close | Review fixed/remaining findings and record `closed` or `reopened`. Reopen if further remediation is required; close only when closure blockers and client review requirements are satisfied. | Triage every finding still present in verification and submit the review; continue remediation if SOC reopens the cycle. | Unresolved Critical, High, or Medium findings block closure. A closed verification moves to the next-due-date handoff; reopening returns the cycle to remediation. |
 | 8. Plan the next cycle | Review and approve the client's proposed next assessment due date; monitor due/overdue alerts and prepare the next engagement. | Propose a future due date after SOC approves closure; use the timeline/report bundle to retain the evidence needed for audit and planning. | SOC approval sets the lifecycle to `closed`; only then can a new full report be uploaded for the next cycle. |
@@ -350,7 +378,7 @@ available SOC process rather than treating a notification as authorization.
 | S3 | SOC counter-proposes initial window | propose-date → client accepts | `schedule_status = confirmed` |
 | S4 | Client rejects proposed window | propose-date → client rejects with note | `schedule_status = rejected`, SOC re-proposes |
 | S5 | Initial report uploaded | SOC upload, checklist approved, previous cycle closed | `report_published`, cycle N |
-| S6 | Client finishes triage | all findings triaged → submit | `awaiting_soc_remediation_acceptance` |
+| S6 | Client finishes triage | required findings triaged → submit | `awaiting_soc_remediation_acceptance` |
 | S7 | SOC accepts remediation | remediation-review `approved` | `revalidation_required` |
 | S8 | SOC rejects remediation | remediation-review `rejected` | `remediation_required` + 7-day timer |
 | S9 | Client schedules verification | rescan-schedule (owner/admin, ≥1 solved) | `revalidation_scheduled` |
@@ -387,6 +415,7 @@ available SOC process rather than treating a notification as authorization.
 | S40 | No finding requires verification | No findings are pending or solved, remediation review is approved, and no closure blockers remain | SOC can close without verification; client still has to propose the next due date |
 | S41 | Next due date is invalid or overdue | Client submits malformed or non-future `next_vapt_due_at` | Request is rejected; client submits a valid future ISO-8601 instant |
 | S42 | Rescan slot is missed or no longer workable | Client or SOC identifies the approved slot cannot be used | Coordinate a future replacement through the reschedule flow; do not treat an expired slot as completed verification |
+| S43 | SOC rejects the client's next due date | `reject-next-due-date` with a reason → client proposes a replacement | `closure_pending_client_due_date` → `closure_pending_soc_due_date` |
 
 A separate, unrelated mechanism exists for **website findings**: `ReportedIssuesPanel` offers
 "Rescan this issue", which re-checks a single report-issue finding. That does not touch the VAPT
@@ -397,11 +426,12 @@ cycle and is out of scope here.
 ## 7. Timers
 
 An hourly daemon thread (`main.py`) runs promo-code cleanup, `run_remediation_followup_reminders`,
-`run_vapt_due_date_reminders` and escalation rules. Reminders can also be triggered manually by a
-SOC analyst.
+`run_vapt_due_date_reminders` and escalation rules. Client review reminders run at startup and in a
+separate one-minute loop so the three-day reminder is sent within about one minute of its threshold.
 
 | Timer | Trigger | Recipients | Once-only guard |
 |---|---|---|---|
+| Client report review | Initial report is still awaiting review, or a verification report has reviewable findings, **and** 3 days since upload with no client finding activity | Client org | `client_review_reminder_sent_at`; client activity or report completion suppresses the reminder |
 | Remediation follow-up | lifecycle `remediation_required` **and** 7 days since `support_offered_at` (fallback `created_at`) | SOC analysts | `remediation_reminder_sent_at > clock_start` — re-arms when support is logged again |
 | Due soon | lifecycle `closed` **and** `next_vapt_due_at <= now + 7 days` | Org users only | `due_soon_reminder_sent_at` |
 | Overdue | lifecycle `closed` **and** `next_vapt_due_at <= now` | Org users **+ SOC analysts** | `overdue_notice_sent_at` |
@@ -417,14 +447,15 @@ All comparisons use aware UTC datetimes; naive values from the database are trea
 `vapt_rescan_scheduled`, `vapt_rescan_approved`, `vapt_rescan_date_requested`,
 `vapt_rescan_completed`, `vapt_rescan_failed`, `vapt_verification_decided`,
 `vapt_remediation_reviewed`, `vapt_closure_pending_client_due_date`, `vapt_cycle_closed`,
-`vapt_initial_date_proposed`, `vapt_initial_date_decided`. The client and SOC report views
-subscribe and refresh on these.
+`vapt_due_date_proposed`, `vapt_due_date_rejected`, `vapt_initial_date_proposed`,
+`vapt_initial_date_decided`. The client and SOC report views subscribe and refresh on these.
 
 **Emails** (all timestamps rendered in IST):
 
 | Email | Recipients |
 |---|---|
 | Report published | Client org |
+| Client report review reminder (3 days, if no finding was marked) | Client org |
 | Remediation review decision | Client org |
 | Rescan scheduled (confirmed) | Requester + SOC |
 | Rescan date proposed / rejected | Client org + SOC |
@@ -460,14 +491,10 @@ subscribe and refresh on these.
    already-`requested` schedule. SOC must issue the replacement proposal; the client can then accept
    it. The scenario matrix's "client proposes its own slot" applies when the schedule is not already
    awaiting a decision.
-7. **Next due-date rejection/counter-proposal has no dedicated endpoint** — after the client
-   submits a due date, the cycle waits for SOC approval. If the date is unsuitable, SOC/client must
-   coordinate outside this decision endpoint before proceeding; the platform currently exposes
-   approval but not a reject/edit transition.
-8. **No automated client reminder covers every stalled handoff** — for example, an onboarding
-   review, client triage, or due-date approval can remain pending without a dedicated timeout
-   transition. SOC and client should track open work operationally; reminders listed in §7 are the
-   implemented set, not a complete engagement SLA.
+7. **Client review reminders only cover unmarked initial and verification reports** — a report with
+   any client finding activity is not reminded, even if the client has not submitted the review.
+   Onboarding review and due-date approval can still remain pending without a dedicated timeout
+   transition; reminders listed in §7 are not a complete engagement SLA.
 
 ---
 

@@ -159,9 +159,18 @@ export default function VaptReports() {
     if (typeof window === "undefined" || !window.WebSocket) return;
     const token = localStorage.getItem("token");
     if (!token) return;
+    let user;
+    try {
+      user = JSON.parse(localStorage.getItem("user") || "null");
+    } catch {
+      return;
+    }
+    const isStaff = user?.role === "admin" || user?.role === "soc_analyst";
+    const channel = isStaff ? "platform" : user?.org_id;
+    if (!channel) return;
 
     let cancelled = false;
-    const ws = new WebSocket(getWebSocketUrl("platform"));
+    const ws = new WebSocket(getWebSocketUrl(channel));
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);

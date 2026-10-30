@@ -3,14 +3,139 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Organization, User, VaptImport
+from app.db.models import Organization, User, VaptImport, VaptRescanSchedule
 from app.utils.email import (
     send_remediation_followup_reminder_email,
+    send_vapt_client_review_reminder_email,
     send_vapt_due_soon_email,
     send_vapt_overdue_email,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def run_vapt_client_review_reminders(db: Session) -> dict:
+    """Send one reminder three days after report upload if the client has not acted."""
+    now = datetime.now(timezone.utc)
+    threshold = now - timedelta(days=3)
+    reminders_sent = 0
+    reminder_ids = []
+
+    reports = db.query(VaptImport).filter(
+        VaptImport.lifecycle_status == "report_published",
+        VaptImport.remediation_review_status == "not_submitted",
+        VaptImport.client_review_reminder_sent_at.is_(None),
+    ).all()
+    for record in reports:
+        uploaded_at = record.created_at
+        if not uploaded_at:
+            continue
+        if uploaded_at.tzinfo is None:
+            uploaded_at = uploaded_at.replace(tzinfo=timezone.utc)
+        if uploaded_at > threshold or record.client_review_activity_at:
+            continue
+        if any((finding.get("status") or "pending") != "pending" for finding in record.findings or []):
+            continue
+
+        recipients = {
+            user.email
+            for user in db.query(User).filter(User.org_id == record.org_id).all()
+            if user.email
+        }
+        if not recipients:
+            continue
+        delivered = False
+        for email in recipients:
+            try:
+                send_vapt_client_review_reminder_email(
+                    to_email=email,
+                    file_name=record.file_name,
+                    import_id=str(record.import_id),
+                    report_type="initial",
+                )
+                delivered = True
+            except Exception:
+                logger.exception(
+                    "Failed initial client review reminder for import=%s recipient=%s",
+                    record.import_id,
+                    email,
+                )
+        if delivered:
+            record.client_review_reminder_sent_at = now
+            db.add(record)
+            db.commit()
+            reminders_sent += 1
+            reminder_ids.append(str(record.import_id))
+
+    verification_schedules = db.query(VaptRescanSchedule).filter(
+        VaptRescanSchedule.uploaded_at.isnot(None),
+        VaptRescanSchedule.client_review_reminder_sent_at.is_(None),
+        VaptRescanSchedule.status.in_(["completed", "completed_with_errors", "failed"]),
+    ).all()
+    for schedule in verification_schedules:
+        uploaded_at = schedule.uploaded_at
+        if uploaded_at.tzinfo is None:
+            uploaded_at = uploaded_at.replace(tzinfo=timezone.utc)
+        if uploaded_at > threshold or schedule.client_review_activity_at:
+            continue
+
+        result_data = schedule.result_data or {}
+        if result_data.get("client_review_status") in {"in_progress", "client_completed"}:
+            continue
+        review_findings = [
+            *(result_data.get("remaining_findings") or []),
+            *(result_data.get("new_findings") or []),
+        ]
+        if not review_findings:
+            continue
+
+        record = db.query(VaptImport).filter(VaptImport.import_id == schedule.import_id).first()
+        if not record:
+            logger.warning(
+                "Skipping verification reminder for schedule=%s because its import is missing",
+                schedule.id,
+            )
+            continue
+        recipients = {
+            user.email
+            for user in db.query(User).filter(User.org_id == schedule.org_id).all()
+            if user.email
+        }
+        if not recipients:
+            continue
+        delivered = False
+        verification_number = (
+            db.query(VaptRescanSchedule)
+            .filter(
+                VaptRescanSchedule.import_id == schedule.import_id,
+                VaptRescanSchedule.created_at <= schedule.created_at,
+            )
+            .count()
+        )
+        for email in recipients:
+            try:
+                send_vapt_client_review_reminder_email(
+                    to_email=email,
+                    file_name=record.file_name,
+                    import_id=str(record.import_id),
+                    report_type="verification",
+                    verification_number=verification_number,
+                )
+                delivered = True
+            except Exception:
+                logger.exception(
+                    "Failed verification client review reminder for schedule=%s recipient=%s",
+                    schedule.id,
+                    email,
+                )
+        if delivered:
+            schedule.client_review_reminder_sent_at = now
+            db.add(schedule)
+            db.commit()
+            reminders_sent += 1
+            reminder_ids.append(str(schedule.id))
+
+    return {"success": True, "reminders_sent": reminders_sent, "report_ids": reminder_ids}
 
 
 def run_remediation_followup_reminders(db: Session) -> dict:

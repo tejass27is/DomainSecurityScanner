@@ -1,8 +1,11 @@
 import asyncio
 import io
 import os
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+
+import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
@@ -13,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.db.base import Base, engine
 from app.db.models import (
+    AuditLog,
     Organization,
     OrganizationRegion,
     Region,
@@ -41,7 +45,15 @@ from app.api.vapt.routes import (
     _validate_rescan_prerequisites,
     _verification_display_name,
     _verification_download_filename,
+    ClientDueDateRequest,
+    ClientDueDateRejectionRequest,
     DirectClosureRequest,
+    AdminRescheduleRequest,
+    approve_client_next_vapt_due_date,
+    accept_proposed_date,
+    admin_approve_reschedule,
+    admin_request_new_date,
+    client_request_new_date,
     close_vapt_without_verification,
     approve_vapt_access,
     decide_region_checklist,
@@ -53,16 +65,21 @@ from app.api.vapt.routes import (
     list_vapt_access_requests,
     request_vapt_access,
     request_vapt_region,
+    reject_client_next_vapt_due_date,
+    reject_proposed_date,
     review_vapt_onboarding,
+    review_client_remediation,
     submit_onboarding_checklist,
     submit_vapt_import,
     submit_verification_review,
+    set_client_next_vapt_due_date,
     upload_checklist_attachment,
     upload_vapt_report,
     update_vapt_finding_status,
     update_verification_finding_status,
 )
 from app.api.vapt.normalizer import group_stored_findings, normalize_import
+from app.api.vapt.maintenance import run_vapt_client_review_reminders
 from app.api.admin.service import get_users_by_org
 from app.api.vapt.schemas import VaptFindingStatusUpdate, VaptImportDetail, VaptImportListItem
 from app.api.vapt.report_generator import (
@@ -70,6 +87,7 @@ from app.api.vapt.report_generator import (
     generate_vapt_verification_report_pdf,
     generate_vapt_verification_report_xlsx,
 )
+from app.utils import email as email_utils
 
 
 def _complete_region_checklist_answers():
@@ -453,6 +471,392 @@ def setup_module():
     Base.metadata.create_all(bind=engine)
 
 
+def test_rescan_date_negotiation_alternates_between_client_and_soc(monkeypatch):
+    org_id = str(uuid.uuid4())
+    client_id = str(uuid.uuid4())
+    soc_id = str(uuid.uuid4())
+    import_id = uuid.uuid4()
+    db = Session(bind=engine)
+    monkeypatch.setattr("app.api.vapt.routes.send_vapt_access_event_email", lambda *args, **kwargs: None)
+    try:
+        client = User(
+            user_id=client_id,
+            org_id=org_id,
+            email=f"{client_id}@example.com",
+            password="test-password",
+            role="owner",
+        )
+        soc = User(
+            user_id=soc_id,
+            org_id=None,
+            email=f"{soc_id}@example.com",
+            password="test-password",
+            role="soc_analyst",
+        )
+        record = VaptImport(
+            import_id=import_id,
+            org_id=org_id,
+            file_name="rescan-negotiation.xml",
+            file_format="xml",
+            source_tool="nessus",
+            lifecycle_status="revalidation_scheduled",
+            status="client_completed",
+            remediation_review_status="approved",
+            findings=[{"id": "finding-1", "status": "solved"}],
+        )
+        schedule = VaptRescanSchedule(
+            import_id=import_id,
+            org_id=org_id,
+            created_by=client_id,
+            scheduled_at=datetime.now(timezone.utc) + timedelta(days=10),
+            status="scheduled",
+            date_proposed_by="client",
+        )
+        db.add_all([client, soc, Organization(org_id=org_id, user_id=client_id), record, schedule])
+        db.commit()
+        db.refresh(schedule)
+
+        asyncio.run(admin_request_new_date(
+            str(schedule.id),
+            AdminRescheduleRequest(
+                proposed_at=(datetime.now(timezone.utc) + timedelta(days=12)).isoformat(),
+                proposed_timezone="UTC",
+            ),
+            db=db,
+            current_user=soc,
+        ))
+        db.refresh(schedule)
+        assert schedule.date_proposed_by == "soc"
+        assert schedule.date_proposal_status == "pending"
+
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(admin_approve_reschedule(str(schedule.id), db=db, current_user=soc))
+        assert error.value.status_code == 409
+
+        asyncio.run(client_request_new_date(
+            str(import_id),
+            str(schedule.id),
+            AdminRescheduleRequest(
+                proposed_at=(datetime.now(timezone.utc) + timedelta(days=14)).isoformat(),
+                proposed_timezone="UTC",
+            ),
+            db=db,
+            current_user=client,
+        ))
+        db.refresh(schedule)
+        assert schedule.date_proposed_by == "client"
+        assert schedule.date_proposal_status == "pending"
+
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(client_request_new_date(
+                str(import_id),
+                str(schedule.id),
+                AdminRescheduleRequest(
+                    proposed_at=(datetime.now(timezone.utc) + timedelta(days=15)).isoformat(),
+                    proposed_timezone="UTC",
+                ),
+                db=db,
+                current_user=client,
+            ))
+        assert error.value.status_code == 409
+
+        asyncio.run(admin_approve_reschedule(str(schedule.id), db=db, current_user=soc))
+        db.refresh(schedule)
+        assert schedule.status == "approved"
+        assert schedule.date_proposal_status == "accepted"
+
+        client_accept_schedule = VaptRescanSchedule(
+            import_id=import_id,
+            org_id=org_id,
+            created_by=client_id,
+            scheduled_at=datetime.now(timezone.utc) + timedelta(days=20),
+            status="requested",
+            date_proposed_by="soc",
+            date_proposal_status="pending",
+        )
+        db.add(client_accept_schedule)
+        db.commit()
+        db.refresh(client_accept_schedule)
+        asyncio.run(accept_proposed_date(
+            str(import_id),
+            str(client_accept_schedule.id),
+            db=db,
+            current_user=client,
+        ))
+        db.refresh(client_accept_schedule)
+        assert client_accept_schedule.status == "approved"
+        assert client_accept_schedule.date_proposal_status == "accepted"
+
+        rejected_schedule = VaptRescanSchedule(
+            import_id=import_id,
+            org_id=org_id,
+            created_by=client_id,
+            scheduled_at=datetime.now(timezone.utc) + timedelta(days=25),
+            status="requested",
+            date_proposed_by="soc",
+            date_proposal_status="pending",
+        )
+        db.add(rejected_schedule)
+        db.commit()
+        db.refresh(rejected_schedule)
+        asyncio.run(reject_proposed_date(
+            str(import_id),
+            str(rejected_schedule.id),
+            db=db,
+            current_user=client,
+        ))
+        db.refresh(rejected_schedule)
+        assert rejected_schedule.date_proposal_status == "rejected"
+
+        asyncio.run(admin_request_new_date(
+            str(rejected_schedule.id),
+            AdminRescheduleRequest(
+                proposed_at=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+                proposed_timezone="UTC",
+            ),
+            db=db,
+            current_user=soc,
+        ))
+        db.refresh(rejected_schedule)
+        assert rejected_schedule.date_proposed_by == "soc"
+        assert rejected_schedule.date_proposal_status == "pending"
+    finally:
+        schedule_ids = [str(item.id) for item in db.query(VaptRescanSchedule).filter_by(import_id=import_id).all()]
+        db.query(AuditLog).filter(
+            AuditLog.target_type == "vapt_rescan_schedule",
+            AuditLog.target_id.in_(schedule_ids),
+        ).delete(synchronize_session=False)
+        db.query(VaptRescanSchedule).filter_by(import_id=import_id).delete(synchronize_session=False)
+        db.query(VaptImport).filter_by(import_id=import_id).delete(synchronize_session=False)
+        db.query(Organization).filter_by(org_id=org_id).delete(synchronize_session=False)
+        db.query(User).filter(User.user_id.in_([client_id, soc_id])).delete(synchronize_session=False)
+        db.commit()
+        db.close()
+
+
+def test_soc_due_date_rejection_returns_cycle_to_client_for_resubmission():
+    org_id = str(uuid.uuid4())
+    client_id = str(uuid.uuid4())
+    soc_id = str(uuid.uuid4())
+    import_id = uuid.uuid4()
+    reason = "Please choose a date after the infrastructure upgrade."
+    db = Session(bind=engine)
+    try:
+        client = User(
+            user_id=client_id,
+            org_id=org_id,
+            email=f"{client_id}@example.com",
+            password="test-password",
+            role="owner",
+        )
+        soc = User(
+            user_id=soc_id,
+            org_id=None,
+            email=f"{soc_id}@example.com",
+            password="test-password",
+            role="soc_analyst",
+        )
+        record = VaptImport(
+            import_id=import_id,
+            org_id=org_id,
+            file_name="test-report.xml",
+            file_format="xml",
+            source_tool="nessus",
+            lifecycle_status="closure_pending_soc_due_date",
+            next_vapt_due_at=datetime.now(timezone.utc) + timedelta(days=10),
+            summary={"report_findings": 0},
+            findings=[],
+        )
+        db.add_all([client, soc, Organization(org_id=org_id, user_id=client_id), record])
+        db.commit()
+
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                reject_client_next_vapt_due_date(
+                    import_id=str(import_id),
+                    body=ClientDueDateRejectionRequest(reason="  "),
+                    db=db,
+                    current_user=soc,
+                )
+            )
+        assert error.value.status_code == 400
+        assert record.lifecycle_status == "closure_pending_soc_due_date"
+        assert record.next_vapt_due_at is not None
+
+        result = asyncio.run(
+            reject_client_next_vapt_due_date(
+                import_id=str(import_id),
+                body=ClientDueDateRejectionRequest(reason=reason),
+                db=db,
+                current_user=soc,
+            )
+        )
+        db.refresh(record)
+        assert result["lifecycle_status"] == "closure_pending_client_due_date"
+        assert record.lifecycle_status == "closure_pending_client_due_date"
+        assert record.next_vapt_due_at is None
+        assert record.summary["next_vapt_due_date_rejection_reason"] == reason
+        assert db.query(AuditLog).filter_by(action="VAPT_DUE_DATE_REJECTED", target_id=str(import_id)).count() == 1
+
+        proposal = datetime.now(timezone.utc) + timedelta(days=30)
+        asyncio.run(
+            set_client_next_vapt_due_date(
+                import_id=str(import_id),
+                body=ClientDueDateRequest(next_vapt_due_at=proposal.isoformat()),
+                db=db,
+                current_user=client,
+            )
+        )
+        db.refresh(record)
+        assert record.lifecycle_status == "closure_pending_soc_due_date"
+        assert record.next_vapt_due_at is not None
+        assert "next_vapt_due_date_rejection_reason" not in record.summary
+
+        asyncio.run(approve_client_next_vapt_due_date(str(import_id), db=db, current_user=soc))
+        db.refresh(record)
+        assert record.lifecycle_status == "closed"
+    finally:
+        db.query(VaptImport).filter_by(import_id=import_id).delete(synchronize_session=False)
+        db.query(AuditLog).filter_by(target_id=str(import_id)).delete(synchronize_session=False)
+        db.query(Organization).filter_by(org_id=org_id).delete(synchronize_session=False)
+        db.query(User).filter(User.user_id.in_([client_id, soc_id])).delete(synchronize_session=False)
+        db.commit()
+        db.close()
+
+
+def test_vapt_client_review_reminders_are_three_day_once_only_and_skip_activity(monkeypatch):
+    import uuid
+
+    now = datetime.now(timezone.utc)
+    org_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    import_id = uuid.uuid4()
+    verification_import_id = uuid.uuid4()
+    activity_import_id = uuid.uuid4()
+    recent_import_id = uuid.uuid4()
+    sent = []
+    monkeypatch.setattr(
+        "app.api.vapt.maintenance.send_vapt_client_review_reminder_email",
+        lambda **kwargs: sent.append(kwargs),
+    )
+    db = Session(bind=engine)
+    try:
+        client = User(
+            user_id=user_id,
+            org_id=org_id,
+            email=f"{user_id}@example.com",
+            password="test",
+            role="owner",
+        )
+        db.add(client)
+        db.add(Organization(org_id=org_id, user_id=user_id))
+        db.flush()
+        db.add_all([
+            VaptImport(
+                import_id=import_id,
+                org_id=org_id,
+                file_name="initial-report.xml",
+                file_format="xml",
+                source_tool="nessus",
+                created_at=now - timedelta(days=4),
+                lifecycle_status="report_published",
+                remediation_review_status="not_submitted",
+                findings=[{"id": "initial-finding", "status": "pending"}],
+            ),
+            VaptImport(
+                import_id=activity_import_id,
+                org_id=org_id,
+                file_name="already-reviewed.xml",
+                file_format="xml",
+                source_tool="nessus",
+                created_at=now - timedelta(days=4),
+                lifecycle_status="report_published",
+                remediation_review_status="not_submitted",
+                findings=[{"id": "reviewed-finding", "status": "solved"}],
+            ),
+            VaptImport(
+                import_id=recent_import_id,
+                org_id=org_id,
+                file_name="recent-report.xml",
+                file_format="xml",
+                source_tool="nessus",
+                created_at=now - timedelta(days=2),
+                lifecycle_status="report_published",
+                remediation_review_status="not_submitted",
+                findings=[{"id": "recent-finding", "status": "pending"}],
+            ),
+            VaptImport(
+                import_id=verification_import_id,
+                org_id=org_id,
+                file_name="verification-report.xml",
+                file_format="xml",
+                source_tool="nessus",
+                created_at=now - timedelta(days=10),
+                lifecycle_status="revalidation_verification_pending",
+                remediation_review_status="approved",
+                findings=[],
+            ),
+        ])
+        db.flush()
+        db.add(
+            VaptRescanSchedule(
+                import_id=verification_import_id,
+                org_id=org_id,
+                created_by=user_id,
+                scheduled_at=now - timedelta(days=8),
+                status="completed",
+                uploaded_at=now - timedelta(days=4),
+                result_data={
+                    "remaining_findings": [{"id": "remaining", "severity_label": "low", "status": "pending"}],
+                    "new_findings": [],
+                },
+            )
+        )
+        db.commit()
+
+        result = run_vapt_client_review_reminders(db)
+
+        assert result["reminders_sent"] == 2
+        assert {email["report_type"] for email in sent} == {"initial", "verification"}
+        assert {email["import_id"] for email in sent} == {
+            str(import_id),
+            str(verification_import_id),
+        }
+        assert run_vapt_client_review_reminders(db)["reminders_sent"] == 0
+        assert len(sent) == 2
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_vapt_client_review_reminder_email_escapes_report_details(monkeypatch):
+    sent_messages = []
+    monkeypatch.setattr(email_utils, "SMTP_USER", "test@example.com")
+    monkeypatch.setattr(email_utils, "SMTP_PASSWORD", "test-password")
+    monkeypatch.setattr(email_utils, "FRONTEND_URL", "https://scanner.example")
+    monkeypatch.setattr(email_utils, "_smtp_send", sent_messages.append)
+
+    assert email_utils.send_vapt_client_review_reminder_email(
+        "client@example.com",
+        "<initial-report>.xml",
+        "initial-import-id",
+        "initial",
+    )
+    assert email_utils.send_vapt_client_review_reminder_email(
+        "client@example.com",
+        "<verification-report>.xml",
+        "verification-import-id",
+        "verification",
+        verification_number=2,
+    )
+
+    assert len(sent_messages) == 2
+    initial_html = sent_messages[0].get_payload()[1].get_payload(decode=True).decode()
+    verification_html = sent_messages[1].get_payload()[1].get_payload(decode=True).decode()
+    assert "&lt;initial-report&gt;.xml" in initial_html
+    assert "&lt;verification-report&gt;.xml" in verification_html
+
+
 def test_import_response_schemas_preserve_approved_next_vapt_date():
     due_date = datetime(2026, 12, 17, 9, 30, tzinfo=timezone.utc)
     base_item = {
@@ -824,7 +1228,82 @@ def test_only_critical_high_and_medium_findings_require_triage():
     assert not _requires_vapt_finding_triage({"severity_label": "informational"})
 
 
-def test_low_finding_can_be_marked_solved_with_required_remark():
+def test_ignore_and_false_positive_require_comments_at_every_severity():
+    db = Session(bind=engine)
+    try:
+        severities = ["critical", "high", "medium", "low", "info"]
+        record = VaptImport(
+            org_id="org-required-comments",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            findings=[
+                {"id": f"{severity}-1", "severity_label": severity, "status": "pending"}
+                for severity in severities
+            ],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id="org-required-comments",
+            created_by="soc-user",
+            scheduled_at=datetime.now(timezone.utc),
+            status="completed_with_errors",
+            result_data={
+                "remaining_findings": [
+                    {
+                        "id": f"{severity}-verify",
+                        "severity_label": severity,
+                        "status": "pending",
+                    }
+                    for severity in severities
+                ],
+                "new_findings": [],
+            },
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+
+        for severity in severities:
+            for status in ("ignore", "false_positive"):
+                try:
+                    update_vapt_finding_status(
+                        str(record.import_id),
+                        f"{severity}-1",
+                        VaptFindingStatusUpdate(status=status),
+                        db=db,
+                        current_user=SimpleNamespace(org_id="org-required-comments"),
+                    )
+                    raise AssertionError(f"expected a comment for {status} {severity} finding")
+                except HTTPException as error:
+                    assert error.status_code == 400
+                    assert "comment is required" in error.detail.lower()
+
+                try:
+                    update_verification_finding_status(
+                        str(record.import_id),
+                        schedule.id,
+                        f"{severity}-verify",
+                        VaptFindingStatusUpdate(status=status),
+                        db=db,
+                        current_user=SimpleNamespace(
+                            org_id="org-required-comments",
+                            user_id="client-user",
+                        ),
+                    )
+                    raise AssertionError(f"expected a comment for verification {status} {severity} finding")
+                except HTTPException as error:
+                    assert error.status_code == 400
+                    assert "comment is required" in error.detail.lower()
+    finally:
+        db.close()
+
+
+def test_low_finding_can_be_marked_solved_without_a_remark():
     db = Session(bind=engine)
     try:
         record = VaptImport(
@@ -842,34 +1321,22 @@ def test_low_finding_can_be_marked_solved_with_required_remark():
         db.commit()
         db.refresh(record)
 
-        try:
-            update_vapt_finding_status(
-                str(record.import_id),
-                "low-1",
-                VaptFindingStatusUpdate(status="solved"),
-                db=db,
-                current_user=SimpleNamespace(org_id="org-low-triage"),
-            )
-            raise AssertionError("expected a remark to be required for a solved low finding")
-        except HTTPException as error:
-            assert error.status_code == 400
-
         update_vapt_finding_status(
             str(record.import_id),
             "low-1",
-            VaptFindingStatusUpdate(status="solved", comment="Disabled the exposed service."),
+            VaptFindingStatusUpdate(status="solved"),
             db=db,
             current_user=SimpleNamespace(org_id="org-low-triage", user_id="test-user"),
         )
         db.refresh(record)
         assert record.findings[0]["severity_label"] == "low"
         assert record.findings[0]["status"] == "solved"
-        assert record.findings[0]["comment"] == "Disabled the exposed service."
+        assert record.findings[0]["comment"] == ""
     finally:
         db.close()
 
 
-def test_low_finding_can_be_optionally_triaged_during_verification():
+def test_low_verification_finding_can_be_marked_solved_without_a_remark():
     db = Session(bind=engine)
     try:
         record = VaptImport(
@@ -914,32 +1381,18 @@ def test_low_finding_can_be_optionally_triaged_during_verification():
         db.refresh(schedule)
         user = SimpleNamespace(org_id="org-low-verification", user_id="client-user")
 
-        try:
-            update_verification_finding_status(
-                str(record.import_id),
-                schedule.id,
-                "low-retest",
-                VaptFindingStatusUpdate(status="solved"),
-                db=db,
-                current_user=user,
-            )
-            raise AssertionError("expected a remark to be required for a solved low verification finding")
-        except HTTPException as error:
-            assert error.status_code == 400
-            assert "remark is required" in error.detail
-
         update_verification_finding_status(
             str(record.import_id),
             schedule.id,
             "low-retest",
-            VaptFindingStatusUpdate(status="solved", comment="Removed the exposed service."),
+            VaptFindingStatusUpdate(status="solved"),
             db=db,
             current_user=user,
         )
         db.refresh(schedule)
         updated = schedule.result_data["remaining_findings"][0]
         assert updated["status"] == "solved"
-        assert updated["comment"] == "Removed the exposed service."
+        assert updated["comment"] == ""
 
         response = asyncio.run(submit_verification_review(
             str(record.import_id),
@@ -1029,7 +1482,7 @@ def test_low_finding_does_not_block_report_submission():
         db.close()
 
 
-def test_solved_low_finding_without_remark_cannot_be_submitted():
+def test_solved_low_finding_without_remark_can_be_submitted():
     db = Session(bind=engine)
     try:
         record = VaptImport(
@@ -1048,16 +1501,200 @@ def test_solved_low_finding_without_remark_cannot_be_submitted():
         db.commit()
         db.refresh(record)
 
-        try:
+        response = asyncio.run(submit_vapt_import(
+            str(record.import_id),
+            db=db,
+            current_user=SimpleNamespace(org_id="org-low-missing-remark"),
+        ))
+        assert response["success"] is True
+        assert record.status == "client_completed"
+    finally:
+        db.close()
+
+
+def test_soc_can_flag_client_ignore_and_require_a_resubmission():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-soc-finding-follow-up",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            findings=[
+                {
+                    "id": "high-1",
+                    "title": "High finding",
+                    "severity_label": "high",
+                    "status": "ignore",
+                    "comment": "This service is not used.",
+                },
+                {
+                    "id": "low-1",
+                    "title": "Low finding",
+                    "severity_label": "low",
+                    "status": "false_positive",
+                    "comment": "The scanner matched a test host.",
+                },
+            ],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        client = SimpleNamespace(org_id="org-soc-finding-follow-up", user_id="client-user")
+        soc = SimpleNamespace(user_id="soc-user", role="soc_analyst")
+
+        asyncio.run(submit_vapt_import(
+            str(record.import_id),
+            db=db,
+            current_user=client,
+        ))
+        flagged = asyncio.run(review_client_remediation(
+            str(record.import_id),
+            {
+                "decision": "changes_requested",
+                "flags": [{
+                    "finding_id": "high-1",
+                    "note": "Please explain why this exposed service is not applicable.",
+                }],
+            },
+            db=db,
+            current_user=soc,
+        ))
+        assert flagged["decision"] == "changes_requested"
+        assert record.remediation_review_status == "changes_requested"
+        assert record.lifecycle_status == "remediation_required"
+        detail_response = VaptImportDetail(**_to_detail(record))
+        assert detail_response.remediation_review_status == "changes_requested"
+        high = next(finding for finding in record.findings if finding["id"] == "high-1")
+        assert high["soc_review_flags"][0]["client_comment_at_flag"] == "This service is not used."
+        assert high["soc_review_flags"][0]["note"] == "Please explain why this exposed service is not applicable."
+
+        with pytest.raises(HTTPException) as unanswered_error:
             asyncio.run(submit_vapt_import(
                 str(record.import_id),
                 db=db,
-                current_user=SimpleNamespace(org_id="org-low-missing-remark"),
+                current_user=client,
             ))
-            raise AssertionError("expected a remark requirement for solved low finding")
-        except HTTPException as error:
-            assert error.status_code == 400
-            assert "remark" in error.detail.lower()
+        assert unanswered_error.value.status_code == 400
+        assert "soc-flagged" in unanswered_error.value.detail.lower()
+
+        with pytest.raises(HTTPException) as unflagged_error:
+            update_vapt_finding_status(
+                str(record.import_id),
+                "low-1",
+                VaptFindingStatusUpdate(status="solved"),
+                db=db,
+                current_user=client,
+            )
+        assert unflagged_error.value.status_code == 400
+
+        with pytest.raises(HTTPException) as unchanged_error:
+            update_vapt_finding_status(
+                str(record.import_id),
+                "high-1",
+                VaptFindingStatusUpdate(status="ignore", comment="This service is not used."),
+                db=db,
+                current_user=client,
+            )
+        assert unchanged_error.value.status_code == 400
+
+        update_vapt_finding_status(
+            str(record.import_id),
+            "high-1",
+            VaptFindingStatusUpdate(status="solved", comment="Disabled the exposed service."),
+            db=db,
+            current_user=client,
+        )
+        high = next(finding for finding in record.findings if finding["id"] == "high-1")
+        assert high["status"] == "solved"
+        assert high["soc_review_flags"][0]["response_status"] == "solved"
+        assert high["soc_review_flags"][0]["response_comment"] == "Disabled the exposed service."
+
+        submitted = asyncio.run(submit_vapt_import(
+            str(record.import_id),
+            db=db,
+            current_user=client,
+        ))
+        assert submitted["success"] is True
+        assert record.remediation_review_status == "pending_soc_review"
+        assert record.lifecycle_status == "awaiting_soc_remediation_acceptance"
+
+        approved = asyncio.run(review_client_remediation(
+            str(record.import_id),
+            {"decision": "approved"},
+            db=db,
+            current_user=soc,
+        ))
+        assert approved["decision"] == "approved"
+        assert record.lifecycle_status == "revalidation_required"
+        detail = _to_detail(record)
+        reviewed_high = next(finding for finding in detail["findings"] if finding["id"] == "high-1")
+        assert reviewed_high["soc_review_flags"][0]["note"] == "Please explain why this exposed service is not applicable."
+        assert reviewed_high["soc_review_flags"][0]["responded_at"]
+    finally:
+        db.close()
+
+
+def test_ignore_without_comment_is_rejected_when_submitting_reviews():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-missing-ignore-comment",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            findings=[{
+                "id": "low-1",
+                "severity_label": "low",
+                "status": "ignore",
+                "comment": "",
+            }],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        with pytest.raises(HTTPException) as report_error:
+            asyncio.run(submit_vapt_import(
+                str(record.import_id),
+                db=db,
+                current_user=SimpleNamespace(org_id="org-missing-ignore-comment"),
+            ))
+        assert report_error.value.status_code == 400
+        assert "comment" in report_error.value.detail.lower()
+
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id="org-missing-ignore-comment",
+            created_by="soc-user",
+            scheduled_at=datetime.now(timezone.utc),
+            status="completed_with_errors",
+            result_data={
+                "remaining_findings": [{
+                    "id": "low-retest",
+                    "severity_label": "low",
+                    "status": "false_positive",
+                    "comment": "",
+                }],
+                "new_findings": [],
+            },
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+
+        with pytest.raises(HTTPException) as verification_error:
+            asyncio.run(submit_verification_review(
+                str(record.import_id),
+                schedule.id,
+                db=db,
+                current_user=SimpleNamespace(
+                    org_id="org-missing-ignore-comment",
+                    user_id="client-user",
+                ),
+            ))
+        assert verification_error.value.status_code == 400
+        assert "comment" in verification_error.value.detail.lower()
     finally:
         db.close()
 

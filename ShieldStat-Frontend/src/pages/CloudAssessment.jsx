@@ -189,6 +189,7 @@ function hideScannerBrand(value) {
 function CloudAssessment({ adminMode = false }) {
   const [provider, setProvider] = useState("aws");
   const [form, setForm] = useState({
+    clientName: "",
     accessKeyId: "",
     secretAccessKey: "",
     sessionToken: "",
@@ -348,6 +349,7 @@ function CloudAssessment({ adminMode = false }) {
     if (provider === "aws") {
       body = {
         provider,
+        client_name: form.clientName.trim(),
         access_key_id: form.accessKeyId.trim(),
         secret_access_key: form.secretAccessKey,
         ...(form.sessionToken ? { session_token: form.sessionToken } : {}),
@@ -358,6 +360,7 @@ function CloudAssessment({ adminMode = false }) {
     } else if (provider === "azure") {
       body = {
         provider,
+        client_name: form.clientName.trim(),
         tenant_id: form.tenantId.trim(),
         client_id: form.clientId.trim(),
         client_secret: form.clientSecret,
@@ -366,6 +369,7 @@ function CloudAssessment({ adminMode = false }) {
     } else {
       body = {
         provider,
+        client_name: form.clientName.trim(),
         service_account_json: form.serviceAccountJson,
         project_ids: form.projectIds.split(",").map((value) => value.trim()).filter(Boolean),
       };
@@ -599,6 +603,14 @@ function CloudAssessment({ adminMode = false }) {
             </p>
           </div>
 
+          <Field
+            label="Client name "
+            value={form.clientName}
+            onChange={updateField("clientName")}
+            placeholder="Company or client name"
+            autoComplete="organization"
+          />
+
           {provider === "aws" && (
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Access key ID" value={form.accessKeyId} onChange={updateField("accessKeyId")} autoComplete="off" />
@@ -706,7 +718,7 @@ function CloudAssessment({ adminMode = false }) {
           </div>
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">Credentials are not retained</h2>
           <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-400">
-            Cloud credentials are used only to run this assessment. They are not stored with your scan history. Assessment results, scan status, and the selected scope are saved to your account.
+            Cloud credentials are used only to run this assessment. They are not stored with your scan history. Assessment results, client name, scan status, and the selected scope are saved to your account.
           </p>
           <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
             Use least-privilege read-only permissions. The scanner service must be available and have network access to the selected cloud APIs.

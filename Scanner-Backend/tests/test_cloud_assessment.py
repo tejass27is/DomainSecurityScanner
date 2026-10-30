@@ -38,7 +38,7 @@ def test_cloud_assessment_pdf_uses_executive_report_layout():
             "status": "completed",
             "created_at": "2026-10-15T10:00:00+00:00",
             "completed_at": "2026-10-15T10:05:00+00:00",
-            "client_name": "client@example.com",
+            "client_name": "Example Client",
             "summary": {
                 "account_id": "123456789012",
                 "total_checks": 3,
@@ -99,8 +99,8 @@ def test_cloud_assessment_pdf_uses_executive_report_layout():
     assert "Security Posture Score" in text
     assert "GRADE C" in text
     assert "Findings by Severity" in text
-    assert "client@example.com" in text
-    assert "CLIENT CONTACT" in text
+    assert "Example Client" in text
+    assert "CLIENT NAME" in text
     assert "Compliance Framework Coverage" in text
     assert "This automated snapshot is not a compliance certification." in text
     assert "Framework" in text
@@ -223,19 +223,44 @@ def test_scan_serialization_includes_client_contact_for_report():
         created_at=None,
         completed_at=None,
         findings=[],
+        client_name="Example Client",
     )
 
-    serialized = cloud_assessment_routes._serialize_scan(
-        scan, include_findings=True, client_name="client@example.com"
+    serialized = cloud_assessment_routes._serialize_scan(scan, include_findings=True)
+
+    assert serialized["client_name"] == "Example Client"
+
+
+def test_cloud_assessment_request_normalizes_client_name():
+    request = TypeAdapter(CloudAssessmentRequest).validate_python(
+        {
+            "provider": "aws",
+            "client_name": "  Example Client  ",
+            "access_key_id": "AKIAABCDEFGHIJKLMNOP",
+            "secret_access_key": "aws-secret",
+        }
     )
 
-    assert serialized["client_name"] == "client@example.com"
+    assert request.client_name == "Example Client"
+
+
+def test_cloud_assessment_request_rejects_blank_client_name():
+    with pytest.raises(ValidationError):
+        TypeAdapter(CloudAssessmentRequest).validate_python(
+            {
+                "provider": "aws",
+                "client_name": "   ",
+                "access_key_id": "AKIAABCDEFGHIJKLMNOP",
+                "secret_access_key": "aws-secret",
+            }
+        )
 
 
 def test_cloud_assessment_request_validates_aws_credentials():
     request = TypeAdapter(CloudAssessmentRequest).validate_python(
         {
             "provider": "aws",
+            "client_name": "Example Client",
             "access_key_id": "AKIAABCDEFGHIJKLMNOP",
             "secret_access_key": "aws-secret",
             "session_token": "temporary-session-token",
@@ -525,6 +550,7 @@ def test_assessment_reserves_quota_only_after_credentials_are_verified(monkeypat
     request = TypeAdapter(CloudAssessmentRequest).validate_python(
         {
             "provider": "aws",
+            "client_name": "Example Client",
             "access_key_id": "AKIAABCDEFGHIJKLMNOP",
             "secret_access_key": "valid-secret",
         }
@@ -569,6 +595,7 @@ def test_assessment_reserves_quota_only_after_credentials_are_verified(monkeypat
     assert events == ["verify", "reserve", "persist", "schedule"]
     assert result["status"] == "running"
     assert result["summary"]["account_id"] == "123456789012"
+    assert result["client_name"] == "Example Client"
     assert len(scheduled["args"]) == 5
 
 
