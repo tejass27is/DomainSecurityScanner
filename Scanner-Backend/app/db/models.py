@@ -448,7 +448,8 @@ class VaptImport(Base):
     remediation_reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     remediation_reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
     next_vapt_due_at = Column(TIMESTAMP(timezone=True), nullable=True)
-    
+    client_report_viewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    unopened_report_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     due_soon_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     overdue_notice_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     region = Column(String(20), nullable=False, default="")

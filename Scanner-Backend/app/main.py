@@ -22,6 +22,7 @@ from app.api.public.routes import router as public_router
 from app.api.vapt.routes import router as vapt_router
 from app.api.vapt.maintenance import (
     expire_missed_vapt_rescans,
+    run_unopened_report_reminders,
     run_vapt_due_date_reminders,
 )
 from app.api.webscan.routes import router as webscan_router
@@ -44,6 +45,7 @@ def cleanup_expired_promo_codes():
                 delete_expired_unclaimed_promo_codes(db)
                 expire_missed_vapt_rescans(db)
                 run_vapt_due_date_reminders(db)
+                run_unopened_report_reminders(db)
                 check_escalation_rules(db, None)
             finally:
                 db.close()
@@ -63,6 +65,7 @@ async def lifespan(_app: FastAPI):
         # Clean up expired unclaimed promo codes on startup
         delete_expired_unclaimed_promo_codes(db)
         expire_missed_vapt_rescans(db)
+        run_unopened_report_reminders(db)
 
         from scripts.create_admin import create_admin_user, create_soc_analyst_user
         create_admin_user()

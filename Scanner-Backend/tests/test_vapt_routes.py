@@ -64,6 +64,7 @@ from app.api.vapt.routes import (
     download_checklist_attachment,
     download_approved_onboarding_bundle,
     get_vapt_access_status,
+    get_vapt_import,
     list_approved_vapt_onboarding,
     list_vapt_access_requests,
     propose_initial_vapt_date,
@@ -84,7 +85,7 @@ from app.api.vapt.routes import (
     update_verification_finding_status,
     VerificationDecisionRequest,
 )
-from app.api.vapt.maintenance import expire_missed_vapt_rescans
+from app.api.vapt.maintenance import expire_missed_vapt_rescans, run_unopened_report_reminders
 from app.api.vapt.normalizer import group_stored_findings, normalize_import
 from app.api.admin.service import get_users_by_org
 from app.api.vapt.schemas import VaptFindingStatusUpdate, VaptImportDetail, VaptImportListItem
@@ -676,6 +677,162 @@ def test_missed_rescan_slots_expire_and_allow_rebooking():
         assert stale_schedule.status == "expired"
         assert stale_record.lifecycle_status == "revalidation_required"
     finally:
+        db.close()
+
+
+def test_unopened_report_reminders_only_send_once_for_unopened_pending_reports(monkeypatch):
+    org_id = str(uuid.uuid4())
+    client_id = str(uuid.uuid4())
+    db = Session(bind=engine)
+    sent = []
+    now = datetime.now(timezone.utc)
+    client = User(
+        user_id=client_id,
+        org_id=org_id,
+        email=f"{client_id}@example.com",
+        password="test-password",
+        role="owner",
+    )
+    unopened_report = VaptImport(
+        org_id=org_id,
+        file_name="unopened.nessus",
+        file_format="xml",
+        source_tool="nessus",
+        lifecycle_status="report_published",
+        remediation_review_status="not_submitted",
+        created_at=now - timedelta(days=4),
+        findings=[],
+    )
+    opened_report = VaptImport(
+        org_id=org_id,
+        file_name="opened.nessus",
+        file_format="xml",
+        source_tool="nessus",
+        lifecycle_status="report_published",
+        remediation_review_status="not_submitted",
+        created_at=now - timedelta(days=4),
+        findings=[],
+    )
+    recent_report = VaptImport(
+        org_id=org_id,
+        file_name="recent.nessus",
+        file_format="xml",
+        source_tool="nessus",
+        lifecycle_status="report_published",
+        remediation_review_status="not_submitted",
+        created_at=now - timedelta(days=2),
+        findings=[],
+    )
+    submitted_report = VaptImport(
+        org_id=org_id,
+        file_name="submitted.nessus",
+        file_format="xml",
+        source_tool="nessus",
+        lifecycle_status="awaiting_soc_remediation_acceptance",
+        remediation_review_status="pending_soc_review",
+        created_at=now - timedelta(days=4),
+        findings=[],
+    )
+    db.add_all([
+        client,
+        Organization(org_id=org_id, user_id=client_id),
+        unopened_report,
+        opened_report,
+        recent_report,
+        submitted_report,
+    ])
+    db.commit()
+    try:
+        get_vapt_import(
+            str(opened_report.import_id),
+            db=db,
+            current_user=client,
+        )
+        db.refresh(opened_report)
+        assert opened_report.client_report_viewed_at is not None
+
+        monkeypatch.setattr(
+            "app.api.vapt.maintenance.send_vapt_unopened_report_reminder_email",
+            lambda *args: sent.append(args) or True,
+        )
+        result = run_unopened_report_reminders(db)
+        assert result == {"success": True, "reminders_sent": 1}
+        assert len(sent) == 1
+        assert sent[0][1] == "unopened.nessus"
+        db.refresh(unopened_report)
+        assert unopened_report.unopened_report_reminder_sent_at is not None
+
+        result = run_unopened_report_reminders(db)
+        assert result == {"success": True, "reminders_sent": 0}
+        assert len(sent) == 1
+    finally:
+        db.close()
+
+
+def test_client_review_submission_emails_client_and_soc(monkeypatch):
+    org_id = str(uuid.uuid4())
+    client_id = str(uuid.uuid4())
+    soc_id = str(uuid.uuid4())
+    db = Session(bind=engine)
+    email_calls = []
+    client = User(
+        user_id=client_id,
+        org_id=org_id,
+        email=f"{client_id}@example.com",
+        password="test-password",
+        role="owner",
+    )
+    soc = User(
+        user_id=soc_id,
+        org_id=None,
+        email=f"{soc_id}@example.com",
+        password="test-password",
+        role="soc_analyst",
+    )
+    record = VaptImport(
+        org_id=org_id,
+        file_name="submission.nessus",
+        file_format="xml",
+        source_tool="nessus",
+        findings=[{
+            "id": "critical-1",
+            "severity_label": "critical",
+            "status": "solved",
+        }],
+    )
+    db.add_all([
+        client,
+        soc,
+        Organization(org_id=org_id, user_id=client_id),
+        record,
+    ])
+    db.commit()
+    db.refresh(record)
+    monkeypatch.setattr(
+        "app.utils.email.send_client_review_completed_email",
+        lambda **kwargs: email_calls.append(kwargs),
+    )
+    try:
+        response = asyncio.run(submit_vapt_import(
+            str(record.import_id),
+            db=db,
+            current_user=client,
+        ))
+
+        assert response["success"] is True
+        client_notifications = [
+            call for call in email_calls
+            if call.get("recipient_type") == "client"
+        ]
+        soc_notifications = [
+            call for call in email_calls
+            if call.get("recipient_type", "soc") == "soc"
+        ]
+        assert [call["to_email"] for call in client_notifications] == [client.email]
+        assert soc.email in {call["to_email"] for call in soc_notifications}
+    finally:
+        db.delete(soc)
+        db.commit()
         db.close()
 
 

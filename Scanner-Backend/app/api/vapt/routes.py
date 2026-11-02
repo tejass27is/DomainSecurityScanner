@@ -2364,9 +2364,9 @@ async def upload_vapt_report(
             try:
                 send_vapt_report_published_email(email, record.file_name, str(record.import_id))
             except Exception:
-                pass
+                logger.exception("Could not send published VAPT report email for import=%s recipient=%s", record.import_id, email)
     except Exception:
-        pass
+        logger.exception("Could not initialize published VAPT report emails for import=%s", record.import_id)
 
     return _to_detail(record, uploader_email=current_user.email)
 
@@ -2881,9 +2881,9 @@ async def upload_vapt_verification(
                     error_message or "Verification upload completed; SOC review is required.",
                 )
             except Exception:
-                pass
+                logger.exception("Could not send VAPT verification-result email for import=%s recipient=%s", record.import_id, email)
     except Exception:
-        pass
+        logger.exception("Could not initialize VAPT verification-result emails for import=%s", record.import_id)
     _record_audit_log(db, current_user, "VAPT_VERIFICATION_UPLOADED", "vapt_rescan_schedule", str(schedule.id), {"status": status, "file_name": filename, "file_names": source_files, "display_name": clean_display_name})
     return {
         "success": True,
@@ -2913,6 +2913,10 @@ def get_vapt_import(
             detail="User not associated with an organization.",
         )
     record = _get_org_import_or_404(db, import_id, current_user.org_id)
+    if record.client_report_viewed_at is None:
+        record.client_report_viewed_at = datetime.now(timezone.utc)
+        db.add(record)
+        db.commit()
     emails = _uploader_email_map(db, [record])
     return _to_detail(record, uploader_email=emails.get(str(record.uploaded_by)) if record.uploaded_by else None)
 
@@ -3204,12 +3208,30 @@ async def submit_vapt_import(
             "message": f"Client completed review: {solved_count} of {len(findings)} findings confirmed resolved",
         })
     except Exception:
-        pass
+        logger.exception("Could not broadcast client VAPT submission for import=%s", record.import_id)
 
-    # Email notification to SOC analysts
+    # Email notifications to both the client and SOC analysts
     try:
         from app.utils.email import send_client_review_completed_email
+        client_emails = {
+            user.email
+            for user in db.query(User).filter(User.org_id == record.org_id).all()
+            if user.email
+        }
         soc_emails = [u.email for u in db.query(User).filter(User.role == "soc_analyst").all() if u.email]
+        for email in client_emails:
+            try:
+                send_client_review_completed_email(
+                    to_email=email,
+                    org_id=record.org_id,
+                    file_name=record.file_name,
+                    solved_count=solved_count,
+                    total_findings=len(findings),
+                    import_id=str(record.import_id),
+                    recipient_type="client",
+                )
+            except Exception:
+                logger.exception("Could not send client VAPT submission email for import=%s recipient=%s", record.import_id, email)
         for email in soc_emails:
             try:
                 send_client_review_completed_email(
@@ -3221,9 +3243,9 @@ async def submit_vapt_import(
                     import_id=str(record.import_id),
                 )
             except Exception:
-                pass
+                logger.exception("Could not send SOC VAPT submission email for import=%s recipient=%s", record.import_id, email)
     except Exception:
-        pass
+        logger.exception("Could not initialize VAPT submission emails for import=%s", record.import_id)
 
     # Audit log
     try:
@@ -3439,7 +3461,7 @@ async def review_client_remediation(
                 decision=decision,
             )
         except Exception:
-            pass
+            logger.exception("Could not send VAPT follow-up email for import=%s recipient=%s", record.import_id, email)
     try:
         payload = {
             "event": "vapt_remediation_reviewed",

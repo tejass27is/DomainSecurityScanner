@@ -493,6 +493,30 @@ def send_vapt_access_event_email(
     return True
 
 
+def send_vapt_unopened_report_reminder_email(to_email: str, file_name: str, import_id: str):
+    """Remind a client to open a newly published report after three days."""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured in .env to dispatch emails.")
+    if not FRONTEND_URL:
+        raise ValueError("FRONTEND_URL must be configured.")
+    report_link = f"{FRONTEND_URL.rstrip('/')}/vapt/reports/{import_id}"
+    subject = f"Reminder: VAPT report waiting for review: {file_name}"
+    plain = f"Your VAPT report is waiting for review: {file_name}\n\nView report: {report_link}"
+    body_html = f"""
+        <p style="font-size:14px;color:#334155;margin:0 0 16px">Hello,</p>
+        <p style="font-size:14px;color:#334155;margin:0 0 20px">Your VAPT report has been available for three days and has not yet been opened. Please review it when convenient.</p>
+        <p style="margin:20px 0"><a href="{report_link}" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 24px;border-radius:6px;font-size:13px;font-weight:600">Open VAPT Report</a></p>
+        <p style="font-size:13px;color:#64748b;margin:24px 0 0">Report: <strong>{file_name}</strong></p>
+    """
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["To"] = to_email
+    msg.attach(MIMEText(plain, "plain"))
+    msg.attach(MIMEText(_vapt_email_shell("VAPT Report Reminder", body_html), "html"))
+    _smtp_send(msg)
+    return True
+
+
 def send_vapt_rescan_reminder_email(
     to_email: str,
     import_id: str,
@@ -903,14 +927,24 @@ def send_client_review_completed_email(
     solved_count: int,
     total_findings: int,
     import_id: str,
+    recipient_type: str = "soc",
 ):
     if not SMTP_USER or not SMTP_PASSWORD:
         raise ValueError("SMTP_USER and SMTP_PASSWORD must be strictly configured.")
     if not FRONTEND_URL:
         raise ValueError("FRONTEND_URL must be configured.")
+    if recipient_type not in {"soc", "client"}:
+        raise ValueError("recipient_type must be 'soc' or 'client'.")
 
     report_link = f"{FRONTEND_URL.rstrip('/')}/vapt/reports/{import_id}"
-    subject = f"Client completed review: {file_name}"
+    is_client = recipient_type == "client"
+    subject = f"Your VAPT review was submitted: {file_name}" if is_client else f"Client completed review: {file_name}"
+    heading = "VAPT Review Submitted" if is_client else "VAPT Client Review Completed"
+    message = (
+        f"Your review of <strong>{file_name}</strong> was submitted to the SOC."
+        if is_client
+        else f"The client completed their review of <strong>{file_name}</strong>."
+    )
     html_content = f"""
     <!DOCTYPE html><html><head><style>
         body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #f4f6f9; padding: 40px 0; }}
@@ -924,11 +958,12 @@ def send_client_review_completed_email(
         .footer {{ padding: 20px 32px; background: #f8f9fa; color: #888; font-size: 12px; text-align: center; }}
     </style></head><body>
         <div class="container">
-            <div class="header"><h1>VAPT Client Review Completed</h1></div>
+            <div class="header"><h1>{heading}</h1></div>
             <div class="body">
                 <p>Hello,</p>
-                <p>The client completed their review of <strong>{file_name}</strong>.</p>
+                <p>{message}</p>
                 <div class="stat"><p><strong>{solved_count}</strong> of <strong>{total_findings}</strong> findings confirmed resolved</p></div>
+                {"<p>The SOC will review the submitted decisions and contact you if more information is needed.</p>" if is_client else ""}
                 <p style="text-align: center;"><a href="{report_link}" class="btn">View Report</a></p>
             </div>
             <div class="footer">&copy; Domain Scanner</div>
@@ -938,7 +973,12 @@ def send_client_review_completed_email(
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["To"] = to_email
-    plain = f"Client completed review of {file_name}. {solved_count}/{total_findings} findings resolved. Report: {report_link}"
+    plain = (
+        f"Your review of {file_name} was submitted to the SOC. "
+        f"{solved_count}/{total_findings} findings marked solved. Report: {report_link}"
+        if is_client
+        else f"Client completed review of {file_name}. {solved_count}/{total_findings} findings resolved. Report: {report_link}"
+    )
     msg.attach(MIMEText(plain, "plain"))
     msg.attach(MIMEText(html_content, "html"))
     _smtp_send(msg)

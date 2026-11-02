@@ -7,6 +7,7 @@ from app.db.models import Organization, User, VaptImport, VaptRescanSchedule
 from app.utils.email import (
     send_vapt_due_soon_email,
     send_vapt_overdue_email,
+    send_vapt_unopened_report_reminder_email,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,3 +98,54 @@ def run_vapt_due_date_reminders(db: Session) -> dict:
             due_soon_reminders += 1
 
     return {"success": True, "due_soon_reminders": due_soon_reminders, "overdue_notices": overdue_notices}
+
+
+def run_unopened_report_reminders(db: Session) -> dict:
+    """Send a one-time reminder for published initial reports not yet opened by a client."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=3)).replace(tzinfo=None)
+    reports = db.query(VaptImport).filter(
+        VaptImport.lifecycle_status == "report_published",
+        VaptImport.remediation_review_status == "not_submitted",
+        VaptImport.client_report_viewed_at.is_(None),
+        VaptImport.unopened_report_reminder_sent_at.is_(None),
+        VaptImport.created_at <= cutoff,
+    ).all()
+    reminders_sent = 0
+
+    for record in reports:
+        recipients = {
+            user.email
+            for user in db.query(User).filter(User.org_id == record.org_id).all()
+            if user.email
+        }
+        if not recipients:
+            logger.warning(
+                "No client email recipients for unopened VAPT report import=%s",
+                record.import_id,
+            )
+            continue
+
+        sent_to_client = False
+        for email in recipients:
+            try:
+                sent_to_client = send_vapt_unopened_report_reminder_email(
+                    email,
+                    record.file_name,
+                    str(record.import_id),
+                ) or sent_to_client
+            except Exception:
+                logger.exception(
+                    "Failed unopened-report reminder for import=%s recipient=%s",
+                    record.import_id,
+                    email,
+                )
+
+        if not sent_to_client:
+            continue
+        record.unopened_report_reminder_sent_at = now
+        db.add(record)
+        db.commit()
+        reminders_sent += 1
+
+    return {"success": True, "reminders_sent": reminders_sent}

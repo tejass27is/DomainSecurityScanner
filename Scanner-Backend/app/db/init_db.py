@@ -82,6 +82,8 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reviewed_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports DROP COLUMN IF EXISTS client_review_activity_at"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports DROP COLUMN IF EXISTS client_review_reminder_sent_at"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS client_report_viewed_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS unopened_report_reminder_sent_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS next_vapt_due_at TIMESTAMPTZ NULL"))
         # Due-date reminder tracking: one shot 7 days before the due date and
         # one shot when it passes (overdue). NULL = never sent.
