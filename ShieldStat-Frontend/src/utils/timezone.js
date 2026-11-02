@@ -114,6 +114,30 @@ export function wallClockInstant(value, zone) {
   }
 }
 
+export function dateTimeLocalInZone(instant, zone) {
+  if (!instant || Number.isNaN(instant.getTime())) return "";
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).formatToParts(instant);
+    const value = (type) => parts.find((part) => part.type === type)?.value;
+    return `${value("year")}-${value("month")}-${value("day")}T${value("hour")}:${value("minute")}`;
+  } catch {
+    return "";
+  }
+}
+
+export function minimumDateTimeLocal(zone) {
+  const nextMinute = Math.ceil((Date.now() + 60_000) / 60_000) * 60_000;
+  return dateTimeLocalInZone(new Date(nextMinute), zone);
+}
+
 export function formatInZone(instant, zone) {
   if (!instant || Number.isNaN(instant.getTime())) return "";
   try {

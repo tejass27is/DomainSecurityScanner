@@ -4,7 +4,7 @@ import { Loader2, CheckCircle2, Clock, ShieldCheck, BriefcaseBusiness, AlertCirc
 import { getAdminVaptAccessRequests, getApprovedVaptOnboarding, reviewAdminVaptOnboarding, decideRegionChecklist, proposeInitialVaptDate, getWebSocketUrl, downloadVaptChecklistAttachment, downloadApprovedVaptOnboardingBundle } from "../services/api";
 import { buildReviewQueue, getReviewQueueCounts } from "../utils/vaptReviewQueue";
 import { fmtDate } from "../utils/vaptReport";
-import { SOC_TIMEZONE, istLabelForWallClock, timezoneOptionsFor } from "../utils/timezone";
+import { SOC_TIMEZONE, istLabelForWallClock, minimumDateTimeLocal, timezoneOptionsFor, wallClockInstant } from "../utils/timezone";
 
 // The counter-propose form collects a zoneless wall clock plus its zone. Reading
 // the two together lets the analyst see the IST slot they are committing the SOC
@@ -256,6 +256,16 @@ export default function AdminVaptAccessRequests() {
     const region = entry.requested_regions?.[0];
     if (!region || !draft.start || !draft.end || !draft.timezone) {
       setToast({ text: "Provide a start, end, and timezone before proposing a date.", type: "error" });
+      return;
+    }
+    const proposedStart = wallClockInstant(draft.start, draft.timezone);
+    const proposedEnd = wallClockInstant(draft.end, draft.timezone);
+    if (!proposedStart || proposedStart.getTime() <= Date.now()) {
+      setToast({ text: "Choose a future testing start date and time.", type: "error" });
+      return;
+    }
+    if (!proposedEnd || proposedEnd.getTime() <= Date.now() || proposedEnd <= proposedStart) {
+      setToast({ text: "Choose an end date and time after the future start.", type: "error" });
       return;
     }
     try {
@@ -525,8 +535,8 @@ export default function AdminVaptAccessRequests() {
                             </div>
                             {dateProposals[entry.org_id]?.open && (
                               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                                <input aria-label="Proposed start" type="datetime-local" value={dateProposals[entry.org_id]?.start || ""} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], start: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
-                                <input aria-label="Proposed end" type="datetime-local" value={dateProposals[entry.org_id]?.end || ""} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], end: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
+                                <input aria-label="Proposed start" type="datetime-local" min={minimumDateTimeLocal(dateProposals[entry.org_id]?.timezone || SOC_TIMEZONE)} value={dateProposals[entry.org_id]?.start || ""} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], start: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
+                                <input aria-label="Proposed end" type="datetime-local" min={minimumDateTimeLocal(dateProposals[entry.org_id]?.timezone || SOC_TIMEZONE)} value={dateProposals[entry.org_id]?.end || ""} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], end: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
                                 <select aria-label="Proposed timezone" value={dateProposals[entry.org_id]?.timezone || SOC_TIMEZONE} onChange={(e) => setDateProposals((prev) => ({ ...prev, [entry.org_id]: { ...prev[entry.org_id], timezone: e.target.value } }))} className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100">
                                   {timezoneOptions.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
                                 </select>

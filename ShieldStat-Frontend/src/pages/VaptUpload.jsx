@@ -24,7 +24,7 @@ import {
   getClientVaptAccessState,
   isApprovedRegionChecklist,
 } from "../utils/vaptAccessGate";
-import { SOC_TIMEZONE, timezoneOptionsFor } from "../utils/timezone";
+import { minimumDateTimeLocal, SOC_TIMEZONE, timezoneOptionsFor, wallClockInstant } from "../utils/timezone";
 import {
   SEVERITY_META,
   SEVERITY_ORDER,
@@ -110,9 +110,9 @@ function DropZone({ onFiles, error, isUploading, allowMultiple }) {
       </h3>
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500 dark:text-slate-400">
         or <span className="font-semibold text-purple-600 dark:text-purple-400">browse</span>
-        {" "}— {allowMultiple ? "select up to 10 Nessus, CSV or Excel exports" : "select one Nessus, CSV or Excel export"}.
+        {" "}— {allowMultiple ? `select up to ${MAX_REPORT_FILES} Nessus, CSV or Excel exports` : "select one Nessus, CSV or Excel export"}.
         Each file can be up to {formatBytes(MAX_FILE_SIZE)}.
-        {allowMultiple && " Files are combined into one report (100 MB total maximum)."}
+        {allowMultiple && ` Files are combined into one report (100 MB total maximum).`}
       </p>
 
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-[11px] font-semibold">
@@ -981,10 +981,6 @@ export default function VaptUpload() {
 
   const handleUpload = useCallback(async () => {
     if (!selectedFiles.length || isUploading) return;
-    if (selectedVerificationSchedule && selectedFiles.length > 1) {
-      setUploadError("Verification uploads accept one scanner export at a time.");
-      return;
-    }
     if (!selectedVerificationSchedule && !selectedOrgId) {
       setUploadError("Please select the organization this report belongs to.");
       return;
@@ -1001,7 +997,7 @@ export default function VaptUpload() {
     setProgressMsg("Parsing, scoring and normalizing findings…");
     try {
       const result = selectedVerificationSchedule
-        ? await uploadVaptVerificationReport(selectedFiles[0], selectedVerificationSchedule, token, verificationDisplayName)
+        ? await uploadVaptVerificationReport(selectedFiles, selectedVerificationSchedule, token, verificationDisplayName)
         : await uploadVaptReport(selectedFiles, token, selectedOrgId, selectedRegion);
       setPreview(result);
       setProgressMsg("");
@@ -1221,6 +1217,11 @@ export default function VaptUpload() {
       setChecklistMessage("Please add the region code and region name before submitting the checklist.");
       return;
     }
+    const testingStart = wallClockInstant(onboarding.testing_start_at, onboarding.testing_timezone || "UTC");
+    if (!testingStart || testingStart.getTime() <= Date.now()) {
+      setChecklistMessage("Choose a future testing start date and time.");
+      return;
+    }
 
     const derivedScopeIpRanges = onboarding.scope_ip_ranges || onboarding.checklist_answers?.internet_network?.internal_ip_ranges?.answer || "";
     const derivedPrimaryContact = extractPrimaryContactInfo(onboarding.checklist_answers?.company_details?.primary_contact?.answer || "");
@@ -1333,7 +1334,7 @@ export default function VaptUpload() {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <label htmlFor="region-testing-start-at" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Testing start</label>
-              <input id="region-testing-start-at" type="datetime-local" value={onboarding.testing_start_at || ""} onChange={(e) => setOnboarding((prev) => ({ ...prev, testing_start_at: e.target.value }))} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+              <input id="region-testing-start-at" type="datetime-local" min={minimumDateTimeLocal(onboarding.testing_timezone || "UTC")} value={onboarding.testing_start_at || ""} onChange={(e) => setOnboarding((prev) => ({ ...prev, testing_start_at: e.target.value }))} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
             </div>
             <div className="space-y-2">
               <label htmlFor="region-testing-timezone" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Timezone</label>
@@ -1467,7 +1468,7 @@ export default function VaptUpload() {
               )}
               <div className="space-y-2">
                 <label htmlFor="testing-start-at" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Testing start</label>
-                <input id="testing-start-at" type="datetime-local" value={onboarding.testing_start_at || ""} onChange={(e) => setOnboarding((prev) => ({ ...prev, testing_start_at: e.target.value }))} className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100" />
+                <input id="testing-start-at" type="datetime-local" min={minimumDateTimeLocal(onboarding.testing_timezone || "UTC")} value={onboarding.testing_start_at || ""} onChange={(e) => setOnboarding((prev) => ({ ...prev, testing_start_at: e.target.value }))} className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100 dark:border-violet-900 dark:bg-slate-950 dark:text-slate-100" />
               </div>
               <div className="space-y-2">
                 <label htmlFor="testing-timezone" className="text-sm font-semibold text-slate-700 dark:text-slate-300">Timezone</label>
@@ -2016,7 +2017,7 @@ export default function VaptUpload() {
               onFiles={handleFiles}
               error={fileError}
               isUploading={isUploading}
-              allowMultiple={!selectedVerificationSchedule}
+              allowMultiple
             />
 
             {/* ── Publish-to organization picker (SOC analysts / admins) ── */}
@@ -2061,7 +2062,7 @@ export default function VaptUpload() {
                     ))}
                   </select>
                   <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">
-                    Select the approved rescan to attach the SOC retest export. This upload completes that manual verification.
+                    Select the approved rescan, then upload one or more scanner exports. Multiple files are combined into one manual verification.
                   </p>
                   {selectedVerificationSchedule && (
                     <div className="mt-4">
@@ -2164,7 +2165,7 @@ export default function VaptUpload() {
                         {selectedFiles.length === 1 ? selectedFiles[0].name : `${selectedFiles.length} files will be combined`}
                       </p>
                       <p className="text-xs text-slate-500 dark:text-slate-400">
-                        {formatBytes(selectedFiles.reduce((total, selected) => total + selected.size, 0))} total · one report for the selected organization and region
+                        {formatBytes(selectedFiles.reduce((total, selected) => total + selected.size, 0))} total · {selectedVerificationSchedule ? "one combined verification for the selected rescan" : "one report for the selected organization and region"}
                       </p>
                     </div>
                   </div>

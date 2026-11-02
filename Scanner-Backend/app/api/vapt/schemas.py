@@ -44,3 +44,5 @@ class VaptUploadResponse(VaptImportDetail):
 class VaptFindingStatusUpdate(BaseModel):
     status: str
     comment: Optional[str] = None
+    collection: Optional[str] = None
+    finding_index: Optional[int] = None

@@ -471,6 +471,8 @@ def _run_flow(db: Session) -> None:
         coro=upload_vapt_verification(
             schedule_id=sched.id,
             file=upload(nessus_xml(TLS_ITEM), "retest-early.nessus"),
+            files=None,
+            display_name=None,
             db=db,
             current_user=soc,
         ),
@@ -492,7 +494,12 @@ def _run_flow(db: Session) -> None:
     run(
         upload_vapt_verification(
             schedule_id=sched.id,
-            file=upload(nessus_xml(SSH_ITEM), "retest-early-approved.nessus"),
+            file=None,
+            files=[
+                upload(nessus_xml(SSH_ITEM), "retest-ssh.nessus"),
+                upload(nessus_xml(SSH_ITEM), "retest-ssh-assets.nessus"),
+            ],
+            display_name=None,
             db=db,
             current_user=soc,
         )
@@ -506,6 +513,7 @@ def _run_flow(db: Session) -> None:
     remaining_plugins = {f.get("plugin_id") for f in remaining}
     r(
         sched.status == "completed_with_errors"
+        and sched.result_data.get("verification_file_names") == ["retest-ssh.nessus", "retest-ssh-assets.nessus"]
         and fixed_plugins == {TLS_PLUGIN}          # TLS fix confirmed by the retest
         and remaining_plugins == {SSH_PLUGIN}      # SSH still present in the retest
         and remaining[0]["status"] == "pending"
@@ -527,6 +535,8 @@ def _run_flow(db: Session) -> None:
         coro=upload_vapt_verification(
             schedule_id=sched.id,
             file=upload(nessus_xml(SSH_ITEM), "retest-duplicate.nessus"),
+            files=None,
+            display_name=None,
             allow_early_upload=True,
             db=db,
             current_user=soc,
@@ -617,6 +627,8 @@ def _run_flow(db: Session) -> None:
         upload_vapt_verification(
             schedule_id=sched2.id,
             file=upload(nessus_xml(NTP_ITEM), "retest2.nessus"),
+            files=None,
+            display_name=None,
             allow_early_upload=True,
             db=db,
             current_user=soc,

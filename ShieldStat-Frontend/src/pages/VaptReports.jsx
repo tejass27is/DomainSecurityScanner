@@ -174,7 +174,7 @@ export default function VaptReports() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (["vapt_access_requested", "vapt_region_requested", "vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_region_reviewed", "vapt_access_reviewed", "vapt_remediation_reviewed", "vapt_verification_decided", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
+        if (["vapt_access_requested", "vapt_region_requested", "vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_region_reviewed", "vapt_access_reviewed", "vapt_remediation_reviewed", "vapt_verification_decided", "vapt_verification_followup_requested", "vapt_verification_review_completed", "vapt_closure_pending_client_due_date", "vapt_cycle_closed"].includes(message.event)) {
           if (!cancelled) loadImports();
         }
       } catch {

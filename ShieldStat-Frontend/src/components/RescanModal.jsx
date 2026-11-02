@@ -4,6 +4,7 @@ import {
   SOC_TIMEZONE,
   browserTimezone,
   formatInZone,
+  minimumDateTimeLocal,
   timezoneOptionsFor,
   wallClockInstant,
 } from "../utils/timezone";
@@ -38,6 +39,11 @@ export default function RescanModal({ open, onClose, importId, onScheduled, admi
       setError("Please choose a date and time for the rescan.");
       return;
     }
+    const scheduledInstant = wallClockInstant(scheduledAt, effectiveTimezone);
+    if (!scheduledInstant || scheduledInstant.getTime() <= Date.now()) {
+      setError("Choose a future date and time for the rescan.");
+      return;
+    }
     setError("");
     setLoading(true);
     try {
@@ -70,7 +76,7 @@ export default function RescanModal({ open, onClose, importId, onScheduled, admi
         <p className="mb-4 text-sm text-slate-600 dark:text-slate-400">Pick a date and time to schedule a verification scan. The SOC will determine the appropriate targets.</p>
         <div className="mb-3">
           <label className="mb-2 block text-sm font-semibold">Date &amp; time</label>
-          <input type="datetime-local" value={scheduledAt} onChange={(e) => { setScheduledAt(e.target.value); setError(""); }} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900/40" />
+          <input type="datetime-local" min={minimumDateTimeLocal(effectiveTimezone)} onFocus={(e) => { e.currentTarget.min = minimumDateTimeLocal(effectiveTimezone); }} value={scheduledAt} onChange={(e) => { setScheduledAt(e.target.value); setError(""); }} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-500 dark:focus:ring-sky-900/40" />
         </div>
         {!adminMode && (
           <div className="mb-4">

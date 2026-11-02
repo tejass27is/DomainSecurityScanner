@@ -43,7 +43,7 @@ async function request(endpoint, { method = "GET", body, token, signal, publicIp
     }
   }
 
-  const inFlightKey = method === "GET" && !signal
+  const inFlightKey = method === "GET" && !signal && !skipCache
     ? JSON.stringify([method, endpoint, token || "", publicIp || "", allowFailure, skipCache])
     : null;
   const inFlightRequest = inFlightKey ? inFlightRequests.get(inFlightKey) : null;
@@ -984,7 +984,10 @@ export async function uploadVaptReport(file, token, orgId = null, region = null)
 
 export async function uploadVaptVerificationReport(file, scheduleId, token, displayName = "") {
   const formData = new FormData();
-  formData.append("file", file);
+  const files = Array.isArray(file) ? file : [file];
+  for (const [index, selected] of files.entries()) {
+    formData.append(files.length > 1 ? "files" : "file", selected, selected.name || `verification-export-${index + 1}`);
+  }
   formData.append("schedule_id", scheduleId);
   const reportName = (displayName || "").trim();
   if (reportName) formData.append("display_name", reportName);
@@ -1154,10 +1157,15 @@ export function postAdminRequestNewDate(scheduleId, body, token) {
   return request(`/vapt/admin/vapt/rescan-requests/${encodeURIComponent(scheduleId)}/request-date`, { method: "POST", body, token });
 }
 
-export function postAdminVerificationDecision(scheduleId, outcome, note, token, nextDueAt) {
+export function postAdminVerificationDecision(scheduleId, outcome, note, token, nextDueAt, flags = []) {
   return request(`/vapt/admin/vapt/rescan-requests/${encodeURIComponent(scheduleId)}/decision`, {
     method: "POST",
-    body: { outcome, note: note || undefined, next_vapt_due_at: nextDueAt || undefined },
+    body: {
+      outcome,
+      note: note || undefined,
+      next_vapt_due_at: nextDueAt || undefined,
+      flags: flags.length ? flags : undefined,
+    },
     token,
   });
 }
@@ -1211,7 +1219,10 @@ export function postVaptRescanScheduleAdmin(importId, body, token) {
 }
 
 export function getVaptRescanSchedules(importId, token) {
-  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule`, { token });
+  return request(`/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule`, {
+    token,
+    skipCache: true,
+  });
 }
 
 export function acceptRescanDate(importId, scheduleId, token) {
@@ -1320,10 +1331,6 @@ export function downloadVaptReportAdminExcel(importId, token) {
 
 export function downloadVaptVerificationReportAdminExcel(importId, scheduleId, token) {
   return _downloadVaptFile(`/admin/vapt/imports/${encodeURIComponent(importId)}/rescan-schedule/${encodeURIComponent(scheduleId)}/report/excel`, importId, token, "xlsx");
-}
-
-export function logSupportOffered(importId, token) {
-  return request(`/vapt/imports/${encodeURIComponent(importId)}/log-support-offered`, { method: "POST", token });
 }
 
 export function getApprovedVaptOnboarding(token) {

@@ -13,6 +13,7 @@ from fastapi import HTTPException, UploadFile
 from openpyxl import load_workbook
 from pypdf import PdfReader
 from sqlalchemy.orm import Session
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.db.base import Base, engine
 from app.db.models import (
@@ -49,12 +50,14 @@ from app.api.vapt.routes import (
     ClientDueDateRejectionRequest,
     DirectClosureRequest,
     AdminRescheduleRequest,
+    InitialVaptDateProposal,
     approve_client_next_vapt_due_date,
     accept_proposed_date,
     admin_approve_reschedule,
     admin_request_new_date,
     client_request_new_date,
     close_vapt_without_verification,
+    decide_vapt_verification,
     approve_vapt_access,
     decide_region_checklist,
     delete_checklist_attachment,
@@ -63,6 +66,7 @@ from app.api.vapt.routes import (
     get_vapt_access_status,
     list_approved_vapt_onboarding,
     list_vapt_access_requests,
+    propose_initial_vapt_date,
     request_vapt_access,
     request_vapt_region,
     reject_client_next_vapt_due_date,
@@ -75,11 +79,13 @@ from app.api.vapt.routes import (
     set_client_next_vapt_due_date,
     upload_checklist_attachment,
     upload_vapt_report,
+    upload_vapt_verification,
     update_vapt_finding_status,
     update_verification_finding_status,
+    VerificationDecisionRequest,
 )
+from app.api.vapt.maintenance import expire_missed_vapt_rescans
 from app.api.vapt.normalizer import group_stored_findings, normalize_import
-from app.api.vapt.maintenance import run_vapt_client_review_reminders
 from app.api.admin.service import get_users_by_org
 from app.api.vapt.schemas import VaptFindingStatusUpdate, VaptImportDetail, VaptImportListItem
 from app.api.vapt.report_generator import (
@@ -87,7 +93,6 @@ from app.api.vapt.report_generator import (
     generate_vapt_verification_report_pdf,
     generate_vapt_verification_report_xlsx,
 )
-from app.utils import email as email_utils
 
 
 def _complete_region_checklist_answers():
@@ -106,6 +111,10 @@ def _complete_region_checklist_answers():
         "network_diagram_available": {"answer": "Available", "na": False},
     }
     return answers
+
+
+def _future_testing_start():
+    return (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
 
 
 def test_vapt_pdf_generation_includes_region_without_callback_name_error():
@@ -233,6 +242,87 @@ def test_parse_report_files_merges_findings_and_records_source_metadata(monkeypa
         "10.0.1.15",
         "10.0.2.15",
     }
+
+
+def test_verification_upload_combines_multiple_scanner_files(monkeypatch):
+    import app.api.vapt.routes as vapt_routes
+
+    db = Session(bind=engine)
+    parsed_files = []
+    try:
+        record = VaptImport(
+            org_id="org-multi-verification-upload",
+            file_name="initial-report.nessus",
+            file_format="nessus",
+            source_tool="nessus",
+            lifecycle_status="revalidation_required",
+            findings=[],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id=record.org_id,
+            created_by="multi-verification-soc",
+            scheduled_at=datetime.now(timezone.utc),
+            status="approved",
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+
+        def parse_file(content, filename):
+            parsed_files.append(filename)
+            host = "10.0.0.1" if filename == "first.nessus" else "10.0.0.2"
+            return ([{"title": f"Finding from {filename}", "host": host, "severity": 3}], "nessus", "nessus")
+
+        def normalize_findings(findings, source_tool):
+            return {
+                "findings": [
+                    {
+                        "id": f"verification-{index}",
+                        "title": finding["title"],
+                        "severity_label": "high",
+                        "host": finding["host"],
+                        "affected_hosts": [finding["host"]],
+                        "host_count": 1,
+                    }
+                    for index, finding in enumerate(findings)
+                ],
+                "summary": {"raw_findings_parsed": len(findings)},
+            }
+
+        monkeypatch.setattr(vapt_routes, "parse_upload", parse_file)
+        monkeypatch.setattr(vapt_routes, "normalize_import", normalize_findings)
+
+        response = asyncio.run(upload_vapt_verification(
+            schedule_id=str(schedule.id),
+            file=StarletteUploadFile(file=io.BytesIO(b"single"), filename="single.nessus"),
+            files=[
+                UploadFile(file=io.BytesIO(b"first"), filename="first.nessus"),
+                UploadFile(file=io.BytesIO(b"second"), filename="second.nessus"),
+            ],
+            display_name=None,
+            db=db,
+            current_user=SimpleNamespace(
+                user_id="multi-verification-soc",
+                email="soc@example.test",
+            ),
+        ))
+
+        db.refresh(schedule)
+        assert parsed_files == ["single.nessus", "first.nessus", "second.nessus"]
+        assert response["file_names"] == ["single.nessus", "first.nessus", "second.nessus"]
+        assert response["file_name"] == "Combined verification report (3 files)"
+        assert schedule.result_data["verification_file_names"] == response["file_names"]
+        assert [finding["title"] for finding in schedule.result_data["new_findings"]] == [
+            "Finding from single.nessus",
+            "Finding from first.nessus",
+            "Finding from second.nessus",
+        ]
+    finally:
+        db.close()
 
 
 def test_normalizer_groups_the_same_scanner_check_across_hosts():
@@ -471,6 +561,124 @@ def setup_module():
     Base.metadata.create_all(bind=engine)
 
 
+def test_missed_rescan_slots_expire_and_allow_rebooking():
+    org_id = str(uuid.uuid4())
+    client_id = str(uuid.uuid4())
+    soc_id = str(uuid.uuid4())
+    expired_import_id = uuid.uuid4()
+    future_import_id = uuid.uuid4()
+    stale_import_id = uuid.uuid4()
+    db = Session(bind=engine)
+    now = datetime.now(timezone.utc)
+    client = User(
+        user_id=client_id,
+        org_id=org_id,
+        email=f"{client_id}@example.com",
+        password="test-password",
+        role="owner",
+    )
+    soc = User(
+        user_id=soc_id,
+        org_id=None,
+        email=f"{soc_id}@example.com",
+        password="test-password",
+        role="soc_analyst",
+    )
+    expired_record = VaptImport(
+        import_id=expired_import_id,
+        org_id=org_id,
+        file_name="expired-slot.xml",
+        file_format="xml",
+        source_tool="nessus",
+        lifecycle_status="revalidation_scheduled",
+        status="client_completed",
+        remediation_review_status="approved",
+        findings=[{"id": "finding-1", "status": "solved"}],
+    )
+    future_record = VaptImport(
+        import_id=future_import_id,
+        org_id=org_id,
+        file_name="future-slot.xml",
+        file_format="xml",
+        source_tool="nessus",
+        lifecycle_status="revalidation_scheduled",
+        status="client_completed",
+        remediation_review_status="approved",
+        findings=[{"id": "finding-1", "status": "solved"}],
+    )
+    stale_record = VaptImport(
+        import_id=stale_import_id,
+        org_id=org_id,
+        file_name="stale-approval.xml",
+        file_format="xml",
+        source_tool="nessus",
+        lifecycle_status="revalidation_scheduled",
+        status="client_completed",
+        remediation_review_status="approved",
+        findings=[{"id": "finding-1", "status": "solved"}],
+    )
+    expired_schedule = VaptRescanSchedule(
+        import_id=expired_import_id,
+        org_id=org_id,
+        created_by=client_id,
+        scheduled_at=now - timedelta(minutes=5),
+        status="requested",
+    )
+    future_schedule = VaptRescanSchedule(
+        import_id=future_import_id,
+        org_id=org_id,
+        created_by=client_id,
+        scheduled_at=now + timedelta(days=1),
+        status="scheduled",
+    )
+    stale_schedule = VaptRescanSchedule(
+        import_id=stale_import_id,
+        org_id=org_id,
+        created_by=client_id,
+        scheduled_at=now + timedelta(days=1),
+        status="scheduled",
+    )
+    db.add_all([
+        client,
+        soc,
+        Organization(org_id=org_id, user_id=client_id),
+        expired_record,
+        future_record,
+        stale_record,
+        expired_schedule,
+        future_schedule,
+        stale_schedule,
+    ])
+    db.commit()
+    try:
+        result = expire_missed_vapt_rescans(db)
+        assert result == {"success": True, "expired_schedules": 1}
+        db.refresh(expired_schedule)
+        db.refresh(expired_record)
+        db.refresh(future_schedule)
+        db.refresh(future_record)
+        assert expired_schedule.status == "expired"
+        assert expired_record.lifecycle_status == "revalidation_required"
+        assert future_schedule.status == "scheduled"
+        assert future_record.lifecycle_status == "revalidation_scheduled"
+        _validate_rescan_prerequisites(expired_record)
+
+        stale_schedule.scheduled_at = now - timedelta(minutes=5)
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(admin_approve_reschedule(
+                str(stale_schedule.id),
+                db=db,
+                current_user=soc,
+            ))
+        assert error.value.status_code == 409
+        db.refresh(stale_schedule)
+        db.refresh(stale_record)
+        assert stale_schedule.status == "expired"
+        assert stale_record.lifecycle_status == "revalidation_required"
+    finally:
+        db.close()
+
+
 def test_rescan_date_negotiation_alternates_between_client_and_soc(monkeypatch):
     org_id = str(uuid.uuid4())
     client_id = str(uuid.uuid4())
@@ -634,6 +842,30 @@ def test_rescan_date_negotiation_alternates_between_client_and_soc(monkeypatch):
         db.close()
 
 
+def test_soc_cannot_propose_past_initial_testing_window():
+    db = Session(bind=engine)
+    soc = SimpleNamespace(role="soc_analyst")
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).replace(tzinfo=None).isoformat()
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).replace(tzinfo=None).isoformat()
+    try:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(propose_initial_vapt_date(
+                "missing-org",
+                InitialVaptDateProposal(
+                    region_code="PAST",
+                    proposed_start_at=past,
+                    proposed_end_at=future,
+                    proposed_timezone="UTC",
+                ),
+                db=db,
+                current_user=soc,
+            ))
+        assert error.value.status_code == 400
+        assert "future" in error.value.detail.lower()
+    finally:
+        db.close()
+
+
 def test_soc_due_date_rejection_returns_cycle_to_client_for_resubmission():
     org_id = str(uuid.uuid4())
     client_id = str(uuid.uuid4())
@@ -723,138 +955,6 @@ def test_soc_due_date_rejection_returns_cycle_to_client_for_resubmission():
         db.commit()
         db.close()
 
-
-def test_vapt_client_review_reminders_are_three_day_once_only_and_skip_activity(monkeypatch):
-    import uuid
-
-    now = datetime.now(timezone.utc)
-    org_id = str(uuid.uuid4())
-    user_id = str(uuid.uuid4())
-    import_id = uuid.uuid4()
-    verification_import_id = uuid.uuid4()
-    activity_import_id = uuid.uuid4()
-    recent_import_id = uuid.uuid4()
-    sent = []
-    monkeypatch.setattr(
-        "app.api.vapt.maintenance.send_vapt_client_review_reminder_email",
-        lambda **kwargs: sent.append(kwargs),
-    )
-    db = Session(bind=engine)
-    try:
-        client = User(
-            user_id=user_id,
-            org_id=org_id,
-            email=f"{user_id}@example.com",
-            password="test",
-            role="owner",
-        )
-        db.add(client)
-        db.add(Organization(org_id=org_id, user_id=user_id))
-        db.flush()
-        db.add_all([
-            VaptImport(
-                import_id=import_id,
-                org_id=org_id,
-                file_name="initial-report.xml",
-                file_format="xml",
-                source_tool="nessus",
-                created_at=now - timedelta(days=4),
-                lifecycle_status="report_published",
-                remediation_review_status="not_submitted",
-                findings=[{"id": "initial-finding", "status": "pending"}],
-            ),
-            VaptImport(
-                import_id=activity_import_id,
-                org_id=org_id,
-                file_name="already-reviewed.xml",
-                file_format="xml",
-                source_tool="nessus",
-                created_at=now - timedelta(days=4),
-                lifecycle_status="report_published",
-                remediation_review_status="not_submitted",
-                findings=[{"id": "reviewed-finding", "status": "solved"}],
-            ),
-            VaptImport(
-                import_id=recent_import_id,
-                org_id=org_id,
-                file_name="recent-report.xml",
-                file_format="xml",
-                source_tool="nessus",
-                created_at=now - timedelta(days=2),
-                lifecycle_status="report_published",
-                remediation_review_status="not_submitted",
-                findings=[{"id": "recent-finding", "status": "pending"}],
-            ),
-            VaptImport(
-                import_id=verification_import_id,
-                org_id=org_id,
-                file_name="verification-report.xml",
-                file_format="xml",
-                source_tool="nessus",
-                created_at=now - timedelta(days=10),
-                lifecycle_status="revalidation_verification_pending",
-                remediation_review_status="approved",
-                findings=[],
-            ),
-        ])
-        db.flush()
-        db.add(
-            VaptRescanSchedule(
-                import_id=verification_import_id,
-                org_id=org_id,
-                created_by=user_id,
-                scheduled_at=now - timedelta(days=8),
-                status="completed",
-                uploaded_at=now - timedelta(days=4),
-                result_data={
-                    "remaining_findings": [{"id": "remaining", "severity_label": "low", "status": "pending"}],
-                    "new_findings": [],
-                },
-            )
-        )
-        db.commit()
-
-        result = run_vapt_client_review_reminders(db)
-
-        assert result["reminders_sent"] == 2
-        assert {email["report_type"] for email in sent} == {"initial", "verification"}
-        assert {email["import_id"] for email in sent} == {
-            str(import_id),
-            str(verification_import_id),
-        }
-        assert run_vapt_client_review_reminders(db)["reminders_sent"] == 0
-        assert len(sent) == 2
-    finally:
-        db.rollback()
-        db.close()
-
-
-def test_vapt_client_review_reminder_email_escapes_report_details(monkeypatch):
-    sent_messages = []
-    monkeypatch.setattr(email_utils, "SMTP_USER", "test@example.com")
-    monkeypatch.setattr(email_utils, "SMTP_PASSWORD", "test-password")
-    monkeypatch.setattr(email_utils, "FRONTEND_URL", "https://scanner.example")
-    monkeypatch.setattr(email_utils, "_smtp_send", sent_messages.append)
-
-    assert email_utils.send_vapt_client_review_reminder_email(
-        "client@example.com",
-        "<initial-report>.xml",
-        "initial-import-id",
-        "initial",
-    )
-    assert email_utils.send_vapt_client_review_reminder_email(
-        "client@example.com",
-        "<verification-report>.xml",
-        "verification-import-id",
-        "verification",
-        verification_number=2,
-    )
-
-    assert len(sent_messages) == 2
-    initial_html = sent_messages[0].get_payload()[1].get_payload(decode=True).decode()
-    verification_html = sent_messages[1].get_payload()[1].get_payload(decode=True).decode()
-    assert "&lt;initial-report&gt;.xml" in initial_html
-    assert "&lt;verification-report&gt;.xml" in verification_html
 
 
 def test_import_response_schemas_preserve_approved_next_vapt_date():
@@ -1406,6 +1506,69 @@ def test_low_verification_finding_can_be_marked_solved_without_a_remark():
         db.close()
 
 
+def test_verification_finding_update_targets_collection_when_ids_are_duplicated():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-duplicate-verification-ids",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id=record.org_id,
+            created_by="soc-user",
+            scheduled_at=datetime.now(timezone.utc),
+            status="completed_with_errors",
+            result_data={
+                "remaining_findings": [{
+                    "id": "F001",
+                    "title": "Previously reported finding",
+                    "severity_label": "high",
+                    "status": "pending",
+                }],
+                "new_findings": [{
+                    "id": "F001",
+                    "title": "New verification finding",
+                    "severity_label": "high",
+                    "status": "pending",
+                }],
+            },
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+
+        update_verification_finding_status(
+            str(record.import_id),
+            str(schedule.id),
+            "F001",
+            VaptFindingStatusUpdate(
+                status="solved",
+                comment="Resolved on the new finding.",
+                collection="new_findings",
+                finding_index=0,
+            ),
+            db=db,
+            current_user=SimpleNamespace(
+                org_id=record.org_id,
+                user_id="client-user",
+            ),
+        )
+
+        db.refresh(schedule)
+        assert schedule.result_data["remaining_findings"][0]["status"] == "pending"
+        assert schedule.result_data["new_findings"][0]["status"] == "solved"
+        assert schedule.result_data["new_findings"][0]["client_decision"] == "solved"
+        assert schedule.result_data["new_findings"][0]["comment"] == "Resolved on the new finding."
+    finally:
+        db.close()
+
+
 def test_low_verification_finding_can_remain_unreviewed_when_submitting_review():
     db = Session(bind=engine)
     try:
@@ -1446,6 +1609,312 @@ def test_low_verification_finding_can_remain_unreviewed_when_submitting_review()
             current_user=SimpleNamespace(org_id="org-low-optional-review", user_id="client-user"),
         ))
         assert response["success"] is True
+    finally:
+        db.close()
+
+
+def test_reopened_verification_with_client_review_unlocks_next_retest_without_soc_remediation_review():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-verification-repeat",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            status="client_completed",
+            remediation_review_status="approved",
+            lifecycle_status="revalidation_verification_pending",
+            findings=[
+                {"title": "Fixed issue", "severity_label": "high", "status": "solved"},
+                {"title": "Remaining issue", "severity_label": "high", "status": "solved"},
+            ],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id=record.org_id,
+            created_by="soc-user",
+            scheduled_at=datetime.now(timezone.utc),
+            status="completed_with_errors",
+            result_data={
+                "fixed_findings": [
+                    {"title": "Fixed issue", "severity_label": "high", "status": "solved"},
+                ],
+                "remaining_findings": [
+                    {
+                        "title": "Remaining issue",
+                        "severity_label": "high",
+                        "status": "solved",
+                        "comment": "Patch was applied; please retest.",
+                    },
+                ],
+                "new_findings": [
+                    {
+                        "title": "New issue",
+                        "severity_label": "medium",
+                        "status": "solved",
+                        "comment": "Fixed before the next test.",
+                    },
+                ],
+                "unverified_findings": [],
+                "findings": [],
+                "client_review_status": "client_completed",
+            },
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+
+        asyncio.run(decide_vapt_verification(
+            str(schedule.id),
+            VerificationDecisionRequest(outcome="reopened"),
+            db=db,
+            current_user=SimpleNamespace(user_id="soc-user", email="soc@example.com"),
+        ))
+
+        db.refresh(record)
+        assert record.lifecycle_status == "revalidation_required"
+        assert record.status == "client_completed"
+        assert record.remediation_review_status == "approved"
+        findings_by_title = {finding["title"]: finding for finding in record.findings}
+        assert findings_by_title["Fixed issue"]["status"] == "solved"
+        assert findings_by_title["Remaining issue"]["status"] == "solved"
+        assert findings_by_title["Remaining issue"]["comment"] == "Patch was applied; please retest."
+        assert findings_by_title["New issue"]["status"] == "solved"
+        assert findings_by_title["New issue"]["verification_result"] == "new_finding"
+        _validate_rescan_prerequisites(record)
+    finally:
+        db.close()
+
+
+def test_soc_can_flag_verification_ignore_and_false_positive_decisions_for_client_followup():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-verification-followup",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            findings=[],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id=record.org_id,
+            created_by="soc-user",
+            scheduled_at=datetime.now(timezone.utc),
+            status="completed",
+            result_data={
+                "remaining_findings": [
+                    {
+                        "id": "F001",
+                        "severity_label": "high",
+                        "status": "ignore",
+                        "comment": "Service is not used.",
+                    },
+                    {
+                        "id": "remaining-unflagged",
+                        "severity_label": "high",
+                        "status": "solved",
+                        "comment": "Fixed.",
+                    },
+                ],
+                "new_findings": [{
+                    "id": "F001",
+                    "severity_label": "medium",
+                    "status": "false_positive",
+                    "comment": "Scanner identified a test endpoint.",
+                }],
+                "client_review_status": "client_completed",
+            },
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+        soc_user = SimpleNamespace(user_id="soc-user", email="soc@example.com")
+        client_user = SimpleNamespace(
+            user_id="client-user",
+            org_id=record.org_id,
+        )
+
+        with pytest.raises(HTTPException) as solved_flag_error:
+            asyncio.run(decide_vapt_verification(
+                str(schedule.id),
+                VerificationDecisionRequest(
+                    outcome="changes_requested",
+                    flags=[{
+                        "finding_id": "remaining-unflagged",
+                        "collection": "remaining_findings",
+                        "finding_index": 1,
+                        "note": "Solved findings should not be flagged.",
+                    }],
+                ),
+                db=db,
+                current_user=soc_user,
+            ))
+        assert solved_flag_error.value.status_code == 400
+
+        response = asyncio.run(decide_vapt_verification(
+            str(schedule.id),
+            VerificationDecisionRequest(
+                outcome="changes_requested",
+                flags=[
+                    {
+                        "finding_id": "F001",
+                        "collection": "remaining_findings",
+                        "finding_index": 0,
+                        "note": "Explain why this remains ignored.",
+                    },
+                    {
+                        "finding_id": "F001",
+                        "collection": "new_findings",
+                        "finding_index": 0,
+                        "note": "Provide evidence this is a false positive.",
+                    },
+                ],
+            ),
+            db=db,
+            current_user=soc_user,
+        ))
+        assert response["outcome"] == "changes_requested"
+        assert schedule.verification_outcome == "pending"
+        assert schedule.result_data["client_review_status"] == "changes_requested"
+        assert schedule.result_data["soc_followup_pending"] is True
+        assert schedule.result_data["remaining_findings"][0]["soc_review_flags"][0]["note"] == "Explain why this remains ignored."
+        assert schedule.result_data["new_findings"][0]["soc_review_flags"][0]["client_status_at_flag"] == "false_positive"
+
+        with pytest.raises(HTTPException) as unflagged_error:
+            update_verification_finding_status(
+                str(record.import_id),
+                str(schedule.id),
+                "remaining-unflagged",
+                VaptFindingStatusUpdate(status="ignore", comment="New decision."),
+                db=db,
+                current_user=client_user,
+            )
+        assert unflagged_error.value.status_code == 400
+
+        with pytest.raises(HTTPException) as pending_response_error:
+            asyncio.run(submit_verification_review(
+                str(record.import_id),
+                str(schedule.id),
+                db=db,
+                current_user=client_user,
+            ))
+        assert pending_response_error.value.status_code == 400
+
+        update_verification_finding_status(
+            str(record.import_id),
+            str(schedule.id),
+            "F001",
+            VaptFindingStatusUpdate(
+                status="solved",
+                comment="Service disabled.",
+                collection="remaining_findings",
+                finding_index=0,
+            ),
+            db=db,
+            current_user=client_user,
+        )
+        update_verification_finding_status(
+            str(record.import_id),
+            str(schedule.id),
+            "F001",
+            VaptFindingStatusUpdate(
+                status="solved",
+                comment="Confirmed test endpoint.",
+                collection="new_findings",
+                finding_index=0,
+            ),
+            db=db,
+            current_user=client_user,
+        )
+        submitted = asyncio.run(submit_verification_review(
+            str(record.import_id),
+            str(schedule.id),
+            db=db,
+            current_user=client_user,
+        ))
+
+        db.refresh(schedule)
+        assert schedule.result_data["client_review_status"] == "client_completed"
+        assert schedule.result_data["soc_followup_pending"] is False
+        assert submitted["result_data"]["remaining_findings"][0]["status"] == "solved"
+        assert submitted["result_data"]["remaining_findings"][0]["client_decision"] == "solved"
+        assert submitted["result_data"]["remaining_findings"][0]["comment"] == "Service disabled."
+        assert submitted["result_data"]["new_findings"][0]["status"] == "solved"
+        assert submitted["result_data"]["new_findings"][0]["client_decision"] == "solved"
+        assert submitted["result_data"]["new_findings"][0]["comment"] == "Confirmed test endpoint."
+        for finding in (
+            schedule.result_data["remaining_findings"][0],
+            schedule.result_data["new_findings"][0],
+        ):
+            flag = finding["soc_review_flags"][0]
+            assert flag["responded_at"]
+            assert flag["response_status"] == "solved"
+            assert flag["response_comment"]
+    finally:
+        db.close()
+
+
+def test_verification_review_after_soc_reopen_unlocks_next_retest():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-verification-repeat-late-review",
+            file_name="test.nessus",
+            file_format="xml",
+            source_tool="nessus",
+            status="client_completed",
+            remediation_review_status="approved",
+            lifecycle_status="remediation_required",
+            findings=[{"title": "Remaining issue", "severity_label": "critical", "status": "pending"}],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id=record.org_id,
+            created_by="soc-user",
+            scheduled_at=datetime.now(timezone.utc),
+            status="completed_with_errors",
+            verification_outcome="reopened",
+            result_data={
+                "remaining_findings": [
+                    {
+                        "title": "Remaining issue",
+                        "severity_label": "critical",
+                        "status": "solved",
+                        "comment": "Remediated.",
+                    },
+                ],
+                "new_findings": [],
+                "client_review_status": "in_progress",
+            },
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+
+        asyncio.run(submit_verification_review(
+            str(record.import_id),
+            str(schedule.id),
+            db=db,
+            current_user=SimpleNamespace(org_id=record.org_id, user_id="client-user"),
+        ))
+
+        db.refresh(record)
+        assert record.lifecycle_status == "revalidation_required"
+        assert record.status == "client_completed"
+        assert record.remediation_review_status == "approved"
+        assert record.findings[0]["status"] == "solved"
+        assert record.findings[0]["comment"] == "Remediated."
+        _validate_rescan_prerequisites(record)
     finally:
         db.close()
 
@@ -1824,7 +2293,7 @@ def test_request_vapt_access_accepts_combined_submission_payload():
                 "tech_contact_name": "Alice Admin",
                 "tech_contact_email": "alice@example.com",
                 "testing_window": "15-18 Sep 2026, 10:00 AM to 6:00 PM IST",
-                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_start_at": _future_testing_start(),
                 "testing_timezone": "UTC",
                 "checklist_answers": _complete_region_checklist_answers(),
             },
@@ -2014,10 +2483,7 @@ def test_new_actionable_findings_block_closure_until_follow_up_verification():
         {"id": "low", "severity_label": "low", "status": "pending"},
     ]
 
-    assert [finding["id"] for finding in _new_findings_requiring_follow_up(findings)] == [
-        "pending",
-        "solved",
-    ]
+    assert [finding["id"] for finding in _new_findings_requiring_follow_up(findings)] == ["pending"]
 
 
 def test_severity_gated_closure_allows_ignored_items_but_blocks_pending_and_redetected():
@@ -2051,12 +2517,77 @@ def test_severity_gated_closure_allows_ignored_items_but_blocks_pending_and_rede
         # Ignored / false-positive dispositions are accepted after triage.
         assert _closure_blockers(record, []) == []
 
-        # A medium finding the client marked solved still blocks closure if
-        # the SOC verification scan detects it again.
+        # A medium finding still blocks closure while its client decision is pending.
         medium = next(finding for finding in record.findings if finding["id"] == "medium")
         medium["status"] = "solved"
         redetected = {**medium, "status": "pending"}
-        assert _closure_blockers(record, [redetected]) == [medium]
+        assert _closure_blockers(record, [redetected]) == [redetected]
+        assert _closure_blockers(record, [{**redetected, "status": "ignore"}]) == []
+    finally:
+        db.close()
+
+
+def test_soc_can_close_after_client_triages_remaining_and_new_verification_findings():
+    db = Session(bind=engine)
+    try:
+        record = VaptImport(
+            org_id="org-triaged-verification-close",
+            file_name="test.nessus",
+            file_format="nessus",
+            source_tool="nessus",
+            findings=[{
+                "id": "remaining-high",
+                "title": "Remaining high issue",
+                "plugin_id": "100",
+                "severity_label": "high",
+                "status": "solved",
+            }],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        schedule = VaptRescanSchedule(
+            import_id=record.import_id,
+            org_id=record.org_id,
+            created_by="soc-user",
+            scheduled_at=datetime.now(timezone.utc),
+            status="completed_with_errors",
+            result_data={
+                "remaining_findings": [{
+                    "id": "remaining-high",
+                    "title": "Remaining high issue",
+                    "plugin_id": "100",
+                    "severity_label": "high",
+                    "status": "ignore",
+                    "comment": "This service is not in use.",
+                }],
+                "new_findings": [{
+                    "id": "new-critical",
+                    "title": "New critical issue",
+                    "plugin_id": "200",
+                    "severity_label": "critical",
+                    "status": "solved",
+                    "comment": "Remediated and verified by the client team.",
+                }],
+                "unverified_findings": [],
+                "client_review_status": "client_completed",
+                "soc_followup_pending": False,
+            },
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+
+        response = asyncio.run(decide_vapt_verification(
+            str(schedule.id),
+            VerificationDecisionRequest(outcome="closed"),
+            db=db,
+            current_user=SimpleNamespace(user_id="soc-user", email="soc@example.test"),
+        ))
+
+        assert response["outcome"] == "closed"
+        assert schedule.verification_outcome == "closed"
+        assert record.lifecycle_status == "closure_pending_client_due_date"
     finally:
         db.close()
 
@@ -2147,7 +2678,8 @@ def test_vapt_report_cycles_are_scoped_to_region():
         db.add(Organization(org_id="org-region-cycle", user_id=client.user_id))
         region_a = Region(code="CYCLE-A", name="Region A", is_active=True)
         region_b = Region(code="CYCLE-B", name="Region B", is_active=True)
-        db.add_all([region_a, region_b])
+        region_c = Region(code="CYCLE-C", name="Region C", is_active=True)
+        db.add_all([region_a, region_b, region_c])
         db.flush()
         db.add_all([
             OrganizationRegion(
@@ -2168,6 +2700,17 @@ def test_vapt_report_cycles_are_scoped_to_region():
                 testing_start_at=datetime(2026, 10, 15, 10, tzinfo=timezone.utc),
                 testing_timezone="UTC",
                 checklist_review_status="pending",
+                checklist_submission={
+                    "checklist_answers": _complete_region_checklist_answers()
+                },
+            ),
+            OrganizationRegion(
+                org_id="org-region-cycle",
+                region_id=region_c.region_id,
+                status="approved",
+                testing_start_at=datetime(2026, 10, 15, 10, tzinfo=timezone.utc),
+                testing_timezone="UTC",
+                checklist_review_status="approved",
                 checklist_submission={
                     "checklist_answers": _complete_region_checklist_answers()
                 },
@@ -2241,10 +2784,7 @@ def test_vapt_report_cycles_are_scoped_to_region():
         db.add(region_b_checklist)
         db.commit()
         uploaded = _run(upload_vapt_report(
-            files=[
-                UploadFile(file=io.BytesIO(b"sample one"), filename="floor-one.nessus"),
-                UploadFile(file=io.BytesIO(b"sample two"), filename="floor-two.nessus"),
-            ],
+            file=StarletteUploadFile(file=io.BytesIO(b"sample"), filename="floor-single.nessus"),
             org_id="org-region-cycle",
             region="CYCLE-B",
             db=db,
@@ -2252,13 +2792,13 @@ def test_vapt_report_cycles_are_scoped_to_region():
         ))
         assert uploaded["region"] == "CYCLE-B"
         assert uploaded["cycle_number"] == 1
-        assert uploaded["file_name"] == "Combined report (2 files)"
-        assert uploaded["summary"]["source_files"] == ["floor-one.nessus", "floor-two.nessus"]
+        assert uploaded["file_name"] == "floor-single.nessus"
+        assert uploaded["summary"]["source_files"] == ["floor-single.nessus"]
         assert {
             host
             for finding in uploaded["findings"]
             for host in finding["affected_hosts"]
-        } == {"10.0.1.15", "10.0.2.15"}
+        } == {"10.0.2.15"}
 
         try:
             _run(upload_vapt_report(
@@ -2272,15 +2812,38 @@ def test_vapt_report_cycles_are_scoped_to_region():
         except HTTPException as exc:
             assert exc.status_code == 409
 
-        checklist = _get_onboarding_or_create(db, "org-region-cycle")
-        assert checklist.cycle_number == 1
+        combined_upload = _run(upload_vapt_report(
+            files=[
+                UploadFile(file=io.BytesIO(b"sample one"), filename="floor-one.nessus"),
+                UploadFile(file=io.BytesIO(b"sample two"), filename="floor-two.nessus"),
+            ],
+            org_id="org-region-cycle",
+            region="CYCLE-C",
+            db=db,
+            current_user=soc,
+        ))
+        assert combined_upload["region"] == "CYCLE-C"
+        assert combined_upload["cycle_number"] == 1
+        assert combined_upload["file_name"] == "Combined report (2 files)"
+        assert combined_upload["summary"]["source_files"] == ["floor-one.nessus", "floor-two.nessus"]
+        assert {
+            host
+            for finding in combined_upload["findings"]
+            for host in finding["affected_hosts"]
+        } == {"10.0.1.15", "10.0.2.15"}
 
         region_b_import = db.query(VaptImport).filter_by(
             org_id="org-region-cycle",
             region="CYCLE-B",
         ).one()
         region_b_import.lifecycle_status = "closed"
+        region_c_import = db.query(VaptImport).filter_by(
+            org_id="org-region-cycle",
+            region="CYCLE-C",
+        ).one()
+        region_c_import.lifecycle_status = "closed"
         db.add(region_b_import)
+        db.add(region_c_import)
         db.commit()
 
         # Closing only one region must not roll the shared organization
@@ -2341,7 +2904,7 @@ def test_region_approval_requires_its_completed_checklist():
             _run(
                 submit_onboarding_checklist(
                     payload={
-                        "testing_start_at": "2026-09-15T10:00:00+00:00",
+                        "testing_start_at": _future_testing_start(),
                         "testing_timezone": "UTC",
                         "checklist_answers": _complete_region_checklist_answers(),
                     },
@@ -2373,7 +2936,7 @@ def test_region_approval_requires_its_completed_checklist():
                 "regions": [{"code": "FLW-IND", "name": "Flow India"}],
                 "scope_ip_ranges": "10.0.0.0/8",
                 "authorization_confirmed": True,
-                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_start_at": _future_testing_start(),
                 "testing_timezone": "UTC",
                 "checklist_answers": _complete_region_checklist_answers(),
             },
@@ -2396,7 +2959,7 @@ def test_region_approval_requires_its_completed_checklist():
                 payload={
                     "scope_ip_ranges": "10.0.0.0/8",
                     "authorization_confirmed": True,
-                    "testing_start_at": "2026-09-15T10:00:00+00:00",
+                    "testing_start_at": _future_testing_start(),
                     "testing_timezone": "UTC",
                     "checklist_answers": {
                         "general_information": {
@@ -2448,7 +3011,7 @@ def test_additional_region_request_carries_its_checklist_to_admin():
         request_vapt_access(
             payload={
                 "regions": [{"code": "RC-A", "name": "Region A"}],
-                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_start_at": _future_testing_start(),
                 "testing_timezone": "UTC",
                 "checklist_answers": _complete_region_checklist_answers(),
             },
@@ -2468,7 +3031,7 @@ def test_additional_region_request_carries_its_checklist_to_admin():
                 payload={
                     "region_code": "RC-B",
                     "region_name": "Region B",
-                    "testing_start_at": "2026-10-01T10:00:00+00:00",
+                    "testing_start_at": _future_testing_start(),
                     "testing_timezone": "UTC",
                     "scope_ip_ranges": "10.1.0.0/16",
                     "checklist_answers": _complete_region_checklist_answers(),
@@ -2537,7 +3100,7 @@ def test_additional_region_request_rejects_missing_or_incomplete_checklist():
                         payload={
                             "region_code": "MRC-NEW",
                             "region_name": "New",
-                            "testing_start_at": "2026-10-15T10:00:00+00:00",
+                            "testing_start_at": _future_testing_start(),
                             "testing_timezone": "UTC",
                             "checklist_answers": answers,
                         },
@@ -2550,6 +3113,39 @@ def test_additional_region_request_rejects_missing_or_incomplete_checklist():
                 assert exc.status_code == 400
                 assert "checklist" in exc.detail.lower()
             db.rollback()
+
+        with pytest.raises(HTTPException) as error:
+            _run(
+                request_vapt_region(
+                    payload={
+                        "region_code": "MRC-NEW",
+                        "region_name": "New",
+                        "testing_start_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+                        "testing_timezone": "UTC",
+                        "checklist_answers": _complete_region_checklist_answers(),
+                    },
+                    db=db,
+                    current_user=client,
+                )
+            )
+        assert error.value.status_code == 400
+        assert "future" in error.value.detail.lower()
+        db.rollback()
+
+        with pytest.raises(HTTPException) as error:
+            request_vapt_access(
+                payload={
+                    "regions": [{"code": "MRC-NEW", "name": "New"}],
+                    "testing_start_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+                    "testing_timezone": "UTC",
+                    "checklist_answers": _complete_region_checklist_answers(),
+                },
+                db=db,
+                current_user=client,
+            )
+        assert error.value.status_code == 400
+        assert "future" in error.value.detail.lower()
+        db.rollback()
 
         assert (
             db.query(OrganizationRegion)
@@ -2655,7 +3251,7 @@ def test_admin_approved_client_can_submit_first_region_checklist():
                 payload={
                     "region_code": "FIRST-IND",
                     "region_name": "First Region",
-                    "testing_start_at": "2026-10-15T10:00:00+00:00",
+                    "testing_start_at": _future_testing_start(),
                     "testing_timezone": "UTC",
                     "scope_ip_ranges": "10.2.0.0/16",
                     "checklist_answers": _complete_region_checklist_answers(),
@@ -2718,7 +3314,7 @@ def test_region_checklist_changes_requested_then_approved():
         request_vapt_access(
             payload={
                 "regions": [{"code": "RD-A", "name": "Region A"}],
-                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_start_at": _future_testing_start(),
                 "testing_timezone": "UTC",
                 "checklist_answers": _complete_region_checklist_answers(),
             },
@@ -2735,7 +3331,7 @@ def test_region_checklist_changes_requested_then_approved():
         request_vapt_access(
             payload={
                 "regions": [{"code": "RD-B", "name": "Region B"}],
-                "testing_start_at": "2026-10-01T10:00:00+00:00",
+                "testing_start_at": _future_testing_start(),
                 "testing_timezone": "UTC",
                 "checklist_answers": _complete_region_checklist_answers(),
             },
@@ -2785,7 +3381,7 @@ def test_region_checklist_changes_requested_then_approved():
             request_vapt_access(
                 payload={
                     "regions": [{"code": "RD-B", "name": "Region B"}],
-                    "testing_start_at": "2026-10-01T10:00:00+00:00",
+                    "testing_start_at": _future_testing_start(),
                     "testing_timezone": "UTC",
                     "checklist_answers": incomplete_answers,
                 },
@@ -2804,7 +3400,7 @@ def test_region_checklist_changes_requested_then_approved():
         request_vapt_access(
             payload={
                 "regions": [{"code": "RD-B", "name": "Region B"}],
-                "testing_start_at": "2026-10-01T10:00:00+00:00",
+                "testing_start_at": _future_testing_start(),
                 "testing_timezone": "UTC",
                 "checklist_answers": _complete_region_checklist_answers(),
             },
@@ -2943,7 +3539,7 @@ def test_changes_requested_clears_and_requires_flagged_items():
         request_vapt_access(
             payload={
                 "regions": [{"code": "CR-IND", "name": "CR India"}],
-                "testing_start_at": "2026-09-15T10:00:00+00:00",
+                "testing_start_at": _future_testing_start(),
                 "testing_timezone": "UTC",
                 "checklist_answers": _complete_region_checklist_answers(),
             },
@@ -2960,7 +3556,7 @@ def test_changes_requested_clears_and_requires_flagged_items():
         _run(
             submit_onboarding_checklist(
                 payload={
-                    "testing_start_at": "2026-09-15T10:00:00+00:00",
+                    "testing_start_at": _future_testing_start(),
                     "testing_timezone": "UTC",
                     "checklist_answers": {
                         "general_information": {

@@ -73,6 +73,9 @@ Backend parsing (`_parse_datetime(value, field, tz_name)`):
 
 `datetime-local` inputs are zoneless, which is why the zone must travel with them. Both rescan
 modals show a live preview of the resulting **IST** (and UTC) instant before submitting.
+VAPT date/time pickers disable past choices for both client and SOC actions; submission handlers
+recheck against the selected timezone, and the backend rejects past testing windows, rescan slots,
+and next-cycle due dates.
 
 **Displaying a time**
 
@@ -94,46 +97,40 @@ party's reading underneath.
 |---|---|---|
 | `report_published` | SOC uploads a report | Client triages findings |
 | `awaiting_soc_remediation_acceptance` | Client submits triage (`status = client_completed`) | SOC accepts or rejects |
-| `remediation_required` | SOC rejects the remediation review, or reopens after verification | Client remedies; 7-day SOC reminder starts |
-| `revalidation_required` | SOC accepts the remediation review | Client schedules a verification scan |
+| `remediation_required` | SOC rejects the initial remediation review, or returns a verification for client triage | Client completes the required remediation/verification review |
+| `revalidation_required` | SOC accepts the initial remediation review, or the client submits a review after SOC requests another verification | Client schedules a verification scan |
 | `revalidation_scheduled` | Client (or SOC) creates a rescan schedule | SOC approves the slot |
-| `revalidation_verification_pending` | SOC uploads the manual verification export | SOC records a decision |
+| `revalidation_verification_pending` | SOC uploads one or more combined manual verification exports | SOC records a decision |
 | `closure_pending_client_due_date` | SOC closes verification, or closes without verification | Client picks the next VAPT due date |
 | `closure_pending_soc_due_date` | Client submits the next due date | SOC approves it or rejects with a reason for client resubmission |
 | `closed` | SOC approves the client's due date | Due-soon / overdue reminders run |
 
 ```
-                ┌─────────────────────── report_published ───────────────────────┐
-                │                        (client triages)                        │
-                │                                                                │
-        client submits ──► awaiting_soc_remediation_acceptance                   │
-                                        │                                        │
-                     SOC rejects ───────┴─────── SOC accepts                     │
-                          │                          │                           │
-                          ▼                          ▼                           │ 
-               remediation_required ◄────── revalidation_required                │
-                   (7-day timer)              (client schedules)                 │
-                          │                          │                           │
-                          │                          ▼                           │
-                          │                revalidation_scheduled                │
-                          │                (SOC approves slot)                   │
-                          │                          │                           │
-                          │                          ▼                           │
-                          │            revalidation_verification_pending         │
-                          │            (SOC uploads verification)                │
-                          │                          │                           │
-                          │        ┌─── SOC reopens ─┤                           │
-                          └────────┤                 └─── SOC closes ──┐         │
-                                   ▼                                    ▼        │
-                          (back to remediation)         closure_pending_client_due_date
-                                                                        │
-                                                        client picks due date
-                                                                        ▼
-                                                       closure_pending_soc_due_date
-                                                                        │
-                                                         SOC approves due date
-                                                                        ▼
-                                                                      closed
+report_published
+    │ client submits initial triage
+    ▼
+awaiting_soc_remediation_acceptance
+    ├── SOC rejects ──► remediation_required
+    │                       │ client remediates and resubmits
+    └── SOC approves ──► revalidation_required
+                            │ client books; SOC approves slot
+                            ▼
+                    revalidation_scheduled
+                            │ SOC uploads verification
+                            ▼
+            revalidation_verification_pending
+                ├── SOC closes ──► closure_pending_client_due_date
+                │                         │ client proposes next due date
+                │                         ▼
+                │                 closure_pending_soc_due_date
+                │                         │ SOC approves due date
+                │                         ▼
+                │                       closed
+                └── SOC requests another verification
+                    ├── client review submitted ──► revalidation_required
+                    └── review not submitted ──► remediation_required
+                                                    │ client submits verification review
+                                                    └──► revalidation_required
 ```
 
 If SOC rejects the proposed due date, the cycle returns to `closure_pending_client_due_date`;
@@ -192,15 +189,27 @@ sees a banner with the proposed start/end in **their own zone** plus the SOC clo
    - **only one active schedule** at a time (`scheduled` / `requested` / `approved`) → otherwise `409`
    - submitted as a wall clock + IANA zone; the modal previews the IST and UTC instant
    → lifecycle `revalidation_scheduled`.
+   - past date/time choices are disabled in the picker and rejected again by the backend
 11. **Accept / reject / counter-propose the slot** while `status == requested`:
     - `POST .../rescan-schedule/{sid}/accept` → confirmed (emails client requester + all SOC)
     - `POST .../rescan-schedule/{sid}/reject` → the request loop stays open, SOC is emailed, a new
       date is needed
     - `POST .../rescan-schedule/{sid}/request-date` → client proposes its own alternative
+    - if a slot passes without a verification upload, hourly maintenance marks it `expired`;
+      when no other active slot remains, lifecycle returns to `revalidation_required` so the
+      client can book again. A stale slot also cannot be approved or accepted.
 12. **Triage findings that survived verification** — `PATCH .../rescan-schedule/{sid}/findings/{fid}`,
     then `POST .../rescan-schedule/{sid}/submit` (`client_review_status = client_completed`). Every
     Critical, High, and Medium remaining findings must be triaged; `ignore`/`false_positive`
-    require comments at every severity, while `solved` notes are optional.
+    require comments at every severity, while `solved` notes are optional. If SOC flags an
+    `ignore` / `false_positive` decision (including a new finding), the client can edit only those
+    flagged findings, must change the decision or its note, and resubmits the verification review.
+**Repeat verification when needed** — SOC records `reopened` if the upload still contains
+    unresolved findings. If the client already submitted the verification review, the cycle returns
+    directly to `revalidation_required`; otherwise it waits in `remediation_required` until that
+    review is submitted. The client's decisions carry forward, so the client can book the next
+    verification without repeating the initial full remediation-review/SOC-approval step. SOC still
+    approves the booked slot before retesting. Repeat until verification supports closure.
 
 ### 4.5 Closing the cycle
 
@@ -260,10 +269,14 @@ Sets `cycle_number = count + 1`, `lifecycle_status = report_published`, all find
 
 Every user in the client org is emailed either way.
 
+This full remediation review applies to the initial report. After a partial verification,
+`outcome=reopened` and the client's submitted verification review carry decisions into the next
+verification cycle; the client books another slot and SOC approves it without repeating this review.
+
 ### 5.4 Rescan queue
 
 `GET /vapt/admin/vapt/rescan-requests` lists schedules in `scheduled`, `requested`, `approved`,
-`completed`, `completed_with_errors`, `failed`, newest first, with org/domain, requester and slot
+`completed`, `completed_with_errors`, `failed`, `expired`, newest first, with org/domain, requester and slot
 time **in IST**. This endpoint also fires the 24-hour reminder (see §7).
 
 | Button | Action |
@@ -271,13 +284,16 @@ time **in IST**. This endpoint also fires the 24-hour reminder (see §7).
 | Approve | `POST /vapt/admin/vapt/rescan-requests/{sid}/approve` → schedule `approved`, requester + SOC emailed |
 | Propose new date | `POST /vapt/admin/vapt/rescan-requests/{sid}/request-date` → schedule `requested`; org + SOC emailed |
 | Upload manual verification | only when `approved` — `/admin/vapt-upload?verification_schedule={sid}` |
-| Close VAPT / Reopen remediation | `POST /vapt/admin/vapt/rescan-requests/{sid}/decision`, only once the upload is `completed` / `completed_with_errors` / `failed` |
+| Close VAPT / Request another verification | `POST /vapt/admin/vapt/rescan-requests/{sid}/decision`, only once the upload is `completed` / `completed_with_errors` / `failed` |
 
 ### 5.5 Manual verification upload
 
-`POST /vapt/admin/rescan-requests/{sid}/upload` (SOC only, schedule must be `approved`).
+`POST /vapt/admin/rescan-requests/{sid}/upload` (SOC only, schedule must be `approved`). SOC may
+select multiple scanner exports; the platform combines them into one verification report. The same
+upload limits as an initial combined report apply: at most 25 files, the configured per-file limit
+(25 MB by default), and 100 MB total.
 
-Findings are matched between the original report and the retest export by a stable identity —
+Findings are matched between the original report and the combined retest exports by a stable identity —
 `(plugin_id or normalised title, port, protocol, sorted CVEs)`:
 
 | Outcome | Condition |
@@ -292,13 +308,18 @@ and need client triage.
 
 ### 5.6 Closing or reopening
 
-`POST /vapt/admin/vapt/rescan-requests/{sid}/decision` with `outcome=closed|reopened`:
+`POST /vapt/admin/vapt/rescan-requests/{sid}/decision` with `outcome=closed|reopened|changes_requested`:
 
 - **closed** → requires no closure blockers, and if `remaining_findings` exist the client must have
   submitted their triage (`client_review_status == client_completed`). → `closure_pending_client_due_date`
-- **reopened** → findings that were *not* confirmed fixed are reset to `pending` (verified fixes are
-  preserved), `status = open`, `remediation_review_status = pending`, lifecycle
-  `remediation_required`; the client is emailed that the cycle was reopened.
+- **reopened** → verified fixes stay solved. Client decisions for remaining/new findings are carried
+  into the next cycle. If the client already submitted the verification review, lifecycle becomes
+  `revalidation_required` and a new booking can be made immediately; otherwise lifecycle remains
+  `remediation_required` until the client submits it. The initial remediation-review approval stays
+  valid, so SOC does not repeat that approval step. SOC still approves the next booked slot.
+- **changes_requested** → SOC flags one or more remaining/new findings already marked `ignore` or
+  `false_positive` and supplies a reason for each. The client can edit only flagged findings and
+  must change each decision or its note before resubmitting; SOC can then close or reopen.
 
 **Closure blockers** — unresolved findings of severity **Critical, High or Medium** block closure:
 `"Cannot close — unresolved Critical, High findings remain."`
@@ -336,9 +357,7 @@ future date. This clears the displayed rejection reason and sends the cycle back
 
 | Action | Endpoint | Notes |
 |---|---|---|
-| Log support offered | `POST /vapt/imports/{id}/log-support-offered` | SOC only, only in `remediation_required`; resets the 7-day timer |
 | Run due-date reminders | `POST /vapt/admin/check-due-dates` | SOC only; same code path as the hourly job |
-| Run remediation reminders | `POST /vapt/admin/check-remediation-followup` | SOC only |
 | Cycle timeline | `GET /vapt/imports/{id}/timeline` | audit + scan events |
 | Closure bundle | `GET /vapt/imports/{id}/closure-bundle` | PDF bundle |
 | Downloads | `/report`, `/report/excel`, verification report PDF/Excel, admin variants | |
@@ -357,8 +376,8 @@ off-platform tools, then uploads the exports here.
 | 3. Assess off-platform | Run the authorized assessment during the agreed window; document material scope deviations, outages, and test limitations. Stop and escalate if testing may affect availability or reaches an unauthorized asset. | Keep the named technical contact reachable, notify SOC about unexpected impact or changed scope, and avoid changing the agreed targets/window without coordination. | Assessment execution, stop-work decisions, and incident coordination are operational steps, not platform state transitions. |
 | 4. Validate and publish | Review the export for the correct organization, region, scope, and usable findings; upload a supported export. Resolve parser/input problems before treating the assessment as published. | Review the published report and confirm the assessed assets and findings are understood; raise discrepancies with SOC through the agreed support channel. | Successful upload creates the report and notifies the client. The prior cycle must be closed before a subsequent full report can be uploaded. |
 | 5. Remediate and submit | Review the client's triage. Approve it to enable verification, reject it for further remediation, or flag specific `ignore`/`false_positive` decisions with reasons and request a client update. | Triage Critical, High, and Medium findings; Low and Informational findings are optional. Add a comment for `ignore`/`false_positive`; a `solved` note is optional at every severity. Respond to every SOC flag by changing that finding's decision or note, then resubmit. | Critical, High, and Medium findings must be triaged before submission. Open flags block resubmission; after resubmission, SOC reviews again. `solved` findings are candidates for verification; the client cannot schedule a verification until SOC approves. |
-| 6. Agree and perform verification | Approve the requested slot or propose a new one. Run the manual retest against the agreed hosts/findings and upload its supported export. | Have an org owner/admin schedule the slot; accept a SOC-proposed date or coordinate another slot; make the systems available for retest. | Only one active schedule is allowed. The schedule must be approved before SOC can upload verification results. The app evaluates the export against findings marked solved; it does not initiate the scan. |
-| 7. Review verification and close | Review fixed/remaining findings and record `closed` or `reopened`. Reopen if further remediation is required; close only when closure blockers and client review requirements are satisfied. | Triage every finding still present in verification and submit the review; continue remediation if SOC reopens the cycle. | Unresolved Critical, High, or Medium findings block closure. A closed verification moves to the next-due-date handoff; reopening returns the cycle to remediation. |
+| 6. Agree and perform verification | Approve the requested slot or propose a new one. Run the manual retest against the agreed hosts/findings and upload one or more supported exports. | Have an org owner/admin schedule the slot; accept a SOC-proposed date or coordinate another slot; make the systems available for retest. | Only one active schedule is allowed. The schedule must be approved before SOC can upload verification results. Multiple exports are combined and evaluated against findings marked solved; the app does not initiate the scan. |
+| 7. Review verification and close | Review fixed/remaining findings and record `closed` or `reopened`. Close only when closure blockers and client review requirements are satisfied; request another retest when issues remain. | Triage findings still present in verification and submit the review; after SOC requests another retest, book a new slot without repeating initial remediation approval. | Unresolved Critical, High, or Medium findings block closure. A closed verification moves to the next-due-date handoff; a reopened verification returns to scheduling after the client submits its review. |
 | 8. Plan the next cycle | Review and approve the client's proposed next assessment due date; monitor due/overdue alerts and prepare the next engagement. | Propose a future due date after SOC approves closure; use the timeline/report bundle to retain the evidence needed for audit and planning. | SOC approval sets the lifecycle to `closed`; only then can a new full report be uploaded for the next cycle. |
 
 **If something goes wrong:** pause testing and use the established SOC/client incident channel for
@@ -391,13 +410,13 @@ available SOC process rather than treating a notification as authorization.
 | S16 | Verification upload, partial | some solved findings remain | `completed_with_errors`, client triages the rest |
 | S17 | Verification upload, nothing fixed | no solved finding is absent | `failed`, SOC must reopen or reject |
 | S18 | SOC closes after verification | decision `closed` | `closure_pending_client_due_date` |
-| S19 | SOC reopens | decision `reopened` | `remediation_required`, unresolved findings reset to `pending` |
+| S19 | SOC requests another verification | decision `reopened`; client review already submitted | `revalidation_required`, client decisions retained, next slot can be booked |
+| S19a | SOC requests another verification before client review | decision `reopened`; client review still pending | `remediation_required` until client submits, then `revalidation_required` |
 | S20 | No findings needed a retest | close-without-verification | `closure_pending_client_due_date`, due date `NULL` |
 | S21 | Client picks the next due date | next-due-date | `closure_pending_soc_due_date` |
 | S22 | SOC approves the due date | approve-next-due-date | `closed`, reminder flags reset |
 | S23 | Due soon | hourly job, due within 7 days | Org users emailed once |
 | S24 | Overdue | hourly job, past due | Org users + SOC emailed once |
-| S25 | SOC support follow-up | 7 days in `remediation_required` | SOC emailed once; `log-support-offered` resets it |
 | S26 | 24 h rescan reminder | SOC opens the rescan queue | SOC emailed once per schedule |
 | S27 | Next cycle starts | SOC uploads again after `closed` | `cycle_number + 1`, new `report_published` |
 | S28 | Checklist needs targeted corrections | SOC selects `changes_requested` and flags items → client updates every flagged answer/document and resubmits | Checklist returns to `pending` SOC review |
@@ -414,7 +433,7 @@ available SOC process rather than treating a notification as authorization.
 | S39 | Closure blocked by severity | Critical, High, or Medium findings remain unresolved | Closure is rejected; return to remediation and verification as appropriate |
 | S40 | No finding requires verification | No findings are pending or solved, remediation review is approved, and no closure blockers remain | SOC can close without verification; client still has to propose the next due date |
 | S41 | Next due date is invalid or overdue | Client submits malformed or non-future `next_vapt_due_at` | Request is rejected; client submits a valid future ISO-8601 instant |
-| S42 | Rescan slot is missed or no longer workable | Client or SOC identifies the approved slot cannot be used | Coordinate a future replacement through the reschedule flow; do not treat an expired slot as completed verification |
+| S42 | Rescan slot is missed or no longer workable | No verification upload exists when the slot passes | Hourly maintenance marks it `expired`; once no other active slot remains, lifecycle returns to `revalidation_required` and the client can book again. It is not treated as completed verification |
 | S43 | SOC rejects the client's next due date | `reject-next-due-date` with a reason → client proposes a replacement | `closure_pending_client_due_date` → `closure_pending_soc_due_date` |
 
 A separate, unrelated mechanism exists for **website findings**: `ReportedIssuesPanel` offers
@@ -425,17 +444,15 @@ cycle and is out of scope here.
 
 ## 7. Timers
 
-An hourly daemon thread (`main.py`) runs promo-code cleanup, `run_remediation_followup_reminders`,
-`run_vapt_due_date_reminders` and escalation rules. Client review reminders run at startup and in a
-separate one-minute loop so the three-day reminder is sent within about one minute of its threshold.
+An hourly daemon thread (`main.py`) runs promo-code cleanup, missed-rescan expiration,
+`run_vapt_due_date_reminders` and escalation rules. Missed-rescan expiration also runs at startup.
 
 | Timer | Trigger | Recipients | Once-only guard |
 |---|---|---|---|
-| Client report review | Initial report is still awaiting review, or a verification report has reviewable findings, **and** 3 days since upload with no client finding activity | Client org | `client_review_reminder_sent_at`; client activity or report completion suppresses the reminder |
-| Remediation follow-up | lifecycle `remediation_required` **and** 7 days since `support_offered_at` (fallback `created_at`) | SOC analysts | `remediation_reminder_sent_at > clock_start` — re-arms when support is logged again |
 | Due soon | lifecycle `closed` **and** `next_vapt_due_at <= now + 7 days` | Org users only | `due_soon_reminder_sent_at` |
 | Overdue | lifecycle `closed` **and** `next_vapt_due_at <= now` | Org users **+ SOC analysts** | `overdue_notice_sent_at` |
 | Rescan reminder (24 h) | an `approved` schedule within 24 h of its slot — checked when the rescan queue is **loaded** | SOC analysts | `notified` on the schedule |
+| Missed rescan | active `scheduled` / `requested` / `approved` slot is past and no verification upload changed its status | No email; expired status is visible to client and SOC | Active statuses no longer include it |
 
 All comparisons use aware UTC datetimes; naive values from the database are treated as UTC.
 
@@ -455,7 +472,6 @@ All comparisons use aware UTC datetimes; naive values from the database are trea
 | Email | Recipients |
 |---|---|
 | Report published | Client org |
-| Client report review reminder (3 days, if no finding was marked) | Client org |
 | Remediation review decision | Client org |
 | Rescan scheduled (confirmed) | Requester + SOC |
 | Rescan date proposed / rejected | Client org + SOC |
@@ -465,7 +481,6 @@ All comparisons use aware UTC datetimes; naive values from the database are trea
 | Cycle closed (next due date) | Client org |
 | Due soon | Client org |
 | Overdue | Client org + SOC |
-| Remediation follow-up overdue | SOC |
 | Onboarding / access events | Client org + SOC |
 
 ---
@@ -491,11 +506,6 @@ All comparisons use aware UTC datetimes; naive values from the database are trea
    already-`requested` schedule. SOC must issue the replacement proposal; the client can then accept
    it. The scenario matrix's "client proposes its own slot" applies when the schedule is not already
    awaiting a decision.
-7. **Client review reminders only cover unmarked initial and verification reports** — a report with
-   any client finding activity is not reminded, even if the client has not submitted the review.
-   Onboarding review and due-date approval can still remain pending without a dedicated timeout
-   transition; reminders listed in §7 are not a complete engagement SLA.
-
 ---
 
 ## 10. Timezone change checklist

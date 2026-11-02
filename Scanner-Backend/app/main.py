@@ -21,8 +21,7 @@ from app.api.report_issue.routes import router as report_issue_router
 from app.api.public.routes import router as public_router
 from app.api.vapt.routes import router as vapt_router
 from app.api.vapt.maintenance import (
-    run_remediation_followup_reminders,
-    run_vapt_client_review_reminders,
+    expire_missed_vapt_rescans,
     run_vapt_due_date_reminders,
 )
 from app.api.webscan.routes import router as webscan_router
@@ -43,27 +42,13 @@ def cleanup_expired_promo_codes():
             db = SessionLocal()
             try:
                 delete_expired_unclaimed_promo_codes(db)
-                run_remediation_followup_reminders(db)
+                expire_missed_vapt_rescans(db)
                 run_vapt_due_date_reminders(db)
                 check_escalation_rules(db, None)
             finally:
                 db.close()
         except Exception:
             logger.exception("Background maintenance cycle failed")
-
-
-def send_vapt_client_review_reminders_periodically():
-    """Check client review reminders every minute so the 3-day deadline is timely."""
-    while True:
-        try:
-            time.sleep(60)
-            db = SessionLocal()
-            try:
-                run_vapt_client_review_reminders(db)
-            finally:
-                db.close()
-        except Exception:
-            logger.exception("Client VAPT review reminder cycle failed")
 
 
 @asynccontextmanager
@@ -77,7 +62,7 @@ async def lifespan(_app: FastAPI):
 
         # Clean up expired unclaimed promo codes on startup
         delete_expired_unclaimed_promo_codes(db)
-        run_vapt_client_review_reminders(db)
+        expire_missed_vapt_rescans(db)
 
         from scripts.create_admin import create_admin_user, create_soc_analyst_user
         create_admin_user()
@@ -92,11 +77,6 @@ async def lifespan(_app: FastAPI):
 
     cleanup_thread = threading.Thread(target=cleanup_expired_promo_codes, daemon=True)
     cleanup_thread.start()
-    client_review_reminder_thread = threading.Thread(
-        target=send_vapt_client_review_reminders_periodically,
-        daemon=True,
-    )
-    client_review_reminder_thread.start()
     yield
 
 

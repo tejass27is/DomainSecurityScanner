@@ -447,23 +447,10 @@ class VaptImport(Base):
     remediation_review_status = Column(String(24), nullable=False, default="not_submitted", server_default="'not_submitted'")
     remediation_reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     remediation_reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
-    client_review_activity_at = Column(TIMESTAMP(timezone=True), nullable=True)
-    client_review_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     next_vapt_due_at = Column(TIMESTAMP(timezone=True), nullable=True)
-    # Due-date reminder tracking (hourly background job):
-    # due_soon_reminder_sent_at — set once when the 7-days-before reminder fires.
-    # overdue_notice_sent_at   — set once when the overdue notice fires.
-    # Both reset to NULL when the client picks a new due date, so the next
-    # cycle's reminders fire fresh.
+    
     due_soon_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     overdue_notice_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
-    # Timestamp when SOC last logged a support-offered action while in
-    # remediation_required.  Reset on each call so the 7-day follow-up
-    # reminder timer always counts from the most recent outreach.
-    support_offered_at = Column(TIMESTAMP(timezone=True), nullable=True)
-    # Timestamp when the most recent SOC follow-up reminder was sent.
-    # NULL = no reminder has been sent yet for this cycle.
-    remediation_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     region = Column(String(20), nullable=False, default="")
     total_findings = Column(Integer, nullable=False, default=0)
     unique_hosts = Column(Integer, nullable=False, default=0)
@@ -585,8 +572,6 @@ class VaptRescanSchedule(Base):
     date_proposal_status = Column(String(16), nullable=False, default="pending", server_default="'pending'")
     uploaded_at = Column(TIMESTAMP(timezone=True), nullable=True)
     uploaded_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
-    client_review_activity_at = Column(TIMESTAMP(timezone=True), nullable=True)
-    client_review_reminder_sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     verification_outcome = Column(String(20), nullable=False, default="pending", server_default="'pending'")
     verified_at = Column(TIMESTAMP(timezone=True), nullable=True)
     verified_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)

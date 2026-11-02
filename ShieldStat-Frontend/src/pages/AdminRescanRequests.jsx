@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { CheckCircle2, Clock, FileText, Globe, User, Loader2 } from "lucide-react";
 import { getAdminVaptRescanRequests, postAdminApproveReschedule, postAdminRequestNewDate, postAdminVerificationDecision } from "../services/api";
 import ConfirmModal from "../components/ConfirmModal";
+import { minimumDateTimeLocal, SOC_TIMEZONE, wallClockInstant } from "../utils/timezone";
 
 export default function AdminRescanRequests() {
   const [rows, setRows] = useState([]);
@@ -54,6 +55,12 @@ export default function AdminRescanRequests() {
           setConfirmModal({ open: false, scheduleId: null, action: null });
           return;
         }
+        const proposedInstant = wallClockInstant(proposed, SOC_TIMEZONE);
+        if (!proposedInstant || proposedInstant.getTime() <= Date.now()) {
+          setToast({ text: "Choose a future date and time first", type: "error" });
+          setConfirmModal({ open: false, scheduleId: null, action: null });
+          return;
+        }
         await postAdminRequestNewDate(scheduleId, { proposed_at: proposed, proposed_timezone: "Asia/Kolkata" }, token);
         setToast({ text: "New date proposed to the user", type: "success" });
       }
@@ -70,6 +77,11 @@ export default function AdminRescanRequests() {
     const proposed = proposedMap[id];
     if (!proposed) {
       setToast({ text: "Select a proposed date/time first", type: "error" });
+      return;
+    }
+    const proposedInstant = wallClockInstant(proposed, SOC_TIMEZONE);
+    if (!proposedInstant || proposedInstant.getTime() <= Date.now()) {
+      setToast({ text: "Choose a future date and time first", type: "error" });
       return;
     }
     setConfirmModal({ open: true, scheduleId: id, action: "request-date" });
@@ -170,6 +182,8 @@ export default function AdminRescanRequests() {
                       <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${
                         r.status === "failed"
                           ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
+                          : r.status === "expired"
+                          ? "border-slate-200 bg-slate-100 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
                           : ["completed", "completed_with_errors", "failed"].includes(r.status)
                           ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400"
                           : r.status === "scheduled" || r.status === "approval_pending"
@@ -178,7 +192,7 @@ export default function AdminRescanRequests() {
                           ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
                           : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400"
                       }`}>
-                        {r.status === "failed" ? "Failed" : r.status === "completed_with_errors" ? "Completed with errors" : r.status === "completed" ? "Completed" : r.status === "approved" ? "Approved — verification ready" : r.status === "scheduled" || r.status === "approval_pending" ? "Awaiting SOC approval" : r.date_proposal_status === "rejected" ? "Client rejected — SOC action needed" : r.date_proposed_by === "client" ? "Client counter-proposed — SOC review" : "Awaiting client decision"}
+                        {r.status === "expired" ? "Expired — choose a new date" : r.status === "failed" ? "Failed" : r.status === "completed_with_errors" ? "Completed with errors" : r.status === "completed" ? "Completed" : r.status === "approved" ? "Approved — verification ready" : r.status === "scheduled" || r.status === "approval_pending" ? "Awaiting SOC approval" : r.date_proposal_status === "rejected" ? "Client rejected — SOC action needed" : r.date_proposed_by === "client" ? "Client counter-proposed — SOC review" : "Awaiting client decision"}
                       </span>
                       {r.error_message && (
                         <span className="text-xs text-red-600 dark:text-red-400">{r.error_message}</span>
@@ -249,6 +263,8 @@ export default function AdminRescanRequests() {
                             <div className="mt-3 flex w-full flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
                               <input
                                 type="datetime-local"
+                                min={minimumDateTimeLocal(SOC_TIMEZONE)}
+                                onFocus={(e) => { e.currentTarget.min = minimumDateTimeLocal(SOC_TIMEZONE); }}
                                 value={proposedMap[r.id] || ""}
                                 onChange={(e) => setProposedMap((m) => ({ ...m, [r.id]: e.target.value }))}
                                 className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"

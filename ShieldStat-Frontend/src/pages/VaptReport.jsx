@@ -6,9 +6,10 @@ import {
   ShieldAlert, FilterX, Database, Clock, CheckCircle2,
 } from "lucide-react";
 import { getVaptImport, getVaptImportAdmin, updateVaptFindingStatus, submitVaptImport, deleteVaptImport, deleteVaptImportAdmin, getVaptAccessStatus, getWebSocketUrl, postAdminRemediationReview, requestRescanDateChange, updateVerificationFindingStatus, submitVerificationReview } from "../services/api";
-import { downloadVaptClosureBundle, downloadVaptReportExcel, downloadVaptReportAdminExcel, logSupportOffered, postAdminCloseWithoutVerification, postClientNextVaptDueDate, approveClientNextVaptDueDate, rejectClientNextVaptDueDate } from "../services/api";
+import { downloadVaptClosureBundle, downloadVaptReportExcel, downloadVaptReportAdminExcel, postAdminCloseWithoutVerification, postClientNextVaptDueDate, approveClientNextVaptDueDate, rejectClientNextVaptDueDate } from "../services/api";
 import { getVaptRescanSchedules, postAdminApproveReschedule, postAdminRequestNewDate, postAdminVerificationDecision, acceptRescanDate, rejectRescanDate } from "../services/api";
 import RescanModal from "../components/RescanModal";
+import { browserTimezone, minimumDateTimeLocal, wallClockInstant } from "../utils/timezone";
 import {
   SEVERITY_META,
   SEVERITY_ORDER,
@@ -31,6 +32,7 @@ const STATUS_LABEL = {
   submitted: "Submitted",
   client_completed: "Client Completed",
   failed: "Failed",
+  expired: "Expired — choose a new date",
   completed_with_errors: "Completed with errors",
   approved: "Approved",
   rescheduled: "New date requested",
@@ -45,10 +47,16 @@ const STATUS_BADGE = {
   false_positive: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-400 dark:border-purple-900",
   client_completed: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900",
   failed: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900",
+  expired: "bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700",
   completed_with_errors: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900",
   approved: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900",
   rescheduled: "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-400 dark:border-sky-900",
 };
+
+function formatFindingDecision(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  return STATUS_LABEL[normalized] || normalized.replaceAll("_", " ") || "—";
+}
 
 function requiresFindingTriage(finding) {
   const severity = String(finding.severity_label || finding.severity || "").trim().toLowerCase();
@@ -66,6 +74,10 @@ function hasOpenSocReviewFlag(finding) {
     && finding.soc_review_flags.some((flag) => !flag.responded_at);
 }
 
+function verificationFindingDraftKey(finding) {
+  return `${finding._reviewCollection}:${finding._reviewIndex}:${finding.id}`;
+}
+
 const LIFECYCLE_LABEL = {
   report_published: "Initial report published",
   awaiting_soc_remediation_acceptance: "Remediation review in progress",
@@ -81,22 +93,48 @@ const LIFECYCLE_LABEL = {
 function getClosureBlockReason(record, schedule) {
   if (!record) return "";
   const blocking = new Set(["critical", "high", "medium"]);
-  const findingKey = (finding) => {
-    const title = String(finding.title || "").replace(/\s+/g, " ").trim().toLowerCase();
-    if (title) return JSON.stringify([title]);
-    return JSON.stringify([
-      String(finding.plugin_id || finding.vuln_id || "").trim().toLowerCase(),
-      String(finding.description || "").replace(/\s+/g, " ").trim().toLowerCase(),
-      (finding.cves || []).map((cve) => String(cve).trim().toLowerCase()).filter(Boolean).sort(),
-    ]);
-  };
-  const remainingKeys = new Set((schedule?.result_data?.remaining_findings || []).map(findingKey));
+  if (schedule?.result_data) {
+    const result = schedule.result_data;
+    const reviewFindings = [
+      ...(result.remaining_findings || []),
+      ...(result.new_findings || []),
+    ];
+    const actionableFindings = reviewFindings.filter((finding) =>
+      blocking.has(String(finding.severity_label || finding.severity || "").toLowerCase()),
+    );
+    if (actionableFindings.length && result.client_review_status !== "client_completed") {
+      return "The client must submit decisions for all actionable verification findings before closure.";
+    }
+    const pending = actionableFindings.filter((finding) => (finding.status || "pending") === "pending");
+    if (pending.length) {
+      const examples = pending.slice(0, 3).map((finding) =>
+        finding.title || finding.plugin_id || finding.id || "Untitled finding",
+      );
+      const more = pending.length > examples.length ? `, and ${pending.length - examples.length} more` : "";
+      return `Cannot close — ${pending.length} actionable verification finding(s) are still pending: ${examples.join("; ")}${more}.`;
+    }
+    if (
+      result.soc_followup_pending
+      || reviewFindings.some(hasOpenSocReviewFlag)
+    ) {
+      return "The client must respond to every SOC follow-up flag before closure.";
+    }
+    const unverifiedHostCount = (result.unverified_findings || []).reduce(
+      (total, finding) => total + (finding.affected_hosts || []).length,
+      0,
+    ) + (result.remaining_findings || []).reduce(
+      (total, finding) => total + (finding.unverified_hosts || []).length,
+      0,
+    );
+    if (unverifiedHostCount) {
+      return `Cannot close — verification did not cover ${unverifiedHostCount} affected asset(s). Scan those assets first.`;
+    }
+    return "";
+  }
   const blockers = (record.findings || []).filter((finding) => {
     const severity = String(finding.severity_label || finding.severity || "").toLowerCase();
     const status = String(finding.status || "pending").toLowerCase();
-    const unresolved = schedule
-      ? remainingKeys.has(findingKey(finding))
-      : !["solved", "ignore", "false_positive"].includes(status);
+    const unresolved = !["solved", "ignore", "false_positive"].includes(status);
     return unresolved && blocking.has(severity);
   });
   if (!blockers.length) return "";
@@ -337,13 +375,13 @@ function FindingTableRow({
               <p className="mt-1 whitespace-pre-wrap text-amber-800 dark:text-amber-200">{flag.note}</p>
               {flag.client_status_at_flag && (
                 <p className="mt-1 text-slate-600 dark:text-slate-300">
-                  Original client decision: {formatLabel(flag.client_status_at_flag)}
+                  Original client decision: {formatFindingDecision(flag.client_status_at_flag)}
                   {flag.client_comment_at_flag ? ` — ${flag.client_comment_at_flag}` : ""}
                 </p>
               )}
               {flag.responded_at && (
                 <p className="mt-1 whitespace-pre-wrap text-slate-600 dark:text-slate-300">
-                  Client response: {formatLabel(flag.response_status || "")}
+                  Client response: {formatFindingDecision(flag.response_status)}
                   {flag.response_comment ? ` — ${flag.response_comment}` : ""}
                 </p>
               )}
@@ -510,7 +548,9 @@ function RescanRequestsPanel({
                           disabled={actionLoading[s.id]}
                           className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-60 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400"
                         >
-                          Reopen remediation
+                          {s.result_data?.client_review_status === "client_completed"
+                            ? "Request another verification"
+                            : "Return for client review"}
                         </button>
                         {closureBlockReason && (
                           <p className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{closureBlockReason}</p>
@@ -541,6 +581,8 @@ function RescanRequestsPanel({
                               <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Proposed date</label>
                               <input
                                 type="datetime-local"
+                                min={minimumDateTimeLocal(browserTimezone())}
+                                onFocus={(e) => { e.currentTarget.min = minimumDateTimeLocal(browserTimezone()); }}
                                 value={draft.date || ""}
                                 onChange={(e) => onUpdateDraft(s.id, "date", e.target.value)}
                                 className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-purple-400 dark:border-slate-600 dark:bg-slate-900"
@@ -590,7 +632,7 @@ function RescanRequestsPanel({
 
 function RescanTimeline({ schedules, record }) {
   if (!schedules || schedules.length === 0) return null;
-  const icons = { scheduled: Clock, approved: CheckCircle2, completed: CheckCircle2, requested: Clock, cancelled: AlertCircle, failed: AlertCircle };
+  const icons = { scheduled: Clock, approved: CheckCircle2, completed: CheckCircle2, requested: Clock, cancelled: AlertCircle, failed: AlertCircle, expired: AlertCircle };
   return (
     <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
       <p className="mb-4 text-xs font-black uppercase tracking-wider text-slate-400">Scan Timeline</p>
@@ -645,7 +687,7 @@ function RescanTimeline({ schedules, record }) {
                 )}
                 {["completed", "completed_with_errors", "failed"].includes(s.status) && (
                   <p className={`mt-2 text-xs font-bold ${s.verification_outcome === "closed" ? "text-emerald-600 dark:text-emerald-400" : s.verification_outcome === "reopened" ? "text-amber-600 dark:text-amber-400" : "text-slate-500 dark:text-slate-400"}`}>
-                    {s.status === "failed" ? "Verification upload failed — SOC review required" : s.status === "completed_with_errors" ? "Completed with remaining findings — SOC review required" : s.verification_outcome === "closed" ? "VAPT cycle closed" : s.verification_outcome === "reopened" ? "Reopened — remediation required" : "Awaiting SOC verification decision"}
+                    {s.status === "failed" ? "Verification upload failed — SOC review required" : s.status === "completed_with_errors" ? "Completed with remaining findings — SOC review required" : s.verification_outcome === "closed" ? "VAPT cycle closed" : s.verification_outcome === "reopened" ? "Another verification required" : "Awaiting SOC verification decision"}
                   </p>
                 )}
               </div>
@@ -833,43 +875,129 @@ function ReportSwitcherTabs({ selectedReport, onSelect, initialCount, verificati
 // Renders all verification findings in the same table layout as the initial
 // report, with an additional Status column showing fixed / unresolved / pending.
 
-function VerificationReportTable({ schedule, record, isPlatformView }) {
+function VerificationReportTable({
+  schedule,
+  record,
+  isPlatformView,
+  onRequestFollowUp,
+  onReviewSubmitted,
+  actionLoading = false,
+  actionError = "",
+}) {
   const [drafts, setDrafts] = useState({});
+  const [socReviewFlagDrafts, setSocReviewFlagDrafts] = useState({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const result = schedule.result_data || {};
+  const verificationFileNames = Array.isArray(result.verification_file_names)
+    ? result.verification_file_names
+    : [];
   const hasUploadedResults = Boolean(result.uploaded_at || result.findings?.length || result.normalized_summary);
   const fixed = (result.fixed_findings || []).map((f) => ({ ...f, _verificationStatus: "fixed" }));
-  const remaining = (result.remaining_findings || []).map((f) => ({ ...f, _verificationStatus: "unresolved" }));
-  const newFindings = (result.new_findings || []).map((f) => ({ ...f, _verificationStatus: "new" }));
+  const remaining = (result.remaining_findings || []).map((f, index) => ({
+    ...f,
+    _verificationStatus: "unresolved",
+    _reviewCollection: "remaining_findings",
+    _reviewIndex: index,
+  }));
+  const newFindings = (result.new_findings || []).map((f, index) => ({
+    ...f,
+    _verificationStatus: "new",
+    _reviewCollection: "new_findings",
+    _reviewIndex: index,
+  }));
   const unverified = (result.unverified_findings || []).map((f) => ({ ...f, _verificationStatus: "unverified" }));
   const allFindings = [...fixed, ...remaining, ...newFindings, ...unverified];
   const scheduleIndex = record?._scheduleIndex ?? 0;
   const reviewComplete = result.client_review_status === "client_completed";
+  const reviewNeedsFollowup = result.soc_followup_pending === true
+    || result.client_review_status === "changes_requested";
   const reviewFindings = [...remaining, ...newFindings];
   const hasReviewFindings = reviewFindings.length > 0;
+  const canEditClientReview = !isPlatformView
+    && ["completed", "completed_with_errors", "failed"].includes(schedule.status)
+    && schedule.verification_outcome !== "closed";
+  const hasSelectedSocFlags = Object.values(socReviewFlagDrafts).some((draft) => draft.enabled);
+  const hasInvalidSocFlags = Object.values(socReviewFlagDrafts).some(
+    (draft) => draft.enabled && !String(draft.note || "").trim(),
+  );
 
   const updateDraft = (findingId, field, value) => setDrafts((prev) => ({ ...prev, [findingId]: { ...prev[findingId], [field]: value } }));
+  const updateSocReviewFlagDraft = (findingId, draft) => setSocReviewFlagDrafts((previous) => {
+    const key = String(findingId);
+    if (!draft.enabled) {
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    }
+    return { ...previous, [key]: draft };
+  });
   const saveReview = async () => {
     setSaving(true);
     setMessage("");
     try {
+      const pendingFindings = reviewFindings.filter((finding) => {
+        const draft = drafts[verificationFindingDraftKey(finding)] || {};
+        const status = draft.status ?? finding.client_decision ?? finding.status ?? "pending";
+        return requiresFindingTriage(finding) && status === "pending";
+      });
+      if (pendingFindings.length) {
+        setMessage(`All actionable verification findings must be triaged before submitting. ${pendingFindings.length} still pending.`);
+        return;
+      }
+
+      const invalidFindings = reviewFindings.filter((finding) => {
+        const draft = drafts[verificationFindingDraftKey(finding)] || {};
+        const status = draft.status ?? finding.client_decision ?? finding.status ?? "pending";
+        const comment = draft.comment ?? finding.comment ?? "";
+        return (status === "ignore" || status === "false_positive") && !comment.trim();
+      });
+      if (invalidFindings.length) {
+        setMessage("Add a comment to every Ignore or False positive decision before submitting.");
+        return;
+      }
+
       for (const finding of reviewFindings) {
-        if (!Object.prototype.hasOwnProperty.call(drafts, finding.id)) continue;
-        const draft = drafts[finding.id] || finding;
+        const draftKey = verificationFindingDraftKey(finding);
+        if (!Object.prototype.hasOwnProperty.call(drafts, draftKey)) continue;
+        const draft = { ...finding, ...drafts[draftKey] };
         const status = draft.status || "pending";
         const comment = (draft.comment || "").trim();
-        if ((status === "ignore" || status === "false_positive") && !comment) {
-          throw new Error("Add a comment before choosing Ignore or False positive.");
-        }
-        await updateVerificationFindingStatus(record.import_id, schedule.id, finding.id, { status, comment }, localStorage.getItem("token"));
+        await updateVerificationFindingStatus(record.import_id, schedule.id, finding.id, {
+          status,
+          comment,
+          collection: finding._reviewCollection,
+          finding_index: finding._reviewIndex,
+        }, localStorage.getItem("token"));
       }
-      await submitVerificationReview(record.import_id, schedule.id, localStorage.getItem("token"));
+      const response = await submitVerificationReview(record.import_id, schedule.id, localStorage.getItem("token"));
+      onReviewSubmitted?.(schedule.id, response);
+      setDrafts({});
       setMessage("Verification review submitted to SOC.");
     } catch (err) {
       setMessage(err?.message || "Triage every actionable verification finding before submitting.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const requestClientFollowUp = async () => {
+    const flags = Object.entries(socReviewFlagDrafts)
+      .filter(([, draft]) => draft.enabled)
+      .map(([findingId, draft]) => ({
+        finding_id: draft.finding_id || findingId,
+        collection: draft.collection,
+        finding_index: draft.finding_index,
+        note: (draft.note || "").trim(),
+      }));
+    if (!flags.length || flags.some((flag) => !flag.note)) {
+      setMessage("Select at least one finding with a submitted decision and add a reason for every flag.");
+      return;
+    }
+    const success = await onRequestFollowUp?.(schedule.id, flags);
+    if (success) {
+      setSocReviewFlagDrafts({});
+      setMessage("Follow-up request sent to the client.");
     }
   };
 
@@ -900,9 +1028,16 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
             </h2>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
               Uploaded {fmtDate(result.uploaded_at || schedule.scheduled_at)}
-              {result.verification_file_name ? ` · ${result.verification_file_name}` : ""}
+              {verificationFileNames.length > 1
+                ? ` · ${verificationFileNames.length} files combined`
+                : result.verification_file_name ? ` · ${result.verification_file_name}` : ""}
               {schedule.note ? ` · ${schedule.note}` : ""}
             </p>
+            {verificationFileNames.length > 1 && (
+              <p className="mt-1 break-all text-xs text-slate-500 dark:text-slate-400">
+                Files: {verificationFileNames.join(", ")}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-full border px-3 py-1.5 text-xs font-bold ${
@@ -941,10 +1076,11 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
             <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">Not verified</p>
           </div>
         </div>
-        {(newFindings.length > 0 || unverified.length > 0) && (
+        {(newFindings.length > 0 || unverified.length > 0 || reviewNeedsFollowup) && (
           <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
             {newFindings.length > 0 && "New findings were not part of the original report. Critical, High, and Medium findings need a client decision before submitting this review; Low and Informational findings are shown for visibility. "}
             {unverified.length > 0 && "Some affected assets were outside the scheduled scan scope. They are not considered fixed, and SOC must verify them before closing the cycle."}
+            {reviewNeedsFollowup && "SOC requested follow-up on specific decisions. Update the flagged findings and resubmit this verification review."}
           </p>
         )}
       </div>
@@ -988,10 +1124,24 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
                 </tr>,
                 ...group.findings.map((f, idx) => (
                   <VerificationFindingRow
-                    key={f.id || f.plugin_id || `${group.label}-${idx}`}
+                    key={`${group.label}:${f.id || f.plugin_id || "finding"}:${idx}`}
                     finding={f}
-                    draft={drafts[f.id]}
-                    onDraftChange={!isPlatformView && f._verificationStatus !== "fixed" && f._verificationStatus !== "unverified" && !reviewComplete ? updateDraft : undefined}
+                    draft={drafts[verificationFindingDraftKey(f)]}
+                    onDraftChange={
+                      canEditClientReview
+                      && ["unresolved", "new"].includes(f._verificationStatus)
+                      && (!reviewNeedsFollowup || hasOpenSocReviewFlag(f))
+                        ? updateDraft
+                        : undefined
+                    }
+                    allowSocFlag={
+                      isPlatformView
+                      && ["unresolved", "new"].includes(f._verificationStatus)
+                      && reviewComplete
+                      && schedule.verification_outcome === "pending"
+                    }
+                    socReviewFlagDraft={socReviewFlagDrafts[verificationFindingDraftKey(f)]}
+                    onSocReviewFlagDraftChange={updateSocReviewFlagDraft}
                   />
                 )),
               ])}
@@ -1003,7 +1153,9 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
             <p className="text-sm text-slate-500 dark:text-slate-400">
               {statusCounts.fixed} confirmed fixed · {statusCounts.unresolved} still unresolved · {newFindings.length} new · {unverified.length} not verified
             </p>
-            {!isPlatformView && hasReviewFindings && !reviewComplete && (
+            {canEditClientReview
+              && hasReviewFindings
+              && (!reviewComplete || Object.keys(drafts).length > 0) && (
               <div className="flex items-center gap-3">
                 {message && <p className="text-xs font-semibold text-sky-800 dark:text-sky-200">{message}</p>}
                 <button
@@ -1012,7 +1164,25 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
                   disabled={saving}
                   className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:opacity-50"
                 >
-                  {saving ? "Submitting..." : "Submit verification review to SOC"}
+                  {saving
+                    ? "Submitting..."
+                    : reviewComplete
+                      ? "Resubmit verification review to SOC"
+                      : "Submit verification review to SOC"}
+                </button>
+              </div>
+            )}
+            {isPlatformView && reviewComplete && schedule.verification_outcome === "pending" && (
+              <div className="flex flex-col items-end gap-2">
+                {actionError && <p className="text-xs font-semibold text-red-600 dark:text-red-400">{actionError}</p>}
+                {message && <p className="text-xs font-semibold text-sky-800 dark:text-sky-200">{message}</p>}
+                <button
+                  type="button"
+                  onClick={requestClientFollowUp}
+                  disabled={actionLoading || !hasSelectedSocFlags || hasInvalidSocFlags}
+                  className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {actionLoading ? "Sending…" : "Request client follow-up"}
                 </button>
               </div>
             )}
@@ -1024,15 +1194,23 @@ function VerificationReportTable({ schedule, record, isPlatformView }) {
 }
 
 // Read-only finding row for verification report tables.
-function VerificationFindingRow({ finding, draft, onDraftChange }) {
+function VerificationFindingRow({
+  finding,
+  draft,
+  onDraftChange,
+  allowSocFlag = false,
+  socReviewFlagDraft,
+  onSocReviewFlagDraftChange,
+}) {
   const cves = (finding.cves || []).filter(Boolean);
   const references = (finding.references || []).filter((r) => r.startsWith("http://") || r.startsWith("https://"));
   const hosts = (finding.affected_hosts || []).filter(Boolean);
   const evidence = (finding.evidence || "").trim();
   const isFixed = finding._verificationStatus === "fixed";
   const isUnverified = finding._verificationStatus === "unverified";
-  const status = draft?.status || finding.status || "pending";
+  const status = draft?.status || finding.client_decision || finding.status || "pending";
   const comment = draft?.comment ?? finding.comment ?? "";
+  const socReviewFlags = Array.isArray(finding.soc_review_flags) ? finding.soc_review_flags : [];
   const hostsFixed = finding.verified_fixed_hosts || [];
   const hostsUnverified = finding.unverified_hosts || [];
   const assets = finding.affected_assets?.length
@@ -1106,7 +1284,7 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
             <div className="space-y-2">
               <select
                 value={status}
-                onChange={(e) => onDraftChange(finding.id, "status", e.target.value)}
+                onChange={(e) => onDraftChange(verificationFindingDraftKey(finding), "status", e.target.value)}
                 className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
               >
               <option value="pending">{requiresFindingTriage(finding) ? "Pending" : "No action (optional)"}</option>
@@ -1116,7 +1294,7 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
               </select>
               <input
                 value={comment}
-                onChange={(e) => onDraftChange(finding.id, "comment", e.target.value)}
+                onChange={(e) => onDraftChange(verificationFindingDraftKey(finding), "comment", e.target.value)}
               placeholder={status === "ignore" || status === "false_positive"
                 ? "Comment required for Ignore / False positive"
                 : "Add a note (optional)"}
@@ -1124,10 +1302,73 @@ function VerificationFindingRow({ finding, draft, onDraftChange }) {
               />
             </div>
           )}
+          <p className="text-[11px] text-slate-600 dark:text-slate-300">
+            <span className="font-semibold">
+              Client decision{onDraftChange && draft?.status ? " (not submitted)" : ""}:
+            </span>{" "}
+            {formatFindingDecision(status)}
+          </p>
           {!onDraftChange && comment && (
             <p className="whitespace-pre-wrap text-[11px] text-slate-600 dark:text-slate-300">
               <span className="font-semibold">Client remark:</span> {comment}
             </p>
+          )}
+          {socReviewFlags.map((flag, index) => (
+            <div
+              key={`${flag.flagged_at || "soc-flag"}-${index}`}
+              className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[11px] dark:border-amber-900 dark:bg-amber-950/30"
+            >
+              <p className="font-bold text-amber-800 dark:text-amber-200">
+                {flag.responded_at ? "SOC follow-up (answered)" : "SOC requests follow-up"}
+              </p>
+              <p className="mt-1 whitespace-pre-wrap text-amber-800 dark:text-amber-200">{flag.note}</p>
+              {flag.client_status_at_flag && (
+                <p className="mt-1 text-slate-600 dark:text-slate-300">
+                  Original client decision: {formatFindingDecision(flag.client_status_at_flag)}
+                  {flag.client_comment_at_flag ? ` — ${flag.client_comment_at_flag}` : ""}
+                </p>
+              )}
+              {flag.responded_at && (
+                <p className="mt-1 whitespace-pre-wrap text-slate-600 dark:text-slate-300">
+                  Client response: {formatFindingDecision(flag.response_status)}
+                  {flag.response_comment ? ` — ${flag.response_comment}` : ""}
+                </p>
+              )}
+            </div>
+          ))}
+          {allowSocFlag && ["ignore", "false_positive"].includes(status) && (
+            <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900 dark:bg-amber-950/20">
+              <label className="flex items-center gap-2 text-xs font-semibold text-amber-900 dark:text-amber-200">
+                <input
+                  type="checkbox"
+                  checked={Boolean(socReviewFlagDraft?.enabled)}
+                  onChange={(event) => onSocReviewFlagDraftChange?.(verificationFindingDraftKey(finding), {
+                    enabled: event.target.checked,
+                    note: socReviewFlagDraft?.note || "",
+                    finding_id: finding.id,
+                    collection: finding._reviewCollection,
+                    finding_index: finding._reviewIndex,
+                  })}
+                />
+                Flag this decision for client follow-up
+              </label>
+              {socReviewFlagDraft?.enabled && (
+                <textarea
+                  value={socReviewFlagDraft.note || ""}
+                  onChange={(event) => onSocReviewFlagDraftChange?.(verificationFindingDraftKey(finding), {
+                    enabled: true,
+                    note: event.target.value,
+                    finding_id: finding.id,
+                    collection: finding._reviewCollection,
+                    finding_index: finding._reviewIndex,
+                  })}
+                  rows={2}
+                  maxLength={2000}
+                  placeholder="Explain what the client should clarify or change (required)"
+                  className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-2 text-xs text-slate-900 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200 dark:border-amber-800 dark:bg-slate-950 dark:text-slate-100"
+                />
+              )}
+            </div>
           )}
         </div>
       </td>
@@ -1344,9 +1585,9 @@ export default function VaptReport() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_due_date_proposed", "vapt_due_date_rejected", "vapt_cycle_closed"].includes(message.event)) {
+        if (["vapt_rescan_scheduled", "vapt_rescan_approved", "vapt_rescan_date_requested", "vapt_rescan_completed", "vapt_rescan_rejected", "vapt_rescan_failed", "vapt_rescan_reminder", "report_published", "client_review_completed", "vapt_verification_decided", "vapt_verification_followup_requested", "vapt_verification_review_completed", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_due_date_proposed", "vapt_due_date_rejected", "vapt_cycle_closed"].includes(message.event)) {
           refreshRescanSchedules();
-          if (["report_published", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_verification_decided", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_due_date_proposed", "vapt_due_date_rejected", "vapt_cycle_closed"].includes(message.event)) {
+          if (["report_published", "client_review_completed", "vapt_rescan_completed", "vapt_rescan_failed", "vapt_verification_decided", "vapt_verification_followup_requested", "vapt_verification_review_completed", "vapt_remediation_reviewed", "vapt_closure_pending_client_due_date", "vapt_due_date_proposed", "vapt_due_date_rejected", "vapt_cycle_closed"].includes(message.event)) {
             refreshReport();
           }
           // User-facing toasts
@@ -1357,6 +1598,8 @@ export default function VaptReport() {
               setToast({ text: "SOC requested a different next VAPT date. Review the reason and submit a new date.", type: "info" });
             } else if (message.event === "vapt_cycle_closed") {
               setToast({ text: "VAPT cycle closed", type: "success" });
+            } else if (message.event === "vapt_verification_followup_requested") {
+              setToast({ text: "SOC requested follow-up on verification findings. Review the flagged decisions and resubmit.", type: "info" });
             } else if (message.event === "report_published") {
               setToast({ text: message.file_name ? `New report published: ${message.file_name}` : "New report published", type: "success" });
             } else if (message.event === "vapt_rescan_reminder") {
@@ -1460,25 +1703,54 @@ export default function VaptReport() {
     }
   }, []);
 
-  const handleVerificationDecision = useCallback(async (scheduleId, outcome) => {
+  const handleVerificationDecision = useCallback(async (scheduleId, outcome, flags = []) => {
     const token = localStorage.getItem("token");
-    if (!token) return;
+    if (!token) return false;
     setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
     setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
     try {
-      const result = await postAdminVerificationDecision(scheduleId, outcome, "", token);
+      const result = await postAdminVerificationDecision(scheduleId, outcome, "", token, undefined, flags);
       setRescanSchedules((prev) => prev.map((s) => (
         String(s.id) === String(scheduleId)
-          ? { ...s, verification_outcome: result.outcome }
+          ? {
+              ...s,
+              ...(result.outcome === "changes_requested" ? {} : { verification_outcome: result.outcome }),
+              ...(result.result_data ? { result_data: result.result_data } : {}),
+            }
           : s
       )));
-      setRecord((prev) => prev ? { ...prev, lifecycle_status: result.lifecycle_status } : prev);
-      setToast({ text: outcome === "closed" ? "VAPT cycle closed" : "VAPT reopened for remediation", type: outcome === "closed" ? "success" : "info" });
+      if (result.lifecycle_status) {
+        setRecord((prev) => prev ? { ...prev, lifecycle_status: result.lifecycle_status } : prev);
+      }
+      setToast({
+        text: outcome === "closed"
+          ? "VAPT cycle closed"
+          : outcome === "changes_requested"
+            ? "Verification follow-up sent to the client"
+            : "Another verification is required; the client can book the next retest after submitting their review.",
+        type: outcome === "closed" ? "success" : "info",
+      });
+      return true;
     } catch (err) {
       setRescanActionError((p) => ({ ...p, [scheduleId]: err?.message || "Failed to record verification decision." }));
+      return false;
     } finally {
       setRescanActionLoading((p) => ({ ...p, [scheduleId]: false }));
     }
+  }, []);
+
+  const handleVerificationReviewSubmitted = useCallback((scheduleId, result) => {
+    setRescanSchedules((previous) => previous.map((schedule) => (
+      String(schedule.id) === String(scheduleId)
+        ? {
+            ...schedule,
+            result_data: result.result_data || {
+              ...schedule.result_data,
+              client_review_status: result.client_review_status,
+            },
+          }
+        : schedule
+    )));
   }, []);
 
   const handleRemediationReview = useCallback(async (decision) => {
@@ -1545,8 +1817,13 @@ export default function VaptReport() {
   const [clientDueDate, setClientDueDate] = useState("");
   const handleClientDueDate = useCallback(async () => {
     if (!record || !clientDueDate) return;
+    const dueDateInstant = wallClockInstant(clientDueDate, browserTimezone());
+    if (!dueDateInstant || dueDateInstant.getTime() <= Date.now()) {
+      setToast({ text: "Choose a future next VAPT due date and time.", type: "error" });
+      return;
+    }
     try {
-      const result = await postClientNextVaptDueDate(record.import_id, new Date(clientDueDate).toISOString(), localStorage.getItem("token"));
+      const result = await postClientNextVaptDueDate(record.import_id, dueDateInstant.toISOString(), localStorage.getItem("token"));
       setRecord((prev) => {
         if (!prev) return prev;
         const summary = { ...(prev.summary || {}) };
@@ -1624,10 +1901,15 @@ export default function VaptReport() {
     const token = localStorage.getItem("token");
     const draft = newDateDraft[scheduleId];
     if (!token || !draft?.date) return;
+    const proposedInstant = wallClockInstant(draft.date, browserTimezone());
+    if (!proposedInstant || proposedInstant.getTime() <= Date.now()) {
+      setRescanActionError((p) => ({ ...p, [scheduleId]: "Choose a future date and time." }));
+      return;
+    }
     setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
     setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
     try {
-      const proposedAt = new Date(draft.date).toISOString();
+      const proposedAt = proposedInstant.toISOString();
       const updated = await postAdminRequestNewDate(scheduleId, { proposed_at: proposedAt, note: draft.note || "" }, token);
       setRescanSchedules((prev) =>
         prev.map((s) =>
@@ -1656,10 +1938,15 @@ export default function VaptReport() {
     const token = localStorage.getItem("token");
     const draft = newDateDraft[scheduleId];
     if (!token || !draft?.date || !record?.import_id) return;
+    const proposedInstant = wallClockInstant(draft.date, browserTimezone());
+    if (!proposedInstant || proposedInstant.getTime() <= Date.now()) {
+      setRescanActionError((p) => ({ ...p, [scheduleId]: "Choose a future date and time." }));
+      return;
+    }
     setRescanActionLoading((p) => ({ ...p, [scheduleId]: true }));
     setRescanActionError((p) => ({ ...p, [scheduleId]: "" }));
     try {
-      const proposedAt = new Date(draft.date).toISOString();
+      const proposedAt = proposedInstant.toISOString();
       const updated = await requestRescanDateChange(record.import_id, scheduleId, { proposed_at: proposedAt, note: draft.note || "" }, token);
       setRescanSchedules((prev) =>
         prev.map((s) =>
@@ -1894,6 +2181,7 @@ export default function VaptReport() {
   const riskMeta = riskTone(record.risk_score);
   const closureSchedule = rescanSchedules.find((schedule) => ["completed", "completed_with_errors", "failed"].includes(schedule.status));
   const closureBlockReason = getClosureBlockReason(record, closureSchedule);
+  const verificationReopened = rescanSchedules[0]?.verification_outcome === "reopened";
 
   return (
     <div className="min-h-screen text-slate-900 dark:text-slate-100">
@@ -1980,24 +2268,6 @@ export default function VaptReport() {
               >
                 <Download size={15} /> Export to Excel
               </button>
-              {isPlatformView && record.lifecycle_status === "remediation_required" && (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      const token = localStorage.getItem("token");
-                      await logSupportOffered(record.import_id, token);
-                      setRecord(prev => prev ? { ...prev, support_offered_at: new Date().toISOString() } : prev);
-                      setToast({ text: "Support offered logged — 7-day reminder timer reset", type: "success" });
-                    } catch (err) {
-                      setToast({ text: err?.message || "Failed to log support offered", type: "error" });
-                    }
-                  }}
-                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
-                >
-                  Log support offered
-                </button>
-              )}
               {record.lifecycle_status === "revalidation_required" && !isPlatformView && !rescanSchedules.some(s => ["scheduled", "approved", "requested"].includes(s.status)) && (
                 <button
                   type="button"
@@ -2066,7 +2336,14 @@ export default function VaptReport() {
             </p>
             {!isPlatformView && record.remediation_review_status === "approved" && record.lifecycle_status === "revalidation_required" && (
               <p className="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-                SOC accepted your remediation. Choose a future date and time to schedule the verification scan.
+                {verificationReopened
+                  ? "SOC requested another verification. Your review is submitted; choose a future date and time to book the next retest."
+                  : "SOC accepted your remediation. Choose a future date and time to schedule the verification scan."}
+              </p>
+            )}
+            {!isPlatformView && verificationReopened && record.lifecycle_status === "remediation_required" && (
+              <p className="mt-2 text-sm font-semibold text-amber-700 dark:text-amber-400">
+                Review the findings that remain in the verification report and submit your decisions. Then you can book another retest; the initial SOC remediation approval will not need to be repeated.
               </p>
             )}
             {!isPlatformView && record.remediation_review_status === "rejected" && record.lifecycle_status === "remediation_required" && (
@@ -2096,7 +2373,7 @@ export default function VaptReport() {
                 <div className="mt-3 flex flex-wrap items-end gap-3">
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                     Next VAPT due date/time
-                    <input type="datetime-local" value={clientDueDate} onChange={(e) => setClientDueDate(e.target.value)} className="mt-1 block rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
+                    <input type="datetime-local" min={minimumDateTimeLocal(browserTimezone())} value={clientDueDate} onChange={(e) => setClientDueDate(e.target.value)} className="mt-1 block rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-sky-800 dark:bg-slate-900 dark:text-slate-100" />
                   </label>
                   <button type="button" onClick={handleClientDueDate} disabled={!clientDueDate} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Complete closure</button>
                 </div>
@@ -2302,6 +2579,7 @@ export default function VaptReport() {
                       <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">New date</label>
                       <input
                         type="datetime-local"
+                        min={minimumDateTimeLocal(browserTimezone())}
                         value={newDateDraft[rescanSchedules[0].id]?.date || ""}
                         onChange={(e) => updateNewDateDraft(rescanSchedules[0].id, "date", e.target.value)}
                         className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-purple-500 dark:focus:ring-purple-900/40"
@@ -2673,6 +2951,10 @@ export default function VaptReport() {
             schedule={rescanSchedules.find((s) => String(s.id) === String(selectedReport))}
             record={{ ...record, _scheduleIndex: rescanSchedules.findIndex((s) => String(s.id) === String(selectedReport)) }}
             isPlatformView={isPlatformView}
+            onRequestFollowUp={(scheduleId, flags) => handleVerificationDecision(scheduleId, "changes_requested", flags)}
+            onReviewSubmitted={handleVerificationReviewSubmitted}
+            actionLoading={Boolean(rescanActionLoading[selectedReport])}
+            actionError={rescanActionError[selectedReport] || ""}
           />
         )}
       </div>

@@ -80,13 +80,15 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_review_status VARCHAR(24) NOT NULL DEFAULT 'not_submitted'"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reviewed_by VARCHAR(36) NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reviewed_at TIMESTAMPTZ NULL"))
-        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS client_review_activity_at TIMESTAMPTZ NULL"))
-        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS client_review_reminder_sent_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports DROP COLUMN IF EXISTS client_review_activity_at"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports DROP COLUMN IF EXISTS client_review_reminder_sent_at"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS next_vapt_due_at TIMESTAMPTZ NULL"))
         # Due-date reminder tracking: one shot 7 days before the due date and
         # one shot when it passes (overdue). NULL = never sent.
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS due_soon_reminder_sent_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS overdue_notice_sent_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports DROP COLUMN IF EXISTS support_offered_at"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports DROP COLUMN IF EXISTS remediation_reminder_sent_at"))
         conn.execute(text("DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vapt_imports' AND column_name='import_id' AND data_type IN ('character varying','text')) THEN ALTER TABLE vapt_imports ALTER COLUMN import_id TYPE UUID USING import_id::uuid; END IF; END $$;"))
 
         # ── vapt_rescan_schedules ────────────────────────────────────────────
@@ -101,8 +103,8 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS scheduled_timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS uploaded_by VARCHAR(36) NULL"))
-        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS client_review_activity_at TIMESTAMPTZ NULL"))
-        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS client_review_reminder_sent_at TIMESTAMPTZ NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules DROP COLUMN IF EXISTS client_review_activity_at"))
+        conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules DROP COLUMN IF EXISTS client_review_reminder_sent_at"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS verification_outcome VARCHAR(20) NOT NULL DEFAULT 'pending'"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_rescan_schedules ADD COLUMN IF NOT EXISTS verified_by VARCHAR(36) NULL"))
@@ -125,8 +127,6 @@ def init_tables():
         conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS proposed_end_at TIMESTAMPTZ NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS proposed_timezone VARCHAR(64) NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS vapt_onboarding_checklists ADD COLUMN IF NOT EXISTS schedule_status VARCHAR(32) NOT NULL DEFAULT 'pending'"))
-        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS support_offered_at TIMESTAMPTZ NULL"))
-        conn.execute(text("ALTER TABLE IF EXISTS vapt_imports ADD COLUMN IF NOT EXISTS remediation_reminder_sent_at TIMESTAMPTZ NULL"))
         conn.execute(text("CREATE TABLE IF NOT EXISTS vapt_finding_history (id SERIAL PRIMARY KEY, import_id UUID NOT NULL REFERENCES vapt_imports(import_id), schedule_id UUID NULL REFERENCES vapt_rescan_schedules(id), finding_id VARCHAR(255) NOT NULL, actor_id VARCHAR(36) NULL REFERENCES users(user_id), old_status VARCHAR(32) NULL, new_status VARCHAR(32) NOT NULL, comment TEXT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vapt_finding_history_import ON vapt_finding_history(import_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vapt_finding_history_schedule ON vapt_finding_history(schedule_id)"))
